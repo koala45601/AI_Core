@@ -69,7 +69,7 @@ async function keepSearxngAlive() {
     if (lastToolError.startsWith("SearXNG keepalive:")) lastToolError = "";
   } catch (error) {
     const reason = error instanceof Error ? error.message : "SearXNG ไม่พร้อม";
-    lastToolError = `SearXNG keepalive: ${reason}`;
+    lastToolError = "SearXNG keepalive: " + reason;
   } finally {
     searxngKeepAliveBusy = false;
   }
