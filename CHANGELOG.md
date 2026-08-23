@@ -1,5 +1,25 @@
 # Alpha changelog
 
+## 1.1.0-beta.9 — 2026-08-24
+
+- Chat composer now grows automatically with multi-line/pasted text from a one-line minimum up to a viewport-aware cap (`min(35vh, 320px)`).
+- Long prompts scroll inside the composer only after reaching the cap, and the composer shrinks back after the draft is cleared or sent.
+- Enter-to-send and Shift+Enter newline behavior are unchanged.
+
+## 1.1.0-beta.8 — 2026-08-24
+
+- Separated Docker execution isolation from macOS host filesystem authority: `code_execution_mode=docker` applies only to `run_artifact` / Skill Lab execution, not ordinary file creation or inspection.
+- Alpha's active `appDir` is now treated as a first-class host workspace for `create_files`, `manage_file`, and host filesystem operations, while sensitive workspace metadata such as `.dev.vars`, `.env*`, and `.git` remains protected.
+- Successful file creation now reports `host_scope=macos`, `file_scope=macos_host`, `execution_scope=none`, `docker_used=false`, and the canonical workspace root.
+- Model-facing instructions explicitly forbid claiming that a normal host file is inside Docker merely because code execution uses a sandbox.
+
+## 1.1.0-beta.7 — 2026-08-24
+
+- Added structured `FILE_DESTINATION_OUT_OF_SCOPE` results for rejected file destinations instead of forcing the model to infer recovery from error prose.
+- File/program workflows automatically retry `create_files` in the safe Alpha Outputs location when the requested custom destination is not required exactly and is outside the current file scope.
+- Exact-destination requests remain explicit instead of silently pretending the file was created somewhere else.
+- Normal file-create recovery is host-native and returns `docker_used=false`; the model is instructed not to invent Docker/container/external-drive explanations for a plain file-policy error.
+
 ## 1.1.0-beta.6 — 2026-08-23
 
 - Added a deterministic read-only `host_fs` tool for macOS host filesystem inspection (`exists`, `stat`, `list`).
