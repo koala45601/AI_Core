@@ -1,0 +1,57 @@
+name: Apply Alpha Beta3 Agent Runtime
+
+on:
+  push:
+    branches:
+      - audit/security-agent-v1
+    paths:
+      - scripts/apply-beta3-runtime-patch.mjs
+      - scripts/recover-beta3-approvals.mjs
+      - tool-service/server-wrapper-beta3.mjs
+      - app/api/tools/confirm/route.ts
+      - app/api/tools/status/route.ts
+      - lib/tool-client.ts
+      - tests/beta3-agent-runtime.test.mjs
+      - .github/workflows/apply-beta3-agent-runtime.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: alpha-beta3-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/security-agent-v1
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply beta3 UI patch
+        run: node scripts/apply-beta3-runtime-patch.mjs .
+      - name: Syntax check beta3 runtime
+        run: |
+          node --check tool-service/server-wrapper-beta3.mjs
+          node --check scripts/apply-beta3-runtime-patch.mjs
+          node --check scripts/recover-beta3-approvals.mjs
+      - name: Run beta3 regression tests
+        run: node --test tests/beta3-agent-runtime.test.mjs
+      - name: Run security routing regression tests
+        run: node --test tests/security-scope.test.mjs tests/security-intent.test.mjs
+      - name: Commit generated page patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.tsx
+          if git diff --cached --quiet; then
+            echo "UI patch already committed"
+            exit 0
+          fi
+          git commit -m "Apply beta3 persistent approval and auto-resume UI"
+          git push origin HEAD:audit/security-agent-v1

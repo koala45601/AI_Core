@@ -1,0 +1,101 @@
+name: Verify Alpha Beta12 Preview
+
+on:
+  push:
+    branches:
+      - audit/security-agent-v1
+    paths:
+      - 'scripts/apply-beta4-*.mjs'
+      - 'scripts/apply-beta5-*.mjs'
+      - 'scripts/apply-beta6-*.mjs'
+      - 'scripts/apply-beta7-*.mjs'
+      - 'scripts/apply-beta8-*.mjs'
+      - 'scripts/apply-beta9-*.mjs'
+      - 'scripts/apply-beta10-*.mjs'
+      - 'scripts/apply-beta11-*.mjs'
+      - 'scripts/apply-beta12-*.mjs'
+      - 'lib/conversation-router.js'
+      - 'lib/agent-run-store.ts'
+      - 'app/api/tasks/**'
+      - 'start-alpha-v11.command'
+      - 'package.json'
+      - 'CHANGELOG.md'
+      - 'tests/beta5-reasoning-runtime.test.mjs'
+      - 'tests/beta6-host-fs-runtime.test.mjs'
+      - 'tests/beta7-file-workflow-recovery.test.mjs'
+      - 'tests/beta9-auto-grow-composer.test.mjs'
+      - 'tests/beta10-persistent-search.test.mjs'
+      - 'tests/beta10-host-execution.test.mjs'
+      - 'tests/beta11-full-host-permission.test.mjs'
+      - 'tests/beta12-host-access-routing.test.mjs'
+      - '.github/workflows/verify-beta4-preview.yml'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/security-agent-v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm install --package-lock=false
+      - name: Apply beta3 base patch
+        run: node scripts/apply-beta3-runtime-patch.mjs .
+      - name: Apply beta4 runtime patches
+        run: |
+          node scripts/apply-beta4-shell-artifacts.mjs .
+          node scripts/apply-beta4-batch-install-v2.mjs .
+          node scripts/apply-beta4-tool-schema.mjs .
+          node scripts/apply-beta4-chat-runtime-v2.mjs .
+          node scripts/apply-beta4-loop-hardening-v2.mjs .
+          node scripts/apply-beta4-task-ui-v2.mjs .
+      - name: Apply beta5 adaptive reasoning
+        run: node scripts/apply-beta5-adaptive-reasoning.mjs .
+      - name: Apply beta6 host filesystem routing
+        run: node scripts/apply-beta6-host-filesystem.mjs .
+      - name: Apply beta7 file workflow recovery
+        run: node scripts/apply-beta7-file-workflow-recovery.mjs .
+      - name: Apply beta8 permission domains
+        run: node scripts/apply-beta8-permission-domains.mjs .
+      - name: Apply beta9 composer UI
+        run: node scripts/apply-beta9-auto-grow-composer.mjs .
+      - name: Apply beta10 persistent search
+        run: node scripts/apply-beta10-persistent-search.mjs .
+      - name: Apply beta10 host execution
+        run: node scripts/apply-beta10-host-execution.mjs .
+      - name: Apply beta11 full host permission
+        run: node scripts/apply-beta11-full-host-permission.mjs .
+      - name: Apply beta12 deterministic host access routing
+        run: node scripts/apply-beta12-host-access-routing.mjs .
+      - name: Syntax check host services and patchers
+        run: |
+          node --check tool-service/server.mjs
+          node --check tool-service/server-wrapper-beta3.mjs
+          node --check scripts/apply-beta4-batch-install-v2.mjs
+          node --check scripts/apply-beta4-chat-runtime-v2.mjs
+          node --check scripts/apply-beta4-loop-hardening-v2.mjs
+          node --check scripts/apply-beta4-task-ui-v2.mjs
+          node --check scripts/apply-beta5-adaptive-reasoning.mjs
+          node --check scripts/apply-beta6-host-filesystem.mjs
+          node --check scripts/apply-beta7-file-workflow-recovery.mjs
+          node --check scripts/apply-beta8-permission-domains.mjs
+          node --check scripts/apply-beta9-auto-grow-composer.mjs
+          node --check scripts/apply-beta10-persistent-search.mjs
+          node --check scripts/apply-beta10-host-execution.mjs
+          node --check scripts/apply-beta11-full-host-permission.mjs
+          node --check scripts/apply-beta12-host-access-routing.mjs
+      - name: Focused tests
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs
+      - name: Build
+        run: npm run build
