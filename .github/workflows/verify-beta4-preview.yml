@@ -38,7 +38,7 @@ jobs:
       - name: Apply beta4 runtime patches
         run: |
           node scripts/apply-beta4-shell-artifacts.mjs .
-          node scripts/apply-beta4-batch-install.mjs .
+          node scripts/apply-beta4-batch-install-v2.mjs .
           node scripts/apply-beta4-tool-schema.mjs .
           node scripts/apply-beta4-chat-runtime-v2.mjs .
           node scripts/apply-beta4-loop-hardening.mjs .
@@ -47,6 +47,7 @@ jobs:
         run: |
           node --check tool-service/server.mjs
           node --check tool-service/server-wrapper-beta3.mjs
+          node --check scripts/apply-beta4-batch-install-v2.mjs
           node --check scripts/apply-beta4-chat-runtime-v2.mjs
           node --check scripts/apply-beta4-loop-hardening.mjs
           node --check scripts/apply-beta4-task-ui.mjs
