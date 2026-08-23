@@ -6,11 +6,13 @@ on:
       - audit/security-agent-v1
     paths:
       - 'scripts/apply-beta4-*.mjs'
+      - 'scripts/apply-beta5-*.mjs'
       - 'lib/conversation-router.js'
       - 'lib/agent-run-store.ts'
       - 'app/api/tasks/**'
       - 'start-alpha-v11.command'
       - 'package.json'
+      - 'tests/beta5-reasoning-runtime.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
     branches:
@@ -43,6 +45,8 @@ jobs:
           node scripts/apply-beta4-chat-runtime-v2.mjs .
           node scripts/apply-beta4-loop-hardening-v2.mjs .
           node scripts/apply-beta4-task-ui-v2.mjs .
+      - name: Apply beta5 adaptive reasoning
+        run: node scripts/apply-beta5-adaptive-reasoning.mjs .
       - name: Syntax check host services and patchers
         run: |
           node --check tool-service/server.mjs
@@ -51,7 +55,8 @@ jobs:
           node --check scripts/apply-beta4-chat-runtime-v2.mjs
           node --check scripts/apply-beta4-loop-hardening-v2.mjs
           node --check scripts/apply-beta4-task-ui-v2.mjs
+          node --check scripts/apply-beta5-adaptive-reasoning.mjs
       - name: Focused tests
-        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs
       - name: Build
         run: npm run build
