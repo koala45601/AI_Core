@@ -1,4 +1,4 @@
-name: Verify Alpha Beta7 Preview
+name: Verify Alpha Beta9 Preview
 
 on:
   push:
@@ -9,6 +9,8 @@ on:
       - 'scripts/apply-beta5-*.mjs'
       - 'scripts/apply-beta6-*.mjs'
       - 'scripts/apply-beta7-*.mjs'
+      - 'scripts/apply-beta8-*.mjs'
+      - 'scripts/apply-beta9-*.mjs'
       - 'lib/conversation-router.js'
       - 'lib/agent-run-store.ts'
       - 'app/api/tasks/**'
@@ -18,6 +20,7 @@ on:
       - 'tests/beta5-reasoning-runtime.test.mjs'
       - 'tests/beta6-host-fs-runtime.test.mjs'
       - 'tests/beta7-file-workflow-recovery.test.mjs'
+      - 'tests/beta9-auto-grow-composer.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
     branches:
@@ -56,6 +59,10 @@ jobs:
         run: node scripts/apply-beta6-host-filesystem.mjs .
       - name: Apply beta7 file workflow recovery
         run: node scripts/apply-beta7-file-workflow-recovery.mjs .
+      - name: Apply beta8 permission domains
+        run: node scripts/apply-beta8-permission-domains.mjs .
+      - name: Apply beta9 composer UI
+        run: node scripts/apply-beta9-auto-grow-composer.mjs .
       - name: Syntax check host services and patchers
         run: |
           node --check tool-service/server.mjs
@@ -67,7 +74,9 @@ jobs:
           node --check scripts/apply-beta5-adaptive-reasoning.mjs
           node --check scripts/apply-beta6-host-filesystem.mjs
           node --check scripts/apply-beta7-file-workflow-recovery.mjs
+          node --check scripts/apply-beta8-permission-domains.mjs
+          node --check scripts/apply-beta9-auto-grow-composer.mjs
       - name: Focused tests
-        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs
       - name: Build
         run: npm run build
