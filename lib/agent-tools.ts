@@ -50,6 +50,40 @@ export const AGENT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "system_capability",
+      description: "Inspect the current Mac before claiming hardware, driver, package, or permission is missing. Use this first for local development, Wi-Fi/security lab, build tools, runtimes, or any request that may depend on installed software or Mac hardware.",
+      parameters: {
+        type: "object",
+        properties: {
+          area: { type: "string", enum: ["general", "development", "wifi", "security"], description: "Capability area to inspect" },
+          commands: {
+            type: "array",
+            maxItems: 20,
+            items: { type: "string" },
+            description: "Optional executable names to check, for example git, python3, aircrack-ng, hcxdumptool",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "install_package",
+      description: "Install a missing Homebrew formula on the user's Mac. The agent chooses the package itself when a capability is missing. The Tool Service validates the formula and asks for user approval before changing the Mac; do not tell the user to run brew manually when this tool can do it.",
+      parameters: {
+        type: "object",
+        required: ["package"],
+        properties: {
+          package: { type: "string", description: "Homebrew formula name only, without shell syntax, URL, tap, cask, or options" },
+          reason: { type: "string", description: "Short explanation of why this package is needed for the current task" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_search",
       description: "Search the live web with local SearXNG. Use for current, obscure, or explicitly requested online information.",
       parameters: { type: "object", required: ["query"], properties: { query: { type: "string" } } },
@@ -135,6 +169,8 @@ export const AGENT_TOOLS = [
 export const TOOL_LABELS: Record<string, string> = {
   create_files: "กำลังสร้างไฟล์จริง",
   manage_file: "กำลังจัดการไฟล์",
+  system_capability: "กำลังตรวจความสามารถจริงของ Mac",
+  install_package: "กำลังเตรียมติดตั้งโปรแกรมที่ขาด",
   web_search: "กำลังค้นเว็บด้วย SearXNG",
   web_read: "กำลังอ่านหน้าเว็บ",
   browser_action: "กำลังควบคุมเบราว์เซอร์",
@@ -148,6 +184,10 @@ export const TOOL_SYSTEM_INSTRUCTIONS = `
 คุณมีเครื่องมือจริงให้ใช้:
 - เมื่อผู้ใช้ขอสร้าง/บันทึก/ดาวน์โหลดไฟล์หรือโปรเจกต์ ต้องเรียก create_files เสมอ ห้ามตอบเพียง code block แล้วอ้างว่าสร้างไฟล์แล้ว
 - ใช้ manage_file เมื่อผู้ใช้ต้องการอ่าน แก้ ย้าย ZIP เปิดใน Finder หรือลบไฟล์จริง ลบได้เฉพาะเมื่อระบบขอและผู้ใช้ยืนยัน
+- ก่อนบอกว่า Mac ขาด hardware, driver, permission, runtime หรือโปรแกรม ต้องเรียก system_capability เพื่อตรวจเครื่องจริงก่อน ห้ามเดาจากข้อจำกัดทั่วไปของแพลตฟอร์ม
+- สำหรับ Wi-Fi ให้เริ่มจาก Wi-Fi hardware ที่มีอยู่ใน Mac ก่อนเสมอ ตรวจว่าระบบเปิดความสามารถใดให้ใช้ได้จริง แล้วค่อยสรุปข้อจำกัดจากผลตรวจ ห้ามบังคับให้ซื้อ adapter ภายนอกหรือใช้ Linux/VM ก่อนตรวจของที่มีอยู่
+- ถ้าขาดโปรแกรม Homebrew formula ที่จำเป็น ให้เรียก install_package เองพร้อมเหตุผล แทนการโยนคำสั่ง brew install ให้ผู้ใช้ไปทำเอง การติดตั้งจะถูกตรวจและขออนุมัติผ่าน UI โดย Tool Service
+- เมื่อ install_package สำเร็จ ให้เรียก system_capability อีกครั้งเพื่อยืนยันว่าคำสั่งพร้อมใช้ แล้วทำงานเดิมต่อโดยอัตโนมัติ
 - ใช้ web_search สำหรับข้อมูลล่าสุดหรือการค้นเว็บ และ web_read เพื่ออ่านหลักฐานฉบับเต็ม
 - ใช้ browser_action เฉพาะเมื่อผู้ใช้ต้องการเปิดหรือควบคุมเว็บไซต์
 - ใช้ api_discovery เมื่อผู้ใช้ต้องการหา endpoint/method/schema แบบ DevTools หรือ probe API ของเว็บตนเอง โดเมนต้องอยู่ใน Security Test Domains และห้ามใส่ credential ลง arguments
