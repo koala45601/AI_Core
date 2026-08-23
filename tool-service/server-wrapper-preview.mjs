@@ -17,8 +17,14 @@ if (token.length < 32) {
   process.exit(1);
 }
 
-process.env.ALPHA_TOOL_PORT = String(corePort);
-await import("./server-core.mjs");
+const coreChild = spawn(process.execPath, [resolve(appDir, "tool-service", "server.mjs"), appDir], {
+  cwd: appDir,
+  env: { ...process.env, ALPHA_TOOL_PORT: String(corePort) },
+  stdio: ["ignore", "inherit", "inherit"],
+});
+coreChild.on("exit", (code) => {
+  if (code && code !== 0) console.error(`Alpha core Tool Service exited with ${code}`);
+});
 
 function constantTimeEqual(a, b) {
   const left = Buffer.from(String(a || ""));
@@ -36,7 +42,7 @@ function json(response, status, payload) {
     "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PATCH, DELETE",
   });
   response.end(JSON.stringify(payload));
 }
@@ -81,6 +87,22 @@ function run(command, args, options = {}) {
     });
   });
 }
+
+async function waitForCore() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${corePort}/v1/health`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(500),
+      });
+      if (response.ok) return true;
+    } catch { /* keep waiting */ }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  return false;
+}
+
+await waitForCore();
 
 async function readBuffer(request, maxBytes = 2 * 1024 * 1024) {
   const chunks = [];
@@ -167,7 +189,7 @@ async function systemCapability(args = {}) {
       airport_cli: commands.airport || { installed: false, path: "" },
       wdutil: commands.wdutil || { installed: false, path: "" },
       tcpdump: commands.tcpdump || { installed: false, path: "" },
-      note: "ผลนี้เป็น inventory ของ Mac เครื่องจริง ยังไม่สรุปว่าต้องใช้อุปกรณ์ภายนอกจนกว่าจะตรวจ workflow ที่ต้องการกับ hardware/driver นี้",
+      note: "ตรวจ Mac เครื่องจริงแล้ว: ต้องทดลองความสามารถที่ต้องใช้กับ built-in Wi-Fi ก่อน ห้ามสรุปว่าต้องซื้อ adapter ภายนอกเพียงจากชื่อแพลตฟอร์ม",
     };
   }
 
@@ -209,7 +231,7 @@ async function installPackage(args, approved = false) {
 
   const info = await run(brew, ["info", "--formula", formula], { timeout: 60_000, allowFailure: true });
   if (info.code !== 0) {
-    throw new Error(`ไม่พบ Homebrew formula '${formula}' ในแหล่งที่ Homebrew รู้จัก: ${info.stderr.trim() || info.stdout.trim()}`);
+    throw new Error(`ไม่พบ Homebrew formula '${formula}' ใน Homebrew core: ${info.stderr.trim() || info.stdout.trim()}`);
   }
 
   if (!approved) {
@@ -234,6 +256,54 @@ async function installPackage(args, approved = false) {
     version: verify.stdout.trim(),
     stdout: result.stdout.slice(-20_000),
     stderr: result.stderr.slice(-12_000),
+  };
+}
+
+function virtualWirelessSkill() {
+  return {
+    id: "mac-wireless-audit-controller",
+    name: "Mac Wireless Audit Controller",
+    description: "Inspect the current Mac Wi-Fi hardware and installed audit tooling first, install missing supported Homebrew tools through Alpha after approval, and continue an authorized owned Wi-Fi lab workflow without assuming external hardware.",
+    trigger_examples: ["ตรวจ Wi-Fi ของฉัน", "wireless audit", "Wi-Fi lab", "สร้างโปรแกรมทดสอบ Wi-Fi ของฉัน"],
+    verification_status: "builtin",
+    enabled: true,
+    origin: "alpha_core",
+  };
+}
+
+async function fetchCoreTool(body) {
+  const response = await fetch(`http://127.0.0.1:${corePort}/v1/tool/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(190_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function listSkillsWithBuiltin(body) {
+  const { response, payload } = await fetchCoreTool(body);
+  if (!response.ok && response.status !== 409) return { status: response.status, payload };
+  const skills = Array.isArray(payload.skills) ? payload.skills : [];
+  if (!skills.some((item) => item?.id === "mac-wireless-audit-controller")) skills.unshift(virtualWirelessSkill());
+  return { status: response.status, payload: { ...payload, skills, total: Math.max(Number(payload.total || 0) + 1, skills.length) } };
+}
+
+async function runVirtualWirelessSkill(args) {
+  const input = args?.input && typeof args.input === "object" ? args.input : {};
+  const capability = await systemCapability({ area: "wifi", commands: ["aircrack-ng", "hcxdumptool", "hcxpcapngtool", "hashcat"] });
+  return {
+    ok: true,
+    skill: { id: "mac-wireless-audit-controller", name: "Mac Wireless Audit Controller" },
+    stdout: JSON.stringify({
+      status: "CAPABILITY_INVENTORY_COMPLETE",
+      target: input.ssid || input.wifi || input.target || "",
+      capability,
+      next_action: "Use built-in Mac capability first. If a required Homebrew formula is missing, call install_package, verify with system_capability, then continue the original task.",
+    }),
+    stderr: "",
+    artifacts: [],
   };
 }
 
@@ -303,6 +373,13 @@ const server = http.createServer(async (request, response) => {
         const result = await installPackage(body.arguments || {}, false);
         return json(response, result.confirmation_required ? 409 : 200, result);
       }
+      if (name === "list_learned_skills") {
+        const result = await listSkillsWithBuiltin(body);
+        return json(response, result.status, result.payload);
+      }
+      if (name === "run_learned_skill" && String(body.arguments?.skill_id || "") === "mac-wireless-audit-controller") {
+        return json(response, 200, await runVirtualWirelessSkill(body.arguments || {}));
+      }
       return proxyBuffered(request, response, buffer);
     }
 
@@ -342,6 +419,13 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, item] of pending) if (now - item.createdAt > 10 * 60_000) pending.delete(id);
 }, 30_000).unref();
+
+function shutdown() {
+  server.close(() => {});
+  if (!coreChild.killed) coreChild.kill("SIGTERM");
+}
+for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => { shutdown(); setTimeout(() => process.exit(0), 200); });
+process.on("exit", () => { if (!coreChild.killed) coreChild.kill("SIGTERM"); });
 
 server.listen(publicPort, "127.0.0.1", () => {
   console.log(`Alpha host-tool wrapper listening on 127.0.0.1:${publicPort}; core=${corePort}`);
