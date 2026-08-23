@@ -69,8 +69,29 @@ export const AGENT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "install_packages",
+      description: "Install multiple missing Homebrew formulas with one approval. Inspect capability first, collect all known missing formulas for the current task, and prefer this tool instead of interrupting the user for one package at a time.",
+      parameters: {
+        type: "object",
+        required: ["packages"],
+        properties: {
+          packages: {
+            type: "array",
+            minItems: 1,
+            maxItems: 8,
+            items: { type: "string" },
+            description: "Homebrew formula names only; no shell syntax, URLs, taps, casks, or options",
+          },
+          reason: { type: "string", description: "Short explanation of why this dependency set is required" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "install_package",
-      description: "Install a missing Homebrew formula on the user's Mac. The agent chooses the package itself when a capability is missing. The Tool Service validates the formula and asks for user approval before changing the Mac; do not tell the user to run brew manually when this tool can do it.",
+      description: "Install one missing Homebrew formula on the user's Mac. Prefer install_packages when more than one dependency is already known. The Tool Service validates the formula and requests approval before changing the Mac.",
       parameters: {
         type: "object",
         required: ["package"],
@@ -170,6 +191,7 @@ export const TOOL_LABELS: Record<string, string> = {
   create_files: "กำลังสร้างไฟล์จริง",
   manage_file: "กำลังจัดการไฟล์",
   system_capability: "กำลังตรวจความสามารถจริงของ Mac",
+  install_packages: "กำลังเตรียมติดตั้ง dependency ที่ขาดทั้งหมด",
   install_package: "กำลังเตรียมติดตั้งโปรแกรมที่ขาด",
   web_search: "กำลังค้นเว็บด้วย SearXNG",
   web_read: "กำลังอ่านหน้าเว็บ",
@@ -181,13 +203,18 @@ export const TOOL_LABELS: Record<string, string> = {
 };
 
 export const TOOL_SYSTEM_INSTRUCTIONS = `
-คุณมีเครื่องมือจริงให้ใช้:
+คุณมีเครื่องมือจริงให้ใช้ และเมื่อผู้ใช้สั่งให้ “ทำ” งาน ต้องพยายามทำ workflow ให้จบ ไม่ใช่ตอบเป็นแผนแล้วหยุด:
 - เมื่อผู้ใช้ขอสร้าง/บันทึก/ดาวน์โหลดไฟล์หรือโปรเจกต์ ต้องเรียก create_files เสมอ ห้ามตอบเพียง code block แล้วอ้างว่าสร้างไฟล์แล้ว
+- หลัง create_files สำเร็จ ต้องจำ path จากผล tool และบอกตำแหน่งไฟล์จริงในคำตอบ ห้ามเดาพาธ
 - ใช้ manage_file เมื่อผู้ใช้ต้องการอ่าน แก้ ย้าย ZIP เปิดใน Finder หรือลบไฟล์จริง ลบได้เฉพาะเมื่อระบบขอและผู้ใช้ยืนยัน
 - ก่อนบอกว่า Mac ขาด hardware, driver, permission, runtime หรือโปรแกรม ต้องเรียก system_capability เพื่อตรวจเครื่องจริงก่อน ห้ามเดาจากข้อจำกัดทั่วไปของแพลตฟอร์ม
 - สำหรับ Wi-Fi ให้เริ่มจาก Wi-Fi hardware ที่มีอยู่ใน Mac ก่อนเสมอ ตรวจว่าระบบเปิดความสามารถใดให้ใช้ได้จริง แล้วค่อยสรุปข้อจำกัดจากผลตรวจ ห้ามบังคับให้ซื้อ adapter ภายนอกหรือใช้ Linux/VM ก่อนตรวจของที่มีอยู่
-- ถ้าขาดโปรแกรม Homebrew formula ที่จำเป็น ให้เรียก install_package เองพร้อมเหตุผล แทนการโยนคำสั่ง brew install ให้ผู้ใช้ไปทำเอง การติดตั้งจะถูกตรวจและขออนุมัติผ่าน UI โดย Tool Service
-- เมื่อ install_package สำเร็จ ให้เรียก system_capability อีกครั้งเพื่อยืนยันว่าคำสั่งพร้อมใช้ แล้วทำงานเดิมต่อโดยอัตโนมัติ
+- ถ้างานต้องใช้หลาย dependency ให้ตรวจรายการที่ขาดทั้งหมดก่อน แล้วเรียก install_packages ครั้งเดียวเพื่อขออนุญาตติดตั้งเป็นชุด ห้ามขอทีละ package ถ้ารู้ได้ตั้งแต่ต้นว่าต้องใช้หลายตัว
+- ใช้ install_package เฉพาะเมื่อขาดเพียง package เดียวหรือเพิ่งค้นพบ dependency เพิ่มภายหลัง
+- หลัง install_packages/install_package สำเร็จ ต้องเรียก system_capability อีกครั้ง แล้วดำเนินงานเดิมต่อทันทีโดยอัตโนมัติ ห้ามหยุดที่ “ติดตั้งเสร็จแล้ว”
+- หากขั้นต่อไปใช้เครื่องมือได้ ให้เรียกเครื่องมือต่อเอง ห้ามจบคำตอบด้วย “ถ้าต้องการให้ทำต่อ...” หรือบอกให้ผู้ใช้พิมพ์ “ทำต่อ”
+- ถ้าต้องได้รับอนุญาต ให้สร้างคำขออนุญาตทันทีที่รู้ว่าจำเป็น และระบุชัดว่าสถานะคือ WAITING_APPROVAL; อย่าเขียนข้อความให้ดูเหมือนงานเสร็จแล้ว
+- เมื่อได้รับอนุญาตแล้ว ให้ resume งานเดิมจากจุดที่ค้างจนถึงผลลัพธ์สุดท้าย, approval ถัดไปที่จำเป็นจริง, หรือข้อผิดพลาด/ข้อจำกัดที่ยืนยันจากเครื่องมือ
 - ใช้ web_search สำหรับข้อมูลล่าสุดหรือการค้นเว็บ และ web_read เพื่ออ่านหลักฐานฉบับเต็ม
 - ใช้ browser_action เฉพาะเมื่อผู้ใช้ต้องการเปิดหรือควบคุมเว็บไซต์
 - ใช้ api_discovery เมื่อผู้ใช้ต้องการหา endpoint/method/schema แบบ DevTools หรือ probe API ของเว็บตนเอง โดเมนต้องอยู่ใน Security Test Domains และห้ามใส่ credential ลง arguments
