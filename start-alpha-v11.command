@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.9..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.10..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -31,6 +31,8 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.9..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta7-file-workflow-recovery.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta8-permission-domains.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta9-auto-grow-composer.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta10-persistent-search.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta10-host-execution.mjs" "$ALPHA_DIR"
 
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server-wrapper-beta3.mjs"
@@ -43,6 +45,8 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.9..."
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta7-file-workflow-recovery.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta8-permission-domains.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta9-auto-grow-composer.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta10-persistent-search.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta10-host-execution.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ollama.ts" >/dev/null 2>&1 || true
 
 zsh "$ALPHA_DIR/stop-alpha.command" >/dev/null 2>&1 || true
@@ -67,27 +71,40 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta9 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta10 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
   -- "$ALPHA_NODE_BIN" "$ALPHA_DIR/tool-service/server-wrapper-beta3.mjs" "$ALPHA_DIR"
 
 READY=false
-for _ in {1..60}; do
+SEARCH_READY=false
+for _ in {1..120}; do
   HEALTH="$(curl --max-time 2 -fsS -H "Authorization: Bearer $ALPHA_TOOL_TOKEN" http://127.0.0.1:4317/v1/health 2>/dev/null || true)"
   if [[ "$HEALTH" == *'"host_capability_ready":true'* && "$HEALTH" == *'"host_filesystem_ready":true'* && "$HEALTH" == *'"approval_store":"persistent"'* ]]; then
     READY=true
+  fi
+  if [[ "$HEALTH" == *'"searxng_connected":true'* ]]; then
+    SEARCH_READY=true
+  fi
+  if [[ "$READY" == true && "$SEARCH_READY" == true ]]; then
     break
   fi
   sleep 0.5
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta9 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta10 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.9 พร้อม: host file authority แยกจาก Docker execution + file recovery + auto-growing chat composer"
+if [[ "$SEARCH_READY" == true ]]; then
+  echo "SearXNG พร้อมและจะคงทำงานตลอด session ของ Alpha"
+else
+  echo "คำเตือน: Alpha พร้อมแล้ว แต่ SearXNG ยังไม่พร้อม ระบบ keepalive จะพยายามกู้บริการต่อทุก 30 วินาที"
+  echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
+fi
+
+echo "Alpha v1.1.0-beta.10 พร้อม: persistent local search + capability-scoped macOS host execution + adaptive reasoning"
 open "http://localhost:3000" >/dev/null 2>&1 || true
