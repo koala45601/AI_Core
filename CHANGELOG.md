@@ -1,5 +1,15 @@
 # Alpha changelog
 
+## 1.1.0-beta.6 — 2026-08-23
+
+- Added a deterministic read-only `host_fs` tool for macOS host filesystem inspection (`exists`, `stat`, `list`).
+- File/path verification no longer depends on the model choosing a tool correctly; questions such as “เช็คไฟล์”, “มีจริงไหม”, “หาไฟล์ไม่เจอ”, and “เช็ค path” are intercepted before the planner and checked on the macOS host directly.
+- `host_fs` never launches Docker, Skill Lab, learned skills, or `run_artifact`; regression tests enforce this contract.
+- Host filesystem results explicitly identify `host_scope=macos` and `docker_used=false` so Alpha cannot invent a Docker path or claim a sandbox check occurred.
+- Paths inside Alpha's own `appDir` and output directory are always eligible for read-only metadata inspection; wider access continues to follow the configured file-access scope.
+- If a prior assistant response claimed an absolute `/Volumes/...` or `/Users/...` path without a valid Artifact record, Alpha can verify that claimed path on the host instead of guessing that the external drive was disconnected.
+- Host health now exposes `host_filesystem_ready` and the actual `app_dir`, and the preview launcher waits for host filesystem readiness before opening the UI.
+
 ## 1.1.0-beta.5 — 2026-08-23
 
 - Added adaptive reasoning for the local `qwen3.5:9b` runtime instead of running every inference with thinking disabled.
