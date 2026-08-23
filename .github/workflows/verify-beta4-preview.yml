@@ -1,0 +1,53 @@
+name: Verify Alpha Beta4 Preview
+
+on:
+  push:
+    branches:
+      - audit/security-agent-v1
+    paths:
+      - 'scripts/apply-beta4-*.mjs'
+      - 'lib/conversation-router.js'
+      - 'lib/agent-run-store.ts'
+      - 'app/api/tasks/**'
+      - 'start-alpha-v11.command'
+      - 'package.json'
+      - '.github/workflows/verify-beta4-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/security-agent-v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply beta3 base patch
+        run: node scripts/apply-beta3-runtime-patch.mjs .
+      - name: Apply beta4 runtime patches
+        run: |
+          node scripts/apply-beta4-shell-artifacts.mjs .
+          node scripts/apply-beta4-batch-install.mjs .
+          node scripts/apply-beta4-tool-schema.mjs .
+          node scripts/apply-beta4-chat-runtime.mjs .
+          node scripts/apply-beta4-loop-hardening.mjs .
+          node scripts/apply-beta4-task-ui.mjs .
+      - name: Syntax check host services
+        run: |
+          node --check tool-service/server.mjs
+          node --check tool-service/server-wrapper-beta3.mjs
+          node --check scripts/apply-beta4-chat-runtime.mjs
+          node --check scripts/apply-beta4-loop-hardening.mjs
+          node --check scripts/apply-beta4-task-ui.mjs
+      - name: Focused tests
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs
+      - name: Build
+        run: npm run build
