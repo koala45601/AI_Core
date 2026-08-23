@@ -12,6 +12,9 @@ on:
       - 'start-alpha-v11.command'
       - 'package.json'
       - '.github/workflows/verify-beta4-preview.yml'
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
