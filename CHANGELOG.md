@@ -1,5 +1,15 @@
 # Alpha changelog
 
+## 1.1.0-beta.5 — 2026-08-23
+
+- Added adaptive reasoning for the local `qwen3.5:9b` runtime instead of running every inference with thinking disabled.
+- Tool planning now always uses thinking mode with a deep profile and at least a 16K context target, capped conservatively at 24K for the current Mac-first preview.
+- Complex coding, debugging, architecture, security, research, and multi-step workflow requests automatically enable thinking and a larger context/output budget.
+- Skill design, hidden-test generation, skill building/repair, and research synthesis now run as deep reasoning workers instead of `think: false` utility calls.
+- Trivial local conversation intentionally stays on the fast non-thinking path so greetings and ordinary short questions do not inherit agent latency.
+- Search classification, memory extraction, and lightweight summarization remain non-thinking utility work because deeper reasoning there adds latency without useful quality.
+- Added a beta5 regression contract and CI build verification for the generated adaptive-reasoning runtime.
+
 ## 1.1.0-beta.4 — 2026-08-23
 
 - Added a fast local-chat route so ordinary questions skip web classification, memory retrieval, learned-skill inventory, and tool planning before the single local model call.
