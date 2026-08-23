@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.7..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.9..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -29,6 +29,8 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.7..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta5-adaptive-reasoning.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta6-host-filesystem.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta7-file-workflow-recovery.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta8-permission-domains.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta9-auto-grow-composer.mjs" "$ALPHA_DIR"
 
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server-wrapper-beta3.mjs"
@@ -39,6 +41,8 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.7..."
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta5-adaptive-reasoning.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta6-host-filesystem.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta7-file-workflow-recovery.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta8-permission-domains.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta9-auto-grow-composer.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ollama.ts" >/dev/null 2>&1 || true
 
 zsh "$ALPHA_DIR/stop-alpha.command" >/dev/null 2>&1 || true
@@ -63,7 +67,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta7 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta9 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -80,10 +84,10 @@ for _ in {1..60}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta7 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta9 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.7 พร้อม: adaptive thinking + host filesystem + deterministic file-create recovery + beta4 task workflow"
+echo "Alpha v1.1.0-beta.9 พร้อม: host file authority แยกจาก Docker execution + file recovery + auto-growing chat composer"
 open "http://localhost:3000" >/dev/null 2>&1 || true
