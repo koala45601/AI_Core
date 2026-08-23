@@ -1,5 +1,14 @@
 # Alpha changelog
 
+## 1.1.0-beta.10 — 2026-08-24
+
+- Decoupled SearXNG lifetime from the generic heavy-tool idle timeout: while Alpha is open, the local search service stays warm instead of being shut down after a few idle minutes.
+- Added eager SearXNG startup and a lightweight 30-second keepalive that restores the Alpha-owned search container if it exits while the Tool Service is still running; explicit Alpha shutdown and storage-disconnect cleanup still stop it cleanly.
+- Added `run_host_artifact`, an explicit approval-gated macOS-host execution path for canonical `.sh`, `.py`, `.js`, and `.mjs` artifacts when a task genuinely needs real Mac hardware, local network interfaces, local services, filesystem/runtime state, or installed CLI tools.
+- Kept `run_artifact`/Skill Lab as Docker isolation for normal untrusted code tests instead of treating Sandbox as Alpha's universal operating environment.
+- Host execution accepts a validated artifact path plus an argument array rather than an arbitrary shell command string, is restricted to the Alpha workspace, protects `.git`, `.env*`, and `.dev.vars`, and returns `execution_scope=macos_host` / `docker_used=false` with real stdout, stderr, and exit code.
+- Model-facing routing now distinguishes capability domains: file operations and host inspection stay host-native; package installation uses the approval-gated Homebrew tools; isolated code tests use Docker; real user-authorized local operations can use macOS-host execution after explicit approval.
+
 ## 1.1.0-beta.9 — 2026-08-24
 
 - Chat composer now grows automatically with multi-line/pasted text from a one-line minimum up to a viewport-aware cap (`min(35vh, 320px)`).
