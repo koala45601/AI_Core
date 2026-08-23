@@ -1,0 +1,1 @@
+Temporary migration marker. The host-tool wrapper fronts the preserved core Tool Service so Alpha can inspect the Mac and install missing Homebrew formulae itself while keeping existing tools unchanged.
