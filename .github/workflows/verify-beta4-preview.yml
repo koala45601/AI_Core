@@ -32,7 +32,7 @@ jobs:
           node-version: '22'
           cache: npm
       - name: Install dependencies
-        run: npm ci
+        run: npm install --package-lock=false
       - name: Apply beta3 base patch
         run: node scripts/apply-beta3-runtime-patch.mjs .
       - name: Apply beta4 runtime patches
