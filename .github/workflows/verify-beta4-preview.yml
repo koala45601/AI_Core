@@ -1,4 +1,4 @@
-name: Verify Alpha Beta11 Preview
+name: Verify Alpha Beta12 Preview
 
 on:
   push:
@@ -13,6 +13,7 @@ on:
       - 'scripts/apply-beta9-*.mjs'
       - 'scripts/apply-beta10-*.mjs'
       - 'scripts/apply-beta11-*.mjs'
+      - 'scripts/apply-beta12-*.mjs'
       - 'lib/conversation-router.js'
       - 'lib/agent-run-store.ts'
       - 'app/api/tasks/**'
@@ -26,6 +27,7 @@ on:
       - 'tests/beta10-persistent-search.test.mjs'
       - 'tests/beta10-host-execution.test.mjs'
       - 'tests/beta11-full-host-permission.test.mjs'
+      - 'tests/beta12-host-access-routing.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
     branches:
@@ -74,6 +76,8 @@ jobs:
         run: node scripts/apply-beta10-host-execution.mjs .
       - name: Apply beta11 full host permission
         run: node scripts/apply-beta11-full-host-permission.mjs .
+      - name: Apply beta12 deterministic host access routing
+        run: node scripts/apply-beta12-host-access-routing.mjs .
       - name: Syntax check host services and patchers
         run: |
           node --check tool-service/server.mjs
@@ -90,7 +94,8 @@ jobs:
           node --check scripts/apply-beta10-persistent-search.mjs
           node --check scripts/apply-beta10-host-execution.mjs
           node --check scripts/apply-beta11-full-host-permission.mjs
+          node --check scripts/apply-beta12-host-access-routing.mjs
       - name: Focused tests
-        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs
       - name: Build
         run: npm run build

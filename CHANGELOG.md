@@ -1,5 +1,14 @@
 # Alpha changelog
 
+## 1.1.0-beta.12 — 2026-08-24
+
+- Fixed a deterministic-routing gap where prompts such as `เช็คการเข้าถึง path /Volumes/...` could fall through to the LLM and falsely claim that Sandbox/Docker prevented host access.
+- Extended `host_fs` with `action=access` to check real macOS process read/write/traverse capability and whether a missing destination is creatable from its nearest existing parent.
+- Broadened direct host-path intent detection for Thai/English access, read, write, permission, exists, create, stat, and list wording when `/Volumes/...` or `/Users/...` is present.
+- Host path access/verification now bypasses normal LLM/tool planning and returns deterministic macOS facts with `host_scope=macos` and `docker_used=false`.
+- Added explicit model/tool instructions that `host_fs` facts outrank Sandbox inference and that Alpha must not send the user to Terminal for path/access checks it can perform itself.
+- Added regression coverage for the exact macOS preview failure. See #12.
+
 ## 1.1.0-beta.11 — 2026-08-24
 
 - Aligned the existing `full_user_files` setting with persistent Full local authority: Alpha no longer asks for a new confirmation every time it needs `run_host_artifact` or Homebrew package installation.
