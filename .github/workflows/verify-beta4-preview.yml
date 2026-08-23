@@ -41,7 +41,7 @@ jobs:
           node scripts/apply-beta4-batch-install-v2.mjs .
           node scripts/apply-beta4-tool-schema.mjs .
           node scripts/apply-beta4-chat-runtime-v2.mjs .
-          node scripts/apply-beta4-loop-hardening.mjs .
+          node scripts/apply-beta4-loop-hardening-v2.mjs .
           node scripts/apply-beta4-task-ui.mjs .
       - name: Syntax check host services and patchers
         run: |
@@ -49,7 +49,7 @@ jobs:
           node --check tool-service/server-wrapper-beta3.mjs
           node --check scripts/apply-beta4-batch-install-v2.mjs
           node --check scripts/apply-beta4-chat-runtime-v2.mjs
-          node --check scripts/apply-beta4-loop-hardening.mjs
+          node --check scripts/apply-beta4-loop-hardening-v2.mjs
           node --check scripts/apply-beta4-task-ui.mjs
       - name: Focused tests
         run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs
