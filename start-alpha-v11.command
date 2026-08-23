@@ -18,6 +18,7 @@ else
 fi
 
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 
 zsh "$ALPHA_DIR/stop-alpha.command" >/dev/null 2>&1 || true
 zsh "$ALPHA_DIR/start-alpha.command"
