@@ -1,5 +1,14 @@
 # Alpha changelog
 
+## 1.1.0-beta.11 — 2026-08-24
+
+- Aligned the existing `full_user_files` setting with persistent Full local authority: Alpha no longer asks for a new confirmation every time it needs `run_host_artifact` or Homebrew package installation.
+- `run_host_artifact`, `install_package`, and `install_packages` now execute immediately when Full mode is active; non-Full modes keep the existing approval queue.
+- Host-tool results identify `permission_mode=persistent_full` and `approval_skipped=true` when a repeated approval was intentionally bypassed.
+- Full mode still does not bypass protected paths, `.git`, `.env*`, `.dev.vars`, macOS system roots, symlink checks, artifact validation, package/formula validation, or authorized security-target scope.
+- Settings UI now labels the Full option explicitly as `Full — ไฟล์ผู้ใช้ทั้งหมด + Host actions อัตโนมัติ` so the permission behavior matches what the user selected.
+- Added regression coverage for Full-mode host execution and package setup. See #11.
+
 ## 1.1.0-beta.10 — 2026-08-24
 
 - Decoupled SearXNG lifetime from the generic heavy-tool idle timeout: while Alpha is open, the local search service stays warm instead of being shut down after a few idle minutes.
