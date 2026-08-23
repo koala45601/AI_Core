@@ -1,0 +1,6 @@
+{
+  "decision": "allow",
+  "matched_rule": null,
+  "reason": "ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้",
+  "default_action": "allow"
+}

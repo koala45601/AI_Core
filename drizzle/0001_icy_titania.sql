@@ -1,0 +1,1 @@
+CREATE INDEX `idx_memories_created_at` ON `memories` (`created_at`);

@@ -1,0 +1,157 @@
+export const AGENT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "create_files",
+      description: "Create real code or text files on the user's Mac. Always use this when the user asks to create, save, export, or download a file or project; never merely paste the requested file as chat text.",
+      parameters: {
+        type: "object",
+        required: ["project_name", "files"],
+        properties: {
+          project_name: { type: "string", description: "Short safe project name" },
+          destination: { type: "string", description: "Optional absolute destination explicitly requested by the user" },
+          zip: { type: "boolean", description: "Create a zip archive; use true for multi-file projects" },
+          files: {
+            type: "array",
+            minItems: 1,
+            maxItems: 50,
+            items: {
+              type: "object",
+              required: ["path", "content"],
+              properties: {
+                path: { type: "string", description: "Relative path including a supported extension" },
+                content: { type: "string", description: "Complete UTF-8 file content" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "manage_file",
+      description: "Read, replace, move, zip, reveal in Finder, or delete a real file. Delete always moves the item to macOS Trash and always requires confirmation.",
+      parameters: {
+        type: "object",
+        required: ["action"],
+        properties: {
+          action: { type: "string", enum: ["read", "edit", "move", "zip", "open_finder", "delete"] },
+          artifact_id: { type: "string", description: "Artifact ID from a previous tool result" },
+          path: { type: "string", description: "Absolute path when there is no artifact ID" },
+          destination: { type: "string", description: "Absolute destination for move" },
+          content: { type: "string", description: "Complete replacement content for edit" },
+          zip_name: { type: "string", description: "Archive name for zip" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the live web with local SearXNG. Use for current, obscure, or explicitly requested online information.",
+      parameters: { type: "object", required: ["query"], properties: { query: { type: "string" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_read",
+      description: "Read the text of a public HTTP/HTTPS webpage or PDF after a search or when the user provides a URL.",
+      parameters: { type: "object", required: ["url"], properties: { url: { type: "string" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_action",
+      description: "Control the selected browser mode. Use only when the user asks to open or interact with a website, not for ordinary fact lookup.",
+      parameters: {
+        type: "object",
+        required: ["action"],
+        properties: {
+          action: { type: "string", enum: ["open", "snapshot", "click", "type", "scroll", "download", "upload", "submit"] },
+          url: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, y: { type: "number" },
+          file_path: { type: "string", description: "Absolute local path for upload" },
+          new_tab: { type: "boolean", description: "Open a new tab; defaults to true" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "api_discovery",
+      description: "Discover and test website APIs. Passive fetch/XHR capture and GET/HEAD/OPTIONS work on public sites; mutating replay works without repeated confirmation for domains the user placed in Active Test Domains. Secrets are always redacted from logs.",
+      parameters: {
+        type: "object",
+        required: ["action", "url"],
+        properties: {
+          action: { type: "string", enum: ["discover", "probe"] },
+          url: { type: "string" },
+          observe_seconds: { type: "number", description: "1-15 seconds for discover" },
+          method: { type: "string", enum: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"] },
+          headers: { type: "object", additionalProperties: { type: "string" } },
+          body: { type: "object", description: "JSON request body for probe" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_learned_skills",
+      description: "List capabilities that Alpha successfully built and tested in Skill Lab. Use this when a request may be handled by a learned skill.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_learned_skill",
+      description: "Run an installed learned skill in a network-disabled Docker sandbox. First use list_learned_skills to get the exact skill_id.",
+      parameters: {
+        type: "object",
+        required: ["skill_id", "input"],
+        properties: {
+          skill_id: { type: "string" },
+          input: { type: "object", description: "Structured input for the learned skill" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_artifact",
+      description: "Run a previously created Python or JavaScript artifact in a network-disabled Docker sandbox. This always requires user confirmation.",
+      parameters: { type: "object", required: ["artifact_id"], properties: { artifact_id: { type: "string" } } },
+    },
+  },
+] as const;
+
+export const TOOL_LABELS: Record<string, string> = {
+  create_files: "กำลังสร้างไฟล์จริง",
+  manage_file: "กำลังจัดการไฟล์",
+  web_search: "กำลังค้นเว็บด้วย SearXNG",
+  web_read: "กำลังอ่านหน้าเว็บ",
+  browser_action: "กำลังควบคุมเบราว์เซอร์",
+  api_discovery: "กำลังวิเคราะห์ Network และ API ของเว็บทดสอบ",
+  list_learned_skills: "กำลังตรวจทักษะที่เรียนแล้ว",
+  run_learned_skill: "กำลังใช้ทักษะที่เรียนแล้วใน sandbox",
+  run_artifact: "กำลังเตรียม Docker sandbox",
+};
+
+export const TOOL_SYSTEM_INSTRUCTIONS = `
+คุณมีเครื่องมือจริงให้ใช้:
+- เมื่อผู้ใช้ขอสร้าง/บันทึก/ดาวน์โหลดไฟล์หรือโปรเจกต์ ต้องเรียก create_files เสมอ ห้ามตอบเพียง code block แล้วอ้างว่าสร้างไฟล์แล้ว
+- ใช้ manage_file เมื่อผู้ใช้ต้องการอ่าน แก้ ย้าย ZIP เปิดใน Finder หรือลบไฟล์จริง ลบได้เฉพาะเมื่อระบบขอและผู้ใช้ยืนยัน
+- ใช้ web_search สำหรับข้อมูลล่าสุดหรือการค้นเว็บ และ web_read เพื่ออ่านหลักฐานฉบับเต็ม
+- ใช้ browser_action เฉพาะเมื่อผู้ใช้ต้องการเปิดหรือควบคุมเว็บไซต์
+- ใช้ api_discovery เมื่อผู้ใช้ต้องการหา endpoint/method/schema แบบ DevTools หรือ probe API ของเว็บตนเอง โดเมนต้องอยู่ใน Security Test Domains และห้ามใส่ credential ลง arguments
+- เมื่อคำขออาจตรงกับความสามารถที่อัลฟ่าเรียนใน Skill Lab ให้เรียก list_learned_skills และใช้ run_learned_skill ด้วย id ที่มีอยู่จริง
+- ใช้ความสามารถรูปภาพได้เมื่อ image_search_enabled เปิดอยู่และมีเครื่องมือที่ติดตั้งจริง หากยังไม่มีให้รายงานว่า capability ยังไม่พร้อมตามจริง ไม่ใช่อ้างว่าเป็นกฎถาวร
+- ถ้าเครื่องมือแจ้ง syntax error ให้แก้เนื้อหาและเรียก create_files ใหม่ได้ไม่เกิน 2 รอบ
+- อย่าแต่งผลลัพธ์ของเครื่องมือหรืออ้างว่าทำสำเร็จถ้าไม่มีผลลัพธ์ยืนยัน`;

@@ -1,0 +1,1 @@
+import{n as e}from"./tool-client-DodcMJCw.js";async function t(t,n){let{id:r}=await n.params;return e(r)}export{t as GET};

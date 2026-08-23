@@ -1,0 +1,87 @@
+{
+  "id": "pillow-png-metadata-extractor",
+  "name": "PNG Metadata Extraction with Pillow (Fallback)",
+  "description": "ดึง metadata PNG ด้วย Pillow ใน Docker แบบปิดเครือข่าย พร้อมผลลัพธ์ JSON",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "dependencies": [
+    "python-pillow"
+  ],
+  "trigger_examples": [
+    "อ่านขนาด PNG ด้วย Pillow",
+    "ตรวจ mode ของรูป",
+    "ดึง metadata รูป PNG"
+  ],
+  "test_cases": [
+    {
+      "name": "visible-pillow-1",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEYdjt1AAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+        "filename": "fixture-1.png"
+      },
+      "stdout_contains": "\"width\":1",
+      "expected_files": [
+        "metadata.json"
+      ]
+    },
+    {
+      "name": "visible-pillow-2",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTKBf2rPAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=",
+        "filename": "fixture-2.png"
+      },
+      "stdout_contains": "\"width\":2",
+      "expected_files": [
+        "metadata.json"
+      ]
+    },
+    {
+      "name": "visible-pillow-3",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTP2eFpZAAAADklEQVR4nGP4jwQYcHIAu4cj3ZP55DwAAAAASUVORK5CYII=",
+        "filename": "fixture-3.png"
+      },
+      "stdout_contains": "\"width\":3",
+      "expected_files": [
+        "metadata.json"
+      ]
+    },
+    {
+      "name": "visible-pillow-4",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTRoHM/6AAAAD0lEQVR4nGP4jwYYSBcAAHg8P8FY7imoAAAAAElFTkSuQmCC",
+        "filename": "fixture-4.png"
+      },
+      "stdout_contains": "\"width\":4",
+      "expected_files": [
+        "metadata.json"
+      ]
+    }
+  ],
+  "version": 1,
+  "enabled": true,
+  "origin": "auto_learn",
+  "installed_at": "2026-08-23T05:06:31.291Z",
+  "updated_at": "2026-08-23T05:06:31.291Z",
+  "verification_status": "verified",
+  "verified_pass_rate": 100,
+  "verified_passed": 4,
+  "verified_total": 4,
+  "verification_scope": "4 visible fixtures และ 20 hidden valid PNG fixtures หลายขนาด/ชื่อ Unicode บน Pillow 11.3.0",
+  "hidden_test_result": {
+    "passed": 20,
+    "total": 20
+  },
+  "generalization_confidence": 84.54,
+  "confidence_sample_size": 21,
+  "environment_fingerprint": "e494dea37c9f44cf",
+  "usage_count": 1,
+  "success_count": 1,
+  "last_run_at": "2026-08-23T05:08:43.462Z",
+  "last_error": "",
+  "sandbox": {
+    "network": "off",
+    "memory_mb": 512
+  },
+  "trusted_catalog_version": 2
+}

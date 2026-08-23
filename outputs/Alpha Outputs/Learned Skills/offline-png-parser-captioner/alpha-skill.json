@@ -1,0 +1,87 @@
+{
+  "id": "offline-png-parser-captioner",
+  "name": "Offline PNG Image Parser & Captioner (Standard Library)",
+  "description": "อ่านโครงสร้าง PNG, ขนาด และ embedded text ด้วย standard library แล้วสร้าง caption แบบออฟไลน์",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "dependencies": [
+    "python-stdlib"
+  ],
+  "trigger_examples": [
+    "อ่าน metadata PNG",
+    "บอกขนาดรูป PNG แบบออฟไลน์",
+    "สร้าง caption จาก PNG"
+  ],
+  "test_cases": [
+    {
+      "name": "visible-png-1",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEYdjt1AAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+        "filename": "fixture-1.png"
+      },
+      "stdout_contains": "\"width\":1",
+      "expected_files": [
+        "metadata.json"
+      ]
+    },
+    {
+      "name": "visible-png-2",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTKBf2rPAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=",
+        "filename": "fixture-2.png"
+      },
+      "stdout_contains": "\"width\":2",
+      "expected_files": [
+        "metadata.json"
+      ]
+    },
+    {
+      "name": "visible-png-3",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTP2eFpZAAAADklEQVR4nGP4jwQYcHIAu4cj3ZP55DwAAAAASUVORK5CYII=",
+        "filename": "fixture-3.png"
+      },
+      "stdout_contains": "\"width\":3",
+      "expected_files": [
+        "metadata.json"
+      ]
+    },
+    {
+      "name": "visible-png-4",
+      "input": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTRoHM/6AAAAD0lEQVR4nGP4jwYYSBcAAHg8P8FY7imoAAAAAElFTkSuQmCC",
+        "filename": "fixture-4.png"
+      },
+      "stdout_contains": "\"width\":4",
+      "expected_files": [
+        "metadata.json"
+      ]
+    }
+  ],
+  "version": 1,
+  "enabled": true,
+  "origin": "auto_learn",
+  "installed_at": "2026-08-23T05:06:15.940Z",
+  "updated_at": "2026-08-23T05:06:15.940Z",
+  "verification_status": "verified",
+  "verified_pass_rate": 100,
+  "verified_passed": 4,
+  "verified_total": 4,
+  "verification_scope": "4 visible fixtures และ 20 hidden PNG fixtures หลายขนาด ชื่อไฟล์ Unicode และ tEXt metadata; ไม่อ้างว่าเป็น OCR พิกเซล",
+  "hidden_test_result": {
+    "passed": 20,
+    "total": 20
+  },
+  "generalization_confidence": 84.54,
+  "confidence_sample_size": 21,
+  "environment_fingerprint": "e66d0ccb9445d5fd",
+  "usage_count": 1,
+  "success_count": 1,
+  "last_run_at": "2026-08-23T05:08:42.192Z",
+  "last_error": "",
+  "sandbox": {
+    "network": "off",
+    "memory_mb": 512
+  },
+  "trusted_catalog_version": 2
+}

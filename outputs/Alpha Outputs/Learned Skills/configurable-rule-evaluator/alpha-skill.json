@@ -1,0 +1,99 @@
+{
+  "id": "configurable-rule-evaluator",
+  "name": "Adaptive Constraint Enforcement via User-Configured Rules",
+  "description": "ตัวประเมินกฎแบบ allow-by-default ซึ่งบังคับเฉพาะ rules ที่ผู้ใช้ส่งมา ไม่มีข้อห้าม hardcode",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "dependencies": [
+    "python-stdlib"
+  ],
+  "trigger_examples": [
+    "ตรวจตามกฎใน Settings",
+    "ประเมิน blocked terms",
+    "ใช้กฎที่ฉันกำหนด"
+  ],
+  "test_cases": [
+    {
+      "name": "empty-rules-allow",
+      "input": {
+        "request": "หัวข้อใดก็ได้",
+        "rules": []
+      },
+      "stdout_contains": "\"decision\":\"allow\"",
+      "expected_files": [
+        "decision.json"
+      ]
+    },
+    {
+      "name": "explicit-block",
+      "input": {
+        "request": "ห้ามคำนี้",
+        "rules": [
+          {
+            "term": "ห้ามคำนี้",
+            "action": "block",
+            "reason": "ผู้ใช้บล็อกเอง"
+          }
+        ]
+      },
+      "stdout_contains": "\"decision\":\"block\"",
+      "expected_files": [
+        "decision.json"
+      ]
+    },
+    {
+      "name": "explicit-warn",
+      "input": {
+        "request": "หัวข้อเตือน",
+        "rules": [
+          {
+            "term": "เตือน",
+            "action": "warn"
+          }
+        ]
+      },
+      "stdout_contains": "\"decision\":\"warn\"",
+      "expected_files": [
+        "decision.json"
+      ]
+    },
+    {
+      "name": "default-warn",
+      "input": {
+        "request": "ไม่ตรง",
+        "rules": [],
+        "default_action": "warn"
+      },
+      "stdout_contains": "\"decision\":\"warn\"",
+      "expected_files": [
+        "decision.json"
+      ]
+    }
+  ],
+  "version": 1,
+  "enabled": true,
+  "origin": "auto_learn",
+  "installed_at": "2026-08-23T05:06:23.481Z",
+  "updated_at": "2026-08-23T05:06:23.481Z",
+  "verification_status": "verified",
+  "verified_pass_rate": 100,
+  "verified_passed": 4,
+  "verified_total": 4,
+  "verification_scope": "4 visible fixtures และ 20 hidden fixtures ครอบคลุม default allow, explicit block/warn/allow, Unicode และลำดับกฎ",
+  "hidden_test_result": {
+    "passed": 20,
+    "total": 20
+  },
+  "generalization_confidence": 84.54,
+  "confidence_sample_size": 21,
+  "environment_fingerprint": "e66d0ccb9445d5fd",
+  "usage_count": 1,
+  "success_count": 1,
+  "last_run_at": "2026-08-23T05:08:42.538Z",
+  "last_error": "",
+  "sandbox": {
+    "network": "off",
+    "memory_mb": 512
+  },
+  "trusted_catalog_version": 2
+}

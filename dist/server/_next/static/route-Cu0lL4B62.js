@@ -1,0 +1,1 @@
+import{c as e,s as t}from"./tool-client-DodcMJCw.js";async function n(){let n=await e(),r=n.connected?await t().catch(()=>``):``;return Response.json({...n,pairing_code:r},{headers:{"Cache-Control":`no-store`}})}export{n as GET};

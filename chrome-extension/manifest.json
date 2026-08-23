@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Alpha Browser Bridge",
+  "version": "1.0.0",
+  "description": "เชื่อม Chrome ของคุณกับอัลฟ่าแบบ local-only",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "tabs", "scripting", "downloads", "debugger"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1:4317/*"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Alpha Browser Bridge"
+  }
+}

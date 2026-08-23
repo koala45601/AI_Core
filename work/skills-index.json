@@ -1,0 +1,597 @@
+[
+  {
+    "id": "offline-agent-state-manager",
+    "name": "Robust Offline State Management for Text-Based Agents",
+    "description": "อัปเดต state ของ agent แบบ deterministic และออฟไลน์ รองรับ set, increment, delete และ batch operations",
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "dependencies": [
+      "python-stdlib"
+    ],
+    "trigger_examples": [
+      "อัปเดต state",
+      "จำสถานะงาน",
+      "เพิ่มตัวนับแบบออฟไลน์"
+    ],
+    "test_cases": [
+      {
+        "name": "increment",
+        "input": {
+          "state": {
+            "count": 3
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 2
+          }
+        },
+        "stdout_contains": "\"count\":5",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      {
+        "name": "set-thai",
+        "input": {
+          "state": {},
+          "operation": {
+            "action": "set",
+            "key": "ภาษา",
+            "value": "ไทย"
+          }
+        },
+        "stdout_contains": "ไทย",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      {
+        "name": "delete",
+        "input": {
+          "state": {
+            "keep": 1,
+            "remove": 2
+          },
+          "operation": {
+            "action": "delete",
+            "key": "remove"
+          }
+        },
+        "stdout_contains": "\"keep\":1",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      {
+        "name": "batch",
+        "input": {
+          "state": {
+            "n": 1
+          },
+          "operations": [
+            {
+              "action": "increment",
+              "key": "n",
+              "delta": 4
+            },
+            {
+              "action": "set",
+              "key": "done",
+              "value": true
+            }
+          ]
+        },
+        "stdout_contains": "\"n\":5",
+        "expected_files": [
+          "state.json"
+        ]
+      }
+    ],
+    "version": 1,
+    "enabled": true,
+    "origin": "auto_learn",
+    "installed_at": "2026-08-23T05:06:08.579Z",
+    "updated_at": "2026-08-23T05:06:08.579Z",
+    "verification_status": "verified",
+    "verified_pass_rate": 100,
+    "verified_passed": 4,
+    "verified_total": 4,
+    "verification_scope": "4 visible fixtures และ 20 hidden state transitions ครอบคลุม set, increment, delete, Unicode และหลาย operation",
+    "hidden_test_result": {
+      "passed": 20,
+      "total": 20
+    },
+    "generalization_confidence": 84.54,
+    "confidence_sample_size": 21,
+    "environment_fingerprint": "e66d0ccb9445d5fd",
+    "usage_count": 1,
+    "success_count": 1,
+    "last_run_at": "2026-08-23T05:08:41.856Z",
+    "last_error": "",
+    "sandbox": {
+      "network": "off",
+      "memory_mb": 512
+    },
+    "trusted_catalog_version": 2
+  },
+  {
+    "id": "offline-png-parser-captioner",
+    "name": "Offline PNG Image Parser & Captioner (Standard Library)",
+    "description": "อ่านโครงสร้าง PNG, ขนาด และ embedded text ด้วย standard library แล้วสร้าง caption แบบออฟไลน์",
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "dependencies": [
+      "python-stdlib"
+    ],
+    "trigger_examples": [
+      "อ่าน metadata PNG",
+      "บอกขนาดรูป PNG แบบออฟไลน์",
+      "สร้าง caption จาก PNG"
+    ],
+    "test_cases": [
+      {
+        "name": "visible-png-1",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEYdjt1AAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+          "filename": "fixture-1.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      {
+        "name": "visible-png-2",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTKBf2rPAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=",
+          "filename": "fixture-2.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      {
+        "name": "visible-png-3",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTP2eFpZAAAADklEQVR4nGP4jwQYcHIAu4cj3ZP55DwAAAAASUVORK5CYII=",
+          "filename": "fixture-3.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      {
+        "name": "visible-png-4",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTRoHM/6AAAAD0lEQVR4nGP4jwYYSBcAAHg8P8FY7imoAAAAAElFTkSuQmCC",
+          "filename": "fixture-4.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      }
+    ],
+    "version": 1,
+    "enabled": true,
+    "origin": "auto_learn",
+    "installed_at": "2026-08-23T05:06:15.940Z",
+    "updated_at": "2026-08-23T05:06:15.940Z",
+    "verification_status": "verified",
+    "verified_pass_rate": 100,
+    "verified_passed": 4,
+    "verified_total": 4,
+    "verification_scope": "4 visible fixtures และ 20 hidden PNG fixtures หลายขนาด ชื่อไฟล์ Unicode และ tEXt metadata; ไม่อ้างว่าเป็น OCR พิกเซล",
+    "hidden_test_result": {
+      "passed": 20,
+      "total": 20
+    },
+    "generalization_confidence": 84.54,
+    "confidence_sample_size": 21,
+    "environment_fingerprint": "e66d0ccb9445d5fd",
+    "usage_count": 1,
+    "success_count": 1,
+    "last_run_at": "2026-08-23T05:08:42.192Z",
+    "last_error": "",
+    "sandbox": {
+      "network": "off",
+      "memory_mb": 512
+    },
+    "trusted_catalog_version": 2
+  },
+  {
+    "id": "configurable-rule-evaluator",
+    "name": "Adaptive Constraint Enforcement via User-Configured Rules",
+    "description": "ตัวประเมินกฎแบบ allow-by-default ซึ่งบังคับเฉพาะ rules ที่ผู้ใช้ส่งมา ไม่มีข้อห้าม hardcode",
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "dependencies": [
+      "python-stdlib"
+    ],
+    "trigger_examples": [
+      "ตรวจตามกฎใน Settings",
+      "ประเมิน blocked terms",
+      "ใช้กฎที่ฉันกำหนด"
+    ],
+    "test_cases": [
+      {
+        "name": "empty-rules-allow",
+        "input": {
+          "request": "หัวข้อใดก็ได้",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      {
+        "name": "explicit-block",
+        "input": {
+          "request": "ห้ามคำนี้",
+          "rules": [
+            {
+              "term": "ห้ามคำนี้",
+              "action": "block",
+              "reason": "ผู้ใช้บล็อกเอง"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      {
+        "name": "explicit-warn",
+        "input": {
+          "request": "หัวข้อเตือน",
+          "rules": [
+            {
+              "term": "เตือน",
+              "action": "warn"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"warn\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      {
+        "name": "default-warn",
+        "input": {
+          "request": "ไม่ตรง",
+          "rules": [],
+          "default_action": "warn"
+        },
+        "stdout_contains": "\"decision\":\"warn\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      }
+    ],
+    "version": 1,
+    "enabled": true,
+    "origin": "auto_learn",
+    "installed_at": "2026-08-23T05:06:23.481Z",
+    "updated_at": "2026-08-23T05:06:23.481Z",
+    "verification_status": "verified",
+    "verified_pass_rate": 100,
+    "verified_passed": 4,
+    "verified_total": 4,
+    "verification_scope": "4 visible fixtures และ 20 hidden fixtures ครอบคลุม default allow, explicit block/warn/allow, Unicode และลำดับกฎ",
+    "hidden_test_result": {
+      "passed": 20,
+      "total": 20
+    },
+    "generalization_confidence": 84.54,
+    "confidence_sample_size": 21,
+    "environment_fingerprint": "e66d0ccb9445d5fd",
+    "usage_count": 1,
+    "success_count": 1,
+    "last_run_at": "2026-08-23T05:08:42.538Z",
+    "last_error": "",
+    "sandbox": {
+      "network": "off",
+      "memory_mb": 512
+    },
+    "trusted_catalog_version": 2
+  },
+  {
+    "id": "pillow-png-metadata-extractor",
+    "name": "PNG Metadata Extraction with Pillow (Fallback)",
+    "description": "ดึง metadata PNG ด้วย Pillow ใน Docker แบบปิดเครือข่าย พร้อมผลลัพธ์ JSON",
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "dependencies": [
+      "python-pillow"
+    ],
+    "trigger_examples": [
+      "อ่านขนาด PNG ด้วย Pillow",
+      "ตรวจ mode ของรูป",
+      "ดึง metadata รูป PNG"
+    ],
+    "test_cases": [
+      {
+        "name": "visible-pillow-1",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEYdjt1AAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+          "filename": "fixture-1.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      {
+        "name": "visible-pillow-2",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTKBf2rPAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=",
+          "filename": "fixture-2.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      {
+        "name": "visible-pillow-3",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTP2eFpZAAAADklEQVR4nGP4jwQYcHIAu4cj3ZP55DwAAAAASUVORK5CYII=",
+          "filename": "fixture-3.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      {
+        "name": "visible-pillow-4",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTRoHM/6AAAAD0lEQVR4nGP4jwYYSBcAAHg8P8FY7imoAAAAAElFTkSuQmCC",
+          "filename": "fixture-4.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      }
+    ],
+    "version": 1,
+    "enabled": true,
+    "origin": "auto_learn",
+    "installed_at": "2026-08-23T05:06:31.291Z",
+    "updated_at": "2026-08-23T05:06:31.291Z",
+    "verification_status": "verified",
+    "verified_pass_rate": 100,
+    "verified_passed": 4,
+    "verified_total": 4,
+    "verification_scope": "4 visible fixtures และ 20 hidden valid PNG fixtures หลายขนาด/ชื่อ Unicode บน Pillow 11.3.0",
+    "hidden_test_result": {
+      "passed": 20,
+      "total": 20
+    },
+    "generalization_confidence": 84.54,
+    "confidence_sample_size": 21,
+    "environment_fingerprint": "e494dea37c9f44cf",
+    "usage_count": 1,
+    "success_count": 1,
+    "last_run_at": "2026-08-23T05:08:43.462Z",
+    "last_error": "",
+    "sandbox": {
+      "network": "off",
+      "memory_mb": 512
+    },
+    "trusted_catalog_version": 2
+  },
+  {
+    "id": "stateless-context-summarizer",
+    "name": "Resilient Context Summarization for Stateless Agents",
+    "description": "บีบอัดประวัติแชตแบบ deterministic ให้เหลือรายการสำคัญสำหรับ context ถัดไป โดยทำงานออฟไลน์",
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "dependencies": [
+      "python-stdlib"
+    ],
+    "trigger_examples": [
+      "สรุปประวัติแชต",
+      "บีบอัด context",
+      "เก็บเฉพาะข้อมูลสำคัญ"
+    ],
+    "test_cases": [
+      {
+        "name": "two-items",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "ฉันชอบภาษาไทย"
+            },
+            {
+              "role": "assistant",
+              "content": "รับทราบ"
+            }
+          ],
+          "max_items": 2
+        },
+        "stdout_contains": "\"item_count\":2",
+        "expected_files": [
+          "summary.json"
+        ]
+      },
+      {
+        "name": "empty",
+        "input": {
+          "messages": [],
+          "max_items": 3
+        },
+        "stdout_contains": "\"item_count\":0",
+        "expected_files": [
+          "summary.json"
+        ]
+      },
+      {
+        "name": "deduplicate",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "เป้าหมายเดิม"
+            },
+            {
+              "role": "user",
+              "content": "เป้าหมายเดิม"
+            }
+          ],
+          "max_items": 5
+        },
+        "stdout_contains": "\"item_count\":1",
+        "expected_files": [
+          "summary.json"
+        ]
+      },
+      {
+        "name": "limit",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "หนึ่ง"
+            },
+            {
+              "role": "user",
+              "content": "สอง"
+            },
+            {
+              "role": "user",
+              "content": "สาม"
+            }
+          ],
+          "max_items": 1
+        },
+        "stdout_contains": "\"item_count\":1",
+        "expected_files": [
+          "summary.json"
+        ]
+      }
+    ],
+    "version": 1,
+    "enabled": true,
+    "origin": "auto_learn",
+    "installed_at": "2026-08-23T05:06:39.071Z",
+    "updated_at": "2026-08-23T05:06:39.071Z",
+    "verification_status": "verified",
+    "verified_pass_rate": 100,
+    "verified_passed": 4,
+    "verified_total": 4,
+    "verification_scope": "4 visible fixtures และ 20 hidden conversation fixtures ครอบคลุมความสำคัญ duplicate, empty, Unicode และ context limit",
+    "hidden_test_result": {
+      "passed": 20,
+      "total": 20
+    },
+    "generalization_confidence": 84.54,
+    "confidence_sample_size": 21,
+    "environment_fingerprint": "e66d0ccb9445d5fd",
+    "usage_count": 1,
+    "success_count": 1,
+    "last_run_at": "2026-08-23T05:08:43.832Z",
+    "last_error": "",
+    "sandbox": {
+      "network": "off",
+      "memory_mb": 512
+    },
+    "trusted_catalog_version": 2
+  },
+  {
+    "id": "context-aware-concise-synthesizer",
+    "name": "Context-Aware Concise Response Synthesizer",
+    "description": "ย่อข้อความยาวให้กระชับตามจำนวนประโยคและ focus ที่กำหนด โดยทำงานออฟไลน์",
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "dependencies": [
+      "python-stdlib"
+    ],
+    "trigger_examples": [
+      "สรุปให้สั้น",
+      "ตอบแบบกระชับ",
+      "ย่อบริบทนี้"
+    ],
+    "test_cases": [
+      {
+        "name": "thai-two",
+        "input": {
+          "text": "หนึ่งประโยคแรก。 สองประโยคถัดไป。 สามประโยคสุดท้าย。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      {
+        "name": "english-one",
+        "input": {
+          "text": "First. Second. Third.",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      {
+        "name": "focus",
+        "input": {
+          "text": "อาหารอร่อย。 Python แก้บั๊กได้。 วันนี้อากาศดี。",
+          "max_sentences": 1,
+          "focus": "Python"
+        },
+        "stdout_contains": "Python",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      {
+        "name": "empty",
+        "input": {
+          "text": "",
+          "max_sentences": 3
+        },
+        "stdout_contains": "\"sentence_count\":0",
+        "expected_files": [
+          "result.json"
+        ]
+      }
+    ],
+    "version": 1,
+    "enabled": true,
+    "origin": "auto_learn",
+    "installed_at": "2026-08-23T05:06:01.348Z",
+    "updated_at": "2026-08-23T05:06:01.348Z",
+    "verification_status": "verified",
+    "verified_pass_rate": 100,
+    "verified_passed": 4,
+    "verified_total": 4,
+    "verification_scope": "4 visible fixtures และ 20 hidden fixtures ครอบคลุมไทย อังกฤษ บรรทัดใหม่ focus และขีดจำกัดจำนวนประโยค",
+    "hidden_test_result": {
+      "passed": 20,
+      "total": 20
+    },
+    "generalization_confidence": 86.2,
+    "confidence_sample_size": 24,
+    "environment_fingerprint": "e66d0ccb9445d5fd",
+    "usage_count": 4,
+    "success_count": 4,
+    "last_run_at": "2026-08-23T05:13:49.812Z",
+    "last_error": "",
+    "sandbox": {
+      "network": "off",
+      "memory_mb": 512
+    },
+    "trusted_catalog_version": 2
+  }
+]

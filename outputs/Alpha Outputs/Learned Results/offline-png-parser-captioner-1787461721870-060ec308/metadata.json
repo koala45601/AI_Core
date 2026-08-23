@@ -1,0 +1,13 @@
+{
+  "filename": "fixture-1.png",
+  "format": "PNG",
+  "width": 1,
+  "height": 1,
+  "caption": "fixture-1.png: PNG 1x1 — fixture-1",
+  "embedded_text": [
+    {
+      "key": "Description",
+      "value": "fixture-1"
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "id": "stateless-context-summarizer",
+  "name": "Resilient Context Summarization for Stateless Agents",
+  "description": "บีบอัดประวัติแชตแบบ deterministic ให้เหลือรายการสำคัญสำหรับ context ถัดไป โดยทำงานออฟไลน์",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "dependencies": [
+    "python-stdlib"
+  ],
+  "trigger_examples": [
+    "สรุปประวัติแชต",
+    "บีบอัด context",
+    "เก็บเฉพาะข้อมูลสำคัญ"
+  ],
+  "test_cases": [
+    {
+      "name": "two-items",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "ฉันชอบภาษาไทย"
+          },
+          {
+            "role": "assistant",
+            "content": "รับทราบ"
+          }
+        ],
+        "max_items": 2
+      },
+      "stdout_contains": "\"item_count\":2",
+      "expected_files": [
+        "summary.json"
+      ]
+    },
+    {
+      "name": "empty",
+      "input": {
+        "messages": [],
+        "max_items": 3
+      },
+      "stdout_contains": "\"item_count\":0",
+      "expected_files": [
+        "summary.json"
+      ]
+    },
+    {
+      "name": "deduplicate",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "เป้าหมายเดิม"
+          },
+          {
+            "role": "user",
+            "content": "เป้าหมายเดิม"
+          }
+        ],
+        "max_items": 5
+      },
+      "stdout_contains": "\"item_count\":1",
+      "expected_files": [
+        "summary.json"
+      ]
+    },
+    {
+      "name": "limit",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "หนึ่ง"
+          },
+          {
+            "role": "user",
+            "content": "สอง"
+          },
+          {
+            "role": "user",
+            "content": "สาม"
+          }
+        ],
+        "max_items": 1
+      },
+      "stdout_contains": "\"item_count\":1",
+      "expected_files": [
+        "summary.json"
+      ]
+    }
+  ],
+  "version": 1,
+  "enabled": true,
+  "origin": "auto_learn",
+  "installed_at": "2026-08-23T05:06:39.071Z",
+  "updated_at": "2026-08-23T05:06:39.071Z",
+  "verification_status": "verified",
+  "verified_pass_rate": 100,
+  "verified_passed": 4,
+  "verified_total": 4,
+  "verification_scope": "4 visible fixtures และ 20 hidden conversation fixtures ครอบคลุมความสำคัญ duplicate, empty, Unicode และ context limit",
+  "hidden_test_result": {
+    "passed": 20,
+    "total": 20
+  },
+  "generalization_confidence": 84.54,
+  "confidence_sample_size": 21,
+  "environment_fingerprint": "e66d0ccb9445d5fd",
+  "usage_count": 1,
+  "success_count": 1,
+  "last_run_at": "2026-08-23T05:08:43.832Z",
+  "last_error": "",
+  "sandbox": {
+    "network": "off",
+    "memory_mb": 512
+  },
+  "trusted_catalog_version": 2
+}

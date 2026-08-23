@@ -1,0 +1,618 @@
+{
+  "objective": "อ่าน metadata ของ PNG ด้วย Pillow แบบออฟไลน์และคืนชื่อไฟล์ format ขนาด mode และ animated flag",
+  "success_criteria": "เปิด PNG จริงหลายขนาดและ Unicode filename ได้ สร้าง metadata.json และไม่ใช้ network ระหว่างทำงาน",
+  "passed": true,
+  "attempt": 1,
+  "tested_at": "2026-08-23T05:06:31.289Z",
+  "tests": [
+    {
+      "name": "visible-pillow-1",
+      "passed": true,
+      "case": {
+        "name": "visible-pillow-1",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEYdjt1AAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+          "filename": "fixture-1.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"fixture-1.png\",\"format\":\"PNG\",\"height\":1,\"mode\":\"RGBA\",\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "visible-pillow-2",
+      "passed": true,
+      "case": {
+        "name": "visible-pillow-2",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTKBf2rPAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=",
+          "filename": "fixture-2.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"fixture-2.png\",\"format\":\"PNG\",\"height\":2,\"mode\":\"RGBA\",\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "visible-pillow-3",
+      "passed": true,
+      "case": {
+        "name": "visible-pillow-3",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTP2eFpZAAAADklEQVR4nGP4jwQYcHIAu4cj3ZP55DwAAAAASUVORK5CYII=",
+          "filename": "fixture-3.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"fixture-3.png\",\"format\":\"PNG\",\"height\":3,\"mode\":\"RGBA\",\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "visible-pillow-4",
+      "passed": true,
+      "case": {
+        "name": "visible-pillow-4",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTRoHM/6AAAAD0lEQVR4nGP4jwYYSBcAAHg8P8FY7imoAAAAAElFTkSuQmCC",
+          "filename": "fixture-4.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"fixture-4.png\",\"format\":\"PNG\",\"height\":4,\"mode\":\"RGBA\",\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "hidden_tests": [
+    {
+      "name": "hidden-pillow-1",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-1",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAABCAYAAAAW/mTzAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTUfG/9sAAAADElEQVR4nGP4jwUAANFDE+0nSiaEAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-1.png"
+        },
+        "stdout_contains": "\"height\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-1.png\",\"format\":\"PNG\",\"height\":1,\"mode\":\"RGBA\",\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-2",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-2",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAACCAYAAAB7Xa1eAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTaGEq7WAAAAD0lEQVR4nGP4jwMw4JIAAKu+L9GlTSCXAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-2.png"
+        },
+        "stdout_contains": "\"height\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-2.png\",\"format\":\"PNG\",\"height\":2,\"mode\":\"RGBA\",\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-3",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-3",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAADCAYAAABS3WWCAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTfxFZ5AAAAAEElEQVR4nGP4////fwY4AQBZtQv1dgZLawAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-3.png"
+        },
+        "stdout_contains": "\"height\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-3.png\",\"format\":\"PNG\",\"height\":3,\"mode\":\"RGBA\",\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-4",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-4",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAYAAACk7+45AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLThhqoPRAAAADklEQVR4nGP4DwUMuBkAPgIf4WZScsAAAAAASUVORK5CYII=",
+          "filename": "ภาพ-4.png"
+        },
+        "stdout_contains": "\"height\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-4.png\",\"format\":\"PNG\",\"height\":4,\"mode\":\"RGBA\",\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-5",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-5",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTkWrbNHAAAAC0lEQVR4nGP4jwQATb8L9davaZUAAAAASUVORK5CYII=",
+          "filename": "ภาพ-5.png"
+        },
+        "stdout_contains": "\"height\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-5.png\",\"format\":\"PNG\",\"height\":1,\"mode\":\"RGBA\",\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-6",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-6",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEw1KwsqQAAAA5JREFUeJxj+I8GGNAFAB4gH+EWnYUHAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-6.png"
+        },
+        "stdout_contains": "\"height\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-6.png\",\"format\":\"PNG\",\"height\":2,\"mode\":\"RGBA\",\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-7",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-7",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAADCAYAAABbNsX4AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTExo6scPwAAAA9JREFUeJxj+I8FMBAtCABbRjvFZJPOWQAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-7.png"
+        },
+        "stdout_contains": "\"height\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-7.png\",\"format\":\"PNG\",\"height\":3,\"mode\":\"RGBA\",\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-8",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-8",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAAECAYAAACtBE5DAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEyOqJNhQAAAA9JREFUeJxj+I8DMFBPAgCusl+htZk0IgAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-8.png"
+        },
+        "stdout_contains": "\"height\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-8.png\",\"format\":\"PNG\",\"height\":4,\"mode\":\"RGBA\",\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-9",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-9",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEzTaV9EwAAAA1JREFUeJxj+P///38ACfsD/SqG44oAAAAASUVORK5CYII=",
+          "filename": "ภาพ-9.png"
+        },
+        "stdout_contains": "\"height\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-9.png\",\"format\":\"PNG\",\"height\":1,\"mode\":\"RGBA\",\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-10",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-10",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE008HosAAAAA5JREFUeJxj+A8FDDAGAI+CD/E8pVZRAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-10.png"
+        },
+        "stdout_contains": "\"height\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-10.png\",\"format\":\"PNG\",\"height\":2,\"mode\":\"RGBA\",\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-11",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-11",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE1pMbYJgAAAA5JREFUeJxj+I8EGHByALuHI92T+eQ8AAAAAElFTkSuQmCC",
+          "filename": "ภาพ-11.png"
+        },
+        "stdout_contains": "\"height\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-11.png\",\"format\":\"PNG\",\"height\":3,\"mode\":\"RGBA\",\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-12",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-12",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE2Pc+JnAAAAA9JREFUeJxj+I8GGEgXAAB4PD/BWO4pqAAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-12.png"
+        },
+        "stdout_contains": "\"height\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-12.png\",\"format\":\"PNG\",\"height\":4,\"mode\":\"RGBA\",\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-13",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-13",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAABCAYAAAAW/mTzAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE3Ssi5CgAAAAxJREFUeJxj+I8FAADRQxPtJ0omhAAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-13.png"
+        },
+        "stdout_contains": "\"height\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-13.png\",\"format\":\"PNG\",\"height\":1,\"mode\":\"RGBA\",\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-14",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-14",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAACCAYAAAB7Xa1eAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE42nekmwAAAA9JREFUeJxj+I8DMOCSAACrvi/RpU0glwAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-14.png"
+        },
+        "stdout_contains": "\"height\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-14.png\",\"format\":\"PNG\",\"height\":2,\"mode\":\"RGBA\",\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-15",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-15",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAADCAYAAABS3WWCAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE5rXCUDQAAABBJREFUeJxj+P///38GOAEAWbUL9XYGS2sAAAAASUVORK5CYII=",
+          "filename": "ภาพ-15.png"
+        },
+        "stdout_contains": "\"height\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-15.png\",\"format\":\"PNG\",\"height\":3,\"mode\":\"RGBA\",\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-16",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-16",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAYAAACk7+45AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIw/4F/agAAAA5JREFUeJxj+A8FDLgZAD4CH+FmUnLAAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-16.png"
+        },
+        "stdout_contains": "\"height\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-16.png\",\"format\":\"PNG\",\"height\":4,\"mode\":\"RGBA\",\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-17",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-17",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIxiIZP/AAAAAtJREFUeJxj+I8EAE2/C/XWr2mVAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-17.png"
+        },
+        "stdout_contains": "\"height\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-17.png\",\"format\":\"PNG\",\"height\":1,\"mode\":\"RGBA\",\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-18",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-18",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIyEY8eRgAAAA5JREFUeJxj+I8GGNAFAB4gH+EWnYUHAAAAAElFTkSuQmCC",
+          "filename": "ภาพ-18.png"
+        },
+        "stdout_contains": "\"height\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-18.png\",\"format\":\"PNG\",\"height\":2,\"mode\":\"RGBA\",\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-19",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-19",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAADCAYAAABbNsX4AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIzZogu0AAAAA9JREFUeJxj+I8FMBAtCABbRjvFZJPOWQAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-19.png"
+        },
+        "stdout_contains": "\"height\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-19.png\",\"format\":\"PNG\",\"height\":3,\"mode\":\"RGBA\",\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-pillow-20",
+      "passed": true,
+      "case": {
+        "name": "hidden-pillow-20",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAAECAYAAACtBE5DAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTI0+Oy7cwAAAA9JREFUeJxj+I8DMFBPAgCusl+htZk0IgAAAABJRU5ErkJggg==",
+          "filename": "ภาพ-20.png"
+        },
+        "stdout_contains": "\"height\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"animated\":false,\"filename\":\"ภาพ-20.png\",\"format\":\"PNG\",\"height\":4,\"mode\":\"RGBA\",\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "verification_scope": "4 visible fixtures และ 20 hidden valid PNG fixtures หลายขนาด/ชื่อ Unicode บน Pillow 11.3.0",
+  "dependencies": [
+    {
+      "id": "python-pillow",
+      "source": "PyPI / Pillow project"
+    }
+  ]
+}

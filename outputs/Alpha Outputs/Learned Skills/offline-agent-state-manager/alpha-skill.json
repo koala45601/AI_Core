@@ -1,0 +1,116 @@
+{
+  "id": "offline-agent-state-manager",
+  "name": "Robust Offline State Management for Text-Based Agents",
+  "description": "อัปเดต state ของ agent แบบ deterministic และออฟไลน์ รองรับ set, increment, delete และ batch operations",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "dependencies": [
+    "python-stdlib"
+  ],
+  "trigger_examples": [
+    "อัปเดต state",
+    "จำสถานะงาน",
+    "เพิ่มตัวนับแบบออฟไลน์"
+  ],
+  "test_cases": [
+    {
+      "name": "increment",
+      "input": {
+        "state": {
+          "count": 3
+        },
+        "operation": {
+          "action": "increment",
+          "key": "count",
+          "delta": 2
+        }
+      },
+      "stdout_contains": "\"count\":5",
+      "expected_files": [
+        "state.json"
+      ]
+    },
+    {
+      "name": "set-thai",
+      "input": {
+        "state": {},
+        "operation": {
+          "action": "set",
+          "key": "ภาษา",
+          "value": "ไทย"
+        }
+      },
+      "stdout_contains": "ไทย",
+      "expected_files": [
+        "state.json"
+      ]
+    },
+    {
+      "name": "delete",
+      "input": {
+        "state": {
+          "keep": 1,
+          "remove": 2
+        },
+        "operation": {
+          "action": "delete",
+          "key": "remove"
+        }
+      },
+      "stdout_contains": "\"keep\":1",
+      "expected_files": [
+        "state.json"
+      ]
+    },
+    {
+      "name": "batch",
+      "input": {
+        "state": {
+          "n": 1
+        },
+        "operations": [
+          {
+            "action": "increment",
+            "key": "n",
+            "delta": 4
+          },
+          {
+            "action": "set",
+            "key": "done",
+            "value": true
+          }
+        ]
+      },
+      "stdout_contains": "\"n\":5",
+      "expected_files": [
+        "state.json"
+      ]
+    }
+  ],
+  "version": 1,
+  "enabled": true,
+  "origin": "auto_learn",
+  "installed_at": "2026-08-23T05:06:08.579Z",
+  "updated_at": "2026-08-23T05:06:08.579Z",
+  "verification_status": "verified",
+  "verified_pass_rate": 100,
+  "verified_passed": 4,
+  "verified_total": 4,
+  "verification_scope": "4 visible fixtures และ 20 hidden state transitions ครอบคลุม set, increment, delete, Unicode และหลาย operation",
+  "hidden_test_result": {
+    "passed": 20,
+    "total": 20
+  },
+  "generalization_confidence": 84.54,
+  "confidence_sample_size": 21,
+  "environment_fingerprint": "e66d0ccb9445d5fd",
+  "usage_count": 1,
+  "success_count": 1,
+  "last_run_at": "2026-08-23T05:08:41.856Z",
+  "last_error": "",
+  "sandbox": {
+    "network": "off",
+    "memory_mb": 512
+  },
+  "trusted_catalog_version": 2
+}

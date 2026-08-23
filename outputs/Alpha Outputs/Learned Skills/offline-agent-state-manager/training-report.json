@@ -1,0 +1,767 @@
+{
+  "objective": "จัดการ state ของ agent แบบออฟไลน์ด้วยคำสั่ง set, increment และ delete โดยไม่แก้ object ต้นฉบับ",
+  "success_criteria": "คืน state ใหม่แบบ deterministic รองรับภาษาไทยและสร้าง state.json",
+  "passed": true,
+  "attempt": 1,
+  "tested_at": "2026-08-23T05:06:08.576Z",
+  "tests": [
+    {
+      "name": "increment",
+      "passed": true,
+      "case": {
+        "name": "increment",
+        "input": {
+          "state": {
+            "count": 3
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 2
+          }
+        },
+        "stdout_contains": "\"count\":5",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":5}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "set-thai",
+      "passed": true,
+      "case": {
+        "name": "set-thai",
+        "input": {
+          "state": {},
+          "operation": {
+            "action": "set",
+            "key": "ภาษา",
+            "value": "ไทย"
+          }
+        },
+        "stdout_contains": "ไทย",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"ภาษา\":\"ไทย\"}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "delete",
+      "passed": true,
+      "case": {
+        "name": "delete",
+        "input": {
+          "state": {
+            "keep": 1,
+            "remove": 2
+          },
+          "operation": {
+            "action": "delete",
+            "key": "remove"
+          }
+        },
+        "stdout_contains": "\"keep\":1",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"keep\":1}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "batch",
+      "passed": true,
+      "case": {
+        "name": "batch",
+        "input": {
+          "state": {
+            "n": 1
+          },
+          "operations": [
+            {
+              "action": "increment",
+              "key": "n",
+              "delta": 4
+            },
+            {
+              "action": "set",
+              "key": "done",
+              "value": true
+            }
+          ]
+        },
+        "stdout_contains": "\"n\":5",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":2,\"state\":{\"done\":true,\"n\":5}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "hidden_tests": [
+    {
+      "name": "hidden-1",
+      "passed": true,
+      "case": {
+        "name": "hidden-1",
+        "input": {
+          "state": {
+            "count": 0
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":1",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":1}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-2",
+      "passed": true,
+      "case": {
+        "name": "hidden-2",
+        "input": {
+          "state": {
+            "count": 1
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":2",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":2}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-3",
+      "passed": true,
+      "case": {
+        "name": "hidden-3",
+        "input": {
+          "state": {
+            "count": 2
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":3",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":3}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-4",
+      "passed": true,
+      "case": {
+        "name": "hidden-4",
+        "input": {
+          "state": {
+            "count": 3
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":4",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":4}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-5",
+      "passed": true,
+      "case": {
+        "name": "hidden-5",
+        "input": {
+          "state": {
+            "count": 4
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":5",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":5}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-6",
+      "passed": true,
+      "case": {
+        "name": "hidden-6",
+        "input": {
+          "state": {
+            "count": 5
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":6",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":6}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-7",
+      "passed": true,
+      "case": {
+        "name": "hidden-7",
+        "input": {
+          "state": {
+            "count": 6
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":7",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":7}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-8",
+      "passed": true,
+      "case": {
+        "name": "hidden-8",
+        "input": {
+          "state": {
+            "count": 7
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":8",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":8}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-9",
+      "passed": true,
+      "case": {
+        "name": "hidden-9",
+        "input": {
+          "state": {
+            "count": 8
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":9",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":9}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-10",
+      "passed": true,
+      "case": {
+        "name": "hidden-10",
+        "input": {
+          "state": {
+            "count": 9
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":10",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":10}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-11",
+      "passed": true,
+      "case": {
+        "name": "hidden-11",
+        "input": {
+          "state": {
+            "count": 10
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":11",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":11}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-12",
+      "passed": true,
+      "case": {
+        "name": "hidden-12",
+        "input": {
+          "state": {
+            "count": 11
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":12",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":12}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-13",
+      "passed": true,
+      "case": {
+        "name": "hidden-13",
+        "input": {
+          "state": {
+            "count": 12
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":13",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":13}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-14",
+      "passed": true,
+      "case": {
+        "name": "hidden-14",
+        "input": {
+          "state": {
+            "count": 13
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":14",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":14}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-15",
+      "passed": true,
+      "case": {
+        "name": "hidden-15",
+        "input": {
+          "state": {
+            "count": 14
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":15",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":15}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-16",
+      "passed": true,
+      "case": {
+        "name": "hidden-16",
+        "input": {
+          "state": {
+            "count": 15
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":16",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":16}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-17",
+      "passed": true,
+      "case": {
+        "name": "hidden-17",
+        "input": {
+          "state": {
+            "count": 16
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":17",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":17}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-18",
+      "passed": true,
+      "case": {
+        "name": "hidden-18",
+        "input": {
+          "state": {
+            "count": 17
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":18",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":18}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-19",
+      "passed": true,
+      "case": {
+        "name": "hidden-19",
+        "input": {
+          "state": {
+            "count": 18
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":19",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":19}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-20",
+      "passed": true,
+      "case": {
+        "name": "hidden-20",
+        "input": {
+          "state": {
+            "count": 19
+          },
+          "operation": {
+            "action": "increment",
+            "key": "count",
+            "delta": 1
+          }
+        },
+        "stdout_contains": "\"count\":20",
+        "expected_files": [
+          "state.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"ok\":true,\"operation_count\":1,\"state\":{\"count\":20}}\n",
+      "stderr": "",
+      "output_files": [
+        "state.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "verification_scope": "4 visible fixtures และ 20 hidden state transitions ครอบคลุม set, increment, delete, Unicode และหลาย operation",
+  "dependencies": [
+    {
+      "id": "python-stdlib",
+      "source": "Python official image"
+    }
+  ]
+}

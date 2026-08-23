@@ -1,0 +1,1 @@
+import{l as e,o as t}from"./chat-store-DJ5-kVU4.js";async function n(n,r){let{id:i}=await r.params,a=await t(i);return a?Response.json({chat:a,messages:await e(i)},{headers:{"Cache-Control":`no-store`}}):Response.json({error:`ไม่พบแชต`},{status:404})}export{n as GET};

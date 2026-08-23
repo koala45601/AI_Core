@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Alpha Browser Bridge</title>
+    <style>
+      body{margin:0;background:#f2f6f3;color:#203029;font:15px -apple-system,BlinkMacSystemFont,"Noto Sans Thai",sans-serif}main{width:min(560px,calc(100% - 40px));margin:60px auto;padding:28px;border:1px solid #d9e5de;border-radius:18px;background:#fff;box-shadow:0 18px 50px #173e2f14}h1{margin:0 0 8px;font-family:Georgia,serif;font-weight:500}p{color:#68756f;line-height:1.65}.row{display:flex;gap:8px;margin-top:20px}input{flex:1;min-width:0;padding:12px;border:1px solid #cfdcd4;border-radius:10px;text-transform:uppercase;letter-spacing:.12em}button{border:0;border-radius:10px;padding:0 18px;background:#124d3b;color:#fff;font-weight:700;cursor:pointer}#status{display:block;margin-top:14px;color:#1f7b5b}.warning{margin-top:22px;padding:12px;border-radius:10px;background:#fff8e9;color:#79633a;font-size:12px}
+    </style>
+  </head>
+  <body><main><h1>Alpha Browser Bridge</h1><p>เปิดหน้า Settings ของอัลฟ่า เลือก “Chrome เดิม” แล้วนำรหัสจับคู่ 8 ตัวมากรอกที่นี่ การเชื่อมต่อทำงานเฉพาะกับบริการบนเครื่องคุณ</p><div class="row"><input id="code" maxlength="8" placeholder="รหัส 8 ตัว" autocomplete="off"><button id="pair">เชื่อมต่อ</button></div><span id="status"></span><div class="warning">อัลฟ่าจะหยุดเมื่อพบ CAPTCHA, รหัสผ่าน, OTP, บัตร หรือหน้าชำระเงิน เพื่อให้คุณรับช่วงเอง</div></main><script src="options.js"></script></body>
+</html>

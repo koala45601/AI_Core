@@ -1,0 +1,1 @@
+import{r as e}from"./tool-client-DodcMJCw.js";async function t(t,n){let{id:r}=await n.params;try{return Response.json(await e(`/runs/${encodeURIComponent(r)}`,{method:`GET`}))}catch(e){return Response.json({error:e instanceof Error?e.message:`ไม่พบ run`},{status:404})}}export{t as GET};

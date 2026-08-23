@@ -1,0 +1,1 @@
+import{r as e}from"./tool-client-DodcMJCw.js";async function t(t){let n=new URL(t.url);try{return Response.json(await e(`/events?${n.searchParams.toString()}`,{method:`GET`}))}catch(e){return Response.json({error:e instanceof Error?e.message:`โหลด timeline ไม่สำเร็จ`},{status:503})}}export{t as GET};

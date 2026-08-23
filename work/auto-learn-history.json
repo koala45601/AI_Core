@@ -1,0 +1,124 @@
+[
+  {
+    "title": "Prompt Engineering ขั้นสูงเพื่อการควบคุมอัลฟ่า",
+    "outcome": "ไม่สำเร็จ: This operation was aborted",
+    "mode": "skill",
+    "at": 1787449911734
+  },
+  {
+    "title": "ระบบจัดการข้อจำกัด API & Context Window Optimization",
+    "outcome": "ไม่สำเร็จ: The operation was aborted due to timeout",
+    "mode": "research",
+    "at": 1787450107646
+  },
+  {
+    "title": "Advanced System Constraints Management",
+    "outcome": "ไม่สำเร็จ: The operation was aborted due to timeout",
+    "mode": "research",
+    "at": 1787450221888
+  },
+  {
+    "title": "System Instruction Alignment for Natural Interaction",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787450414413
+  },
+  {
+    "title": "API Response Compression Techniques",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787451285400
+  },
+  {
+    "title": "Natural Language Nuances in Concise Dialogue",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787451388883
+  },
+  {
+    "title": "Micro-Architecture for Scalable Agent Workflows",
+    "outcome": "ไม่สำเร็จ: ไม่สามารถออกแบบ Lab ที่รันแบบออฟไลน์ใน Docker ได้ เนื่องจากเป้าหมายต้องการสร้าง 'โครงสร้างระบบตัวแทน (Agent)' และจัดการ State ภายใน Context Window ซึ่งจำเป็นต้องใช้โมเดลภาษาขนาดใหญ่ (LLM) หรือ Runtime",
+    "mode": "skill",
+    "at": 1787451490863
+  },
+  {
+    "title": "Unit Testing & Mocking Patterns",
+    "outcome": "ไม่สำเร็จ: การค้นหาและสร้างรูปถูกปิดไว้ในเวอร์ชันนี้",
+    "mode": "research",
+    "at": 1787451570204
+  },
+  {
+    "title": "Design Pattern Implementation with TypeScript Interfaces",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787451673559
+  },
+  {
+    "title": "Advanced Security Hardening Strategies",
+    "outcome": "ไม่สำเร็จ: The operation was aborted due to timeout",
+    "mode": "skill",
+    "at": 1787452547467
+  },
+  {
+    "title": "Async/Await Error Handling in Node.js Projects",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787452670573
+  },
+  {
+    "title": "Memory Retrieval สำหรับผู้ช่วยภาษาไทย",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787452790952
+  },
+  {
+    "title": "Context-Aware Concise Response Synthesizer",
+    "outcome": "ไม่สำเร็จ: ยังสร้างสกิลไม่สำเร็จหลัง 4 attempt: ยังไม่รองรับไฟล์ชนิด .png",
+    "mode": "skill",
+    "at": 1787455928169
+  },
+  {
+    "title": "Robust Offline State Management for Text-Based Agents",
+    "outcome": "ไม่สำเร็จ: ระบบค้นสำรองไม่พบผลลัพธ์หรือถูกจำกัดชั่วคราว",
+    "mode": "research",
+    "at": 1787456014420
+  },
+  {
+    "title": "Offline PNG Image Parser & Captioner (Standard Library)",
+    "outcome": "ไม่สำเร็จ: ยังสร้างสกิลไม่สำเร็จหลัง 4 attempt: Unknown system error -11: Unknown system error -11, scandir '/Users/ratchanonsakdamanee/Documents/Codex/2026-08-23/c/work/skill-lab/ocr-offline-extractor/attempt-3",
+    "mode": "skill",
+    "at": 1787456940738
+  },
+  {
+    "title": "Adaptive Constraint Enforcement via Standard Logic Chains",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "at": 1787457130228
+  },
+  {
+    "title": "PNG Metadata Extraction with Pillow (Fallback)",
+    "outcome": "ไม่สำเร็จ: ยังสร้างสกิลไม่สำเร็จหลัง 4 attempt: test criteria not met",
+    "mode": "skill",
+    "at": 1787457551275
+  },
+  {
+    "title": "Resilient Context Summarization for Stateless Agents",
+    "outcome": "ไม่สำเร็จ: ยังสร้างสกิลไม่สำเร็จหลัง 4 attempt: syntax validation failed",
+    "mode": "skill",
+    "at": 1787458710670
+  },
+  {
+    "title": "วิเคราะห์และต่อยอดจากงานล่าสุด — รอบ 1",
+    "outcome": "สำเร็จ",
+    "mode": "research",
+    "checkpoint": null,
+    "at": 1787465885160
+  },
+  {
+    "title": "วิเคราะห์และต่อยอดจากงานล่าสุด — รอบ 1 — สกิลใช้งานจริง",
+    "outcome": "เรียกกลับระหว่างกำลังสร้างสกิล หลังทำถึง Attempt 1",
+    "mode": "skill",
+    "checkpoint": null,
+    "at": 1787466174451
+  }
+]

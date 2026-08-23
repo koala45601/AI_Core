@@ -1,0 +1,554 @@
+{
+  "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-page-cache-render.js": {
+    "file": "_next/static/app-page-cache-render-BHNeSjPt.js",
+    "name": "app-page-cache-render",
+    "src": "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-page-cache-render.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_app-elements-B5tvyXzw.js",
+      "_app-page-stream-CSPo6-Ed.js",
+      "_text-stream-CQReMCSF.js",
+      "_implicit-tags-BfUiCndN.js"
+    ]
+  },
+  "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-page-cache.js": {
+    "file": "_next/static/app-page-cache-BF7olhyR.js",
+    "name": "app-page-cache",
+    "src": "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-page-cache.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_navigation-runtime-Dw6mgPEL.js",
+      "_app-elements-B5tvyXzw.js",
+      "_app-page-cache-finalizer-D6XJyHMN.js",
+      "_text-stream-CQReMCSF.js",
+      "_record-DW-UYlLY.js"
+    ]
+  },
+  "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-prerender-endpoints.js": {
+    "file": "_next/static/app-prerender-endpoints-B07CTtKA.js",
+    "name": "app-prerender-endpoints",
+    "src": "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-prerender-endpoints.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_app-prerender-static-params-DmNOPFXO.js",
+      "_root-params-BxYFMfiK.js"
+    ]
+  },
+  "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-route-handler-dispatch.js": {
+    "file": "_next/static/app-route-handler-dispatch-CRLzWqyw.js",
+    "name": "app-route-handler-dispatch",
+    "src": "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-route-handler-dispatch.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_rsc-BWlGRfrP.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js",
+      "_navigation-runtime-Dw6mgPEL.js",
+      "_instrumentation-B7A7ZtZ3.js",
+      "_app-segment-config-BaXfVJ4e.js",
+      "_app-elements-B5tvyXzw.js",
+      "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-static-generation.js",
+      "_record-DW-UYlLY.js",
+      "_root-params-BxYFMfiK.js",
+      "_implicit-tags-BfUiCndN.js"
+    ],
+    "dynamicImports": [
+      "_app-elements-B5tvyXzw.js"
+    ]
+  },
+  "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-static-generation.js": {
+    "file": "_next/static/app-static-generation-Cz2cfjjU.js",
+    "name": "app-static-generation",
+    "src": "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-static-generation.js",
+    "isDynamicEntry": true
+  },
+  "_app-elements-B5tvyXzw.js": {
+    "file": "_next/static/app-elements-B5tvyXzw.js",
+    "name": "app-elements",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~app-route-handler-dispatch-BTJ5qRrO.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js",
+      "_record-DW-UYlLY.js"
+    ]
+  },
+  "_app-page-cache-finalizer-D6XJyHMN.js": {
+    "file": "_next/static/app-page-cache-finalizer-D6XJyHMN.js",
+    "name": "app-page-cache-finalizer",
+    "imports": [
+      "_instrumentation-B7A7ZtZ3.js",
+      "_app-elements-B5tvyXzw.js",
+      "_text-stream-CQReMCSF.js",
+      "_record-DW-UYlLY.js"
+    ]
+  },
+  "_app-page-stream-CSPo6-Ed.js": {
+    "file": "_next/static/app-page-stream-CSPo6-Ed.js",
+    "name": "app-page-stream",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js",
+      "_app-elements-B5tvyXzw.js",
+      "_text-stream-CQReMCSF.js",
+      "_record-DW-UYlLY.js",
+      "_implicit-tags-BfUiCndN.js"
+    ]
+  },
+  "_app-prerender-static-params-DmNOPFXO.js": {
+    "file": "_next/static/app-prerender-static-params-DmNOPFXO.js",
+    "name": "app-prerender-static-params",
+    "imports": [
+      "_root-params-BxYFMfiK.js"
+    ]
+  },
+  "_app-segment-config-BaXfVJ4e.js": {
+    "file": "_next/static/app-segment-config-BaXfVJ4e.js",
+    "name": "app-segment-config",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js",
+      "_instrumentation-B7A7ZtZ3.js",
+      "_app-elements-B5tvyXzw.js",
+      "_record-DW-UYlLY.js",
+      "_root-params-BxYFMfiK.js",
+      "_implicit-tags-BfUiCndN.js"
+    ]
+  },
+  "_chat-store-DJ5-kVU4.js": {
+    "file": "_next/static/chat-store-DJ5-kVU4.js",
+    "name": "chat-store"
+  },
+  "_framework~index-usv8Ydn2.js": {
+    "file": "_next/static/framework~index-usv8Ydn2.js",
+    "name": "framework~index",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~page~app-route-handler-dispatch-D-JXdnSE.js"
+    ]
+  },
+  "_framework~index~app-page-cache-render~app-page-cache~layout~app-route-handler-dispatch-BTJ5qRrO.js": {
+    "file": "_next/static/framework~index~app-page-cache-render~app-page-cache~layout~app-route-handler-dispatch-BTJ5qRrO.js",
+    "name": "framework~index~app-page-cache-render~app-page-cache~layout~app-route-handler-dispatch",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js"
+    ]
+  },
+  "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js": {
+    "file": "_next/static/framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js",
+    "name": "framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js"
+    ]
+  },
+  "_framework~index~page~app-route-handler-dispatch-D-JXdnSE.js": {
+    "file": "_next/static/framework~index~page~app-route-handler-dispatch-D-JXdnSE.js",
+    "name": "framework~index~page~app-route-handler-dispatch",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js"
+    ]
+  },
+  "_implicit-tags-BfUiCndN.js": {
+    "file": "_next/static/implicit-tags-BfUiCndN.js",
+    "name": "implicit-tags",
+    "imports": [
+      "_app-elements-B5tvyXzw.js"
+    ]
+  },
+  "_instrumentation-B7A7ZtZ3.js": {
+    "file": "_next/static/instrumentation-B7A7ZtZ3.js",
+    "name": "instrumentation",
+    "imports": [
+      "_app-elements-B5tvyXzw.js"
+    ]
+  },
+  "_memory-store-DdupCZUb.js": {
+    "file": "_next/static/memory-store-DdupCZUb.js",
+    "name": "memory-store"
+  },
+  "_navigation-runtime-Dw6mgPEL.js": {
+    "file": "_next/static/navigation-runtime-Dw6mgPEL.js",
+    "name": "navigation-runtime",
+    "imports": [
+      "_app-elements-B5tvyXzw.js"
+    ]
+  },
+  "_ollama-BYmLLf_Z.js": {
+    "file": "_next/static/ollama-BYmLLf_Z.js",
+    "name": "ollama"
+  },
+  "_record-DW-UYlLY.js": {
+    "file": "_next/static/record-DW-UYlLY.js",
+    "name": "record"
+  },
+  "_rolldown-runtime-DUnMT5BP.js": {
+    "file": "_next/static/rolldown-runtime-DUnMT5BP.js",
+    "name": "rolldown-runtime"
+  },
+  "_root-params-BxYFMfiK.js": {
+    "file": "_next/static/root-params-BxYFMfiK.js",
+    "name": "root-params",
+    "imports": [
+      "_record-DW-UYlLY.js"
+    ]
+  },
+  "_rsc-BWlGRfrP.js": {
+    "file": "_next/static/rsc-BWlGRfrP.js",
+    "name": "rsc",
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_framework~index~page~app-route-handler-dispatch-D-JXdnSE.js"
+    ]
+  },
+  "_search-M3n75s_R.js": {
+    "file": "_next/static/search-M3n75s_R.js",
+    "name": "search",
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "_settings-store-Kv-6ERSM.js": {
+    "file": "_next/static/settings-store-Kv-6ERSM.js",
+    "name": "settings-store"
+  },
+  "_text-stream-CQReMCSF.js": {
+    "file": "_next/static/text-stream-CQReMCSF.js",
+    "name": "text-stream",
+    "imports": [
+      "_app-elements-B5tvyXzw.js",
+      "_record-DW-UYlLY.js"
+    ]
+  },
+  "_tool-client-DodcMJCw.js": {
+    "file": "_next/static/tool-client-DodcMJCw.js",
+    "name": "tool-client"
+  },
+  "app/api/artifacts/[id]/open/route.ts": {
+    "file": "_next/static/route-CHkbAQYx.js",
+    "name": "route",
+    "src": "app/api/artifacts/[id]/open/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/artifacts/[id]/route.ts": {
+    "file": "_next/static/route-eCI7mqVG.js",
+    "name": "route",
+    "src": "app/api/artifacts/[id]/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/auto-learn/events/route.ts": {
+    "file": "_next/static/route-PSiwHtcP.js",
+    "name": "route",
+    "src": "app/api/auto-learn/events/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/auto-learn/route.ts": {
+    "file": "_next/static/route-vgfyOXJv.js",
+    "name": "route",
+    "src": "app/api/auto-learn/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js",
+      "_memory-store-DdupCZUb.js",
+      "_settings-store-Kv-6ERSM.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/auto-learn/runs/[id]/[action]/route.ts": {
+    "file": "_next/static/route-BpJ74Z_B.js",
+    "name": "route",
+    "src": "app/api/auto-learn/runs/[id]/[action]/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/auto-learn/runs/[id]/route.ts": {
+    "file": "_next/static/route-Yrteprde.js",
+    "name": "route",
+    "src": "app/api/auto-learn/runs/[id]/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/auto-learn/runs/route.ts": {
+    "file": "_next/static/route-n6rkzQAW.js",
+    "name": "route",
+    "src": "app/api/auto-learn/runs/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/chat/route.ts": {
+    "file": "_next/static/route-CPGXru63.js",
+    "name": "route",
+    "src": "app/api/chat/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_ollama-BYmLLf_Z.js",
+      "_chat-store-DJ5-kVU4.js",
+      "_memory-store-DdupCZUb.js",
+      "_search-M3n75s_R.js",
+      "_settings-store-Kv-6ERSM.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/chats/[id]/export/route.ts": {
+    "file": "_next/static/route-CCWQy5ZP.js",
+    "name": "route",
+    "src": "app/api/chats/[id]/export/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js"
+    ]
+  },
+  "app/api/chats/[id]/messages/route.ts": {
+    "file": "_next/static/route-BdByhHjZ.js",
+    "name": "route",
+    "src": "app/api/chats/[id]/messages/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js"
+    ]
+  },
+  "app/api/chats/[id]/route.ts": {
+    "file": "_next/static/route-BYBFCX3p.js",
+    "name": "route",
+    "src": "app/api/chats/[id]/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js"
+    ]
+  },
+  "app/api/chats/[id]/summarize/route.ts": {
+    "file": "_next/static/route-CCKJiQW2.js",
+    "name": "route",
+    "src": "app/api/chats/[id]/summarize/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_ollama-BYmLLf_Z.js",
+      "_chat-store-DJ5-kVU4.js",
+      "_settings-store-Kv-6ERSM.js"
+    ]
+  },
+  "app/api/chats/route.ts": {
+    "file": "_next/static/route-BEPBUUqm.js",
+    "name": "route",
+    "src": "app/api/chats/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js"
+    ]
+  },
+  "app/api/health/route.ts": {
+    "file": "_next/static/route-Coi8iSFj.js",
+    "name": "route",
+    "src": "app/api/health/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_ollama-BYmLLf_Z.js",
+      "_settings-store-Kv-6ERSM.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/memory/route.ts": {
+    "file": "_next/static/route-DKvleU8k.js",
+    "name": "route",
+    "src": "app/api/memory/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_memory-store-DdupCZUb.js"
+    ]
+  },
+  "app/api/messages/[id]/feedback/route.ts": {
+    "file": "_next/static/route-Ct8GBsj_.js",
+    "name": "route",
+    "src": "app/api/messages/[id]/feedback/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js",
+      "_memory-store-DdupCZUb.js"
+    ]
+  },
+  "app/api/search/route.ts": {
+    "file": "_next/static/route-Cjb4oPva.js",
+    "name": "route",
+    "src": "app/api/search/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_search-M3n75s_R.js",
+      "_settings-store-Kv-6ERSM.js"
+    ]
+  },
+  "app/api/settings/route.ts": {
+    "file": "_next/static/route-BDJK8Ofi.js",
+    "name": "route",
+    "src": "app/api/settings/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_ollama-BYmLLf_Z.js",
+      "_settings-store-Kv-6ERSM.js"
+    ]
+  },
+  "app/api/skills/[id]/[action]/route.ts": {
+    "file": "_next/static/route-Cm9Cfh4b.js",
+    "name": "route",
+    "src": "app/api/skills/[id]/[action]/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/skills/[id]/route.ts": {
+    "file": "_next/static/route-DqH33Xhk.js",
+    "name": "route",
+    "src": "app/api/skills/[id]/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/skills/route.ts": {
+    "file": "_next/static/route-BlCawmXs.js",
+    "name": "route",
+    "src": "app/api/skills/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/tools/confirm/route.ts": {
+    "file": "_next/static/route-DXJ059jW2.js",
+    "name": "route",
+    "src": "app/api/tools/confirm/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_chat-store-DJ5-kVU4.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/tools/health/route.ts": {
+    "file": "_next/static/route-Cu0lL4B62.js",
+    "name": "route",
+    "src": "app/api/tools/health/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/tools/run/route.ts": {
+    "file": "_next/static/route-CfsdkTe42.js",
+    "name": "route",
+    "src": "app/api/tools/run/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_settings-store-Kv-6ERSM.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/tools/test/route.ts": {
+    "file": "_next/static/route-Bq_ooNih.js",
+    "name": "route",
+    "src": "app/api/tools/test/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_search-M3n75s_R.js",
+      "_settings-store-Kv-6ERSM.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/api/train/route.ts": {
+    "file": "_next/static/route-Duwm-VFk.js",
+    "name": "route",
+    "src": "app/api/train/route.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_ollama-BYmLLf_Z.js",
+      "_memory-store-DdupCZUb.js",
+      "_search-M3n75s_R.js",
+      "_settings-store-Kv-6ERSM.js",
+      "_tool-client-DodcMJCw.js"
+    ]
+  },
+  "app/page.tsx": {
+    "file": "_next/static/page-CA3Zrs3X.js",
+    "name": "page",
+    "src": "app/page.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_rsc-BWlGRfrP.js"
+    ]
+  },
+  "virtual:cloudflare/worker-entry": {
+    "file": "index.js",
+    "name": "index",
+    "src": "virtual:cloudflare/worker-entry",
+    "isEntry": true,
+    "imports": [
+      "_rolldown-runtime-DUnMT5BP.js",
+      "_rsc-BWlGRfrP.js",
+      "_framework~index-usv8Ydn2.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~app-route-handler-dispatch-BTJ5qRrO.js",
+      "_framework~index~app-page-cache-render~app-page-cache~layout~page~app-route-handler-dispatch-DYgf3trS.js",
+      "_instrumentation-B7A7ZtZ3.js",
+      "_app-segment-config-BaXfVJ4e.js",
+      "_app-elements-B5tvyXzw.js",
+      "_app-page-cache-finalizer-D6XJyHMN.js",
+      "_app-page-stream-CSPo6-Ed.js",
+      "_text-stream-CQReMCSF.js",
+      "_app-prerender-static-params-DmNOPFXO.js",
+      "_record-DW-UYlLY.js",
+      "_root-params-BxYFMfiK.js",
+      "_implicit-tags-BfUiCndN.js"
+    ],
+    "dynamicImports": [
+      "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-prerender-endpoints.js",
+      "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-static-generation.js",
+      "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-page-cache.js",
+      "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-page-cache-render.js",
+      "../../../../Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime/node_modules/.pnpm/vinext@1.0.0-beta.2_@vitejs+plugin-react@6.0.2_vite@8.0.13_@types+node@22.19.19_esbuild_93f6fd6c708956198cb05a5cfe3fd3ab/node_modules/vinext/dist/server/app-route-handler-dispatch.js",
+      "app/api/artifacts/[id]/open/route.ts",
+      "virtual:cloudflare/worker-entry",
+      "app/api/chats/[id]/export/route.ts",
+      "app/api/chats/[id]/messages/route.ts",
+      "app/api/chats/[id]/summarize/route.ts",
+      "app/api/messages/[id]/feedback/route.ts",
+      "app/api/auto-learn/runs/[id]/route.ts",
+      "app/page.tsx",
+      "app/api/auto-learn/route.ts",
+      "app/api/auto-learn/events/route.ts",
+      "app/api/auto-learn/runs/route.ts",
+      "app/api/chat/route.ts",
+      "app/api/chats/route.ts",
+      "app/api/health/route.ts",
+      "app/api/memory/route.ts",
+      "app/api/search/route.ts",
+      "app/api/settings/route.ts",
+      "app/api/skills/route.ts",
+      "app/api/tools/confirm/route.ts",
+      "app/api/tools/health/route.ts",
+      "app/api/tools/run/route.ts",
+      "app/api/tools/test/route.ts",
+      "app/api/train/route.ts",
+      "app/api/artifacts/[id]/route.ts",
+      "app/api/chats/[id]/route.ts",
+      "app/api/skills/[id]/route.ts",
+      "app/api/auto-learn/runs/[id]/[action]/route.ts",
+      "app/api/skills/[id]/[action]/route.ts"
+    ],
+    "css": [
+      "_next/static/css/index.Dg19NneC.css"
+    ]
+  }
+}

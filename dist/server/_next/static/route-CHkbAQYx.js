@@ -1,0 +1,1 @@
+import{l as e}from"./tool-client-DodcMJCw.js";async function t(t,n){try{let{id:t}=await n.params;return await e(t),Response.json({ok:!0})}catch(e){return Response.json({error:e instanceof Error?e.message:`เปิด Finder ไม่สำเร็จ`},{status:500})}}export{t as POST};

@@ -1,0 +1,4 @@
+OLLAMA_BASE_URL=http://127.0.0.1:11435
+ALPHA_TOOL_BASE_URL=http://127.0.0.1:4317
+# start-alpha.command creates a private random token here automatically.
+ALPHA_TOOL_TOKEN=

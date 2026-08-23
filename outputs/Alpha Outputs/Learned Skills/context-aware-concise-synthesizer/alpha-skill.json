@@ -1,0 +1,88 @@
+{
+  "id": "context-aware-concise-synthesizer",
+  "name": "Context-Aware Concise Response Synthesizer",
+  "description": "ย่อข้อความยาวให้กระชับตามจำนวนประโยคและ focus ที่กำหนด โดยทำงานออฟไลน์",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "dependencies": [
+    "python-stdlib"
+  ],
+  "trigger_examples": [
+    "สรุปให้สั้น",
+    "ตอบแบบกระชับ",
+    "ย่อบริบทนี้"
+  ],
+  "test_cases": [
+    {
+      "name": "thai-two",
+      "input": {
+        "text": "หนึ่งประโยคแรก。 สองประโยคถัดไป。 สามประโยคสุดท้าย。",
+        "max_sentences": 2
+      },
+      "stdout_contains": "\"sentence_count\":2",
+      "expected_files": [
+        "result.json"
+      ]
+    },
+    {
+      "name": "english-one",
+      "input": {
+        "text": "First. Second. Third.",
+        "max_sentences": 1
+      },
+      "stdout_contains": "\"sentence_count\":1",
+      "expected_files": [
+        "result.json"
+      ]
+    },
+    {
+      "name": "focus",
+      "input": {
+        "text": "อาหารอร่อย。 Python แก้บั๊กได้。 วันนี้อากาศดี。",
+        "max_sentences": 1,
+        "focus": "Python"
+      },
+      "stdout_contains": "Python",
+      "expected_files": [
+        "result.json"
+      ]
+    },
+    {
+      "name": "empty",
+      "input": {
+        "text": "",
+        "max_sentences": 3
+      },
+      "stdout_contains": "\"sentence_count\":0",
+      "expected_files": [
+        "result.json"
+      ]
+    }
+  ],
+  "version": 1,
+  "enabled": true,
+  "origin": "auto_learn",
+  "installed_at": "2026-08-23T05:06:01.348Z",
+  "updated_at": "2026-08-23T05:06:01.348Z",
+  "verification_status": "verified",
+  "verified_pass_rate": 100,
+  "verified_passed": 4,
+  "verified_total": 4,
+  "verification_scope": "4 visible fixtures และ 20 hidden fixtures ครอบคลุมไทย อังกฤษ บรรทัดใหม่ focus และขีดจำกัดจำนวนประโยค",
+  "hidden_test_result": {
+    "passed": 20,
+    "total": 20
+  },
+  "generalization_confidence": 86.2,
+  "confidence_sample_size": 24,
+  "environment_fingerprint": "e66d0ccb9445d5fd",
+  "usage_count": 4,
+  "success_count": 4,
+  "last_run_at": "2026-08-23T05:13:49.812Z",
+  "last_error": "",
+  "sandbox": {
+    "network": "off",
+    "memory_mb": 512
+  },
+  "trusted_catalog_version": 2
+}

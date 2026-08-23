@@ -1,0 +1,619 @@
+{
+  "objective": "สังเคราะห์ข้อความหรือประวัติสนทนายาวให้เป็นคำตอบกระชับ โดยรักษาลำดับและหัวข้อที่ผู้ใช้ระบุ",
+  "success_criteria": "จำกัดจำนวนประโยคได้ รองรับภาษาไทยและอังกฤษ และสร้าง result.json อย่างสม่ำเสมอ",
+  "passed": true,
+  "attempt": 1,
+  "tested_at": "2026-08-23T05:06:01.344Z",
+  "tests": [
+    {
+      "name": "thai-two",
+      "passed": true,
+      "case": {
+        "name": "thai-two",
+        "input": {
+          "text": "หนึ่งประโยคแรก。 สองประโยคถัดไป。 สามประโยคสุดท้าย。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"หนึ่งประโยคแรก。 สองประโยคถัดไป。\",\"sentence_count\":2,\"source_sentence_count\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "english-one",
+      "passed": true,
+      "case": {
+        "name": "english-one",
+        "input": {
+          "text": "First. Second. Third.",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"First.\",\"sentence_count\":1,\"source_sentence_count\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "focus",
+      "passed": true,
+      "case": {
+        "name": "focus",
+        "input": {
+          "text": "อาหารอร่อย。 Python แก้บั๊กได้。 วันนี้อากาศดี。",
+          "max_sentences": 1,
+          "focus": "Python"
+        },
+        "stdout_contains": "Python",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"Python แก้บั๊กได้。\",\"sentence_count\":1,\"source_sentence_count\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "empty",
+      "passed": true,
+      "case": {
+        "name": "empty",
+        "input": {
+          "text": "",
+          "max_sentences": 3
+        },
+        "stdout_contains": "\"sentence_count\":0",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"\",\"sentence_count\":0,\"source_sentence_count\":0}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "hidden_tests": [
+    {
+      "name": "hidden-1",
+      "passed": true,
+      "case": {
+        "name": "hidden-1",
+        "input": {
+          "text": "ข้อความ 1。 ข้อมูลเสริม 1。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 1。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-2",
+      "passed": true,
+      "case": {
+        "name": "hidden-2",
+        "input": {
+          "text": "ข้อความ 2。 ข้อมูลเสริม 2。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 2。 ข้อมูลเสริม 2。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-3",
+      "passed": true,
+      "case": {
+        "name": "hidden-3",
+        "input": {
+          "text": "ข้อความ 3。 ข้อมูลเสริม 3。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 3。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-4",
+      "passed": true,
+      "case": {
+        "name": "hidden-4",
+        "input": {
+          "text": "ข้อความ 4。 ข้อมูลเสริม 4。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 4。 ข้อมูลเสริม 4。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-5",
+      "passed": true,
+      "case": {
+        "name": "hidden-5",
+        "input": {
+          "text": "ข้อความ 5。 ข้อมูลเสริม 5。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 5。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-6",
+      "passed": true,
+      "case": {
+        "name": "hidden-6",
+        "input": {
+          "text": "ข้อความ 6。 ข้อมูลเสริม 6。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 6。 ข้อมูลเสริม 6。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-7",
+      "passed": true,
+      "case": {
+        "name": "hidden-7",
+        "input": {
+          "text": "ข้อความ 7。 ข้อมูลเสริม 7。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 7。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-8",
+      "passed": true,
+      "case": {
+        "name": "hidden-8",
+        "input": {
+          "text": "ข้อความ 8。 ข้อมูลเสริม 8。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 8。 ข้อมูลเสริม 8。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-9",
+      "passed": true,
+      "case": {
+        "name": "hidden-9",
+        "input": {
+          "text": "ข้อความ 9。 ข้อมูลเสริม 9。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 9。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-10",
+      "passed": true,
+      "case": {
+        "name": "hidden-10",
+        "input": {
+          "text": "ข้อความ 10。 ข้อมูลเสริม 10。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 10。 ข้อมูลเสริม 10。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-11",
+      "passed": true,
+      "case": {
+        "name": "hidden-11",
+        "input": {
+          "text": "ข้อความ 11。 ข้อมูลเสริม 11。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 11。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-12",
+      "passed": true,
+      "case": {
+        "name": "hidden-12",
+        "input": {
+          "text": "ข้อความ 12。 ข้อมูลเสริม 12。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 12。 ข้อมูลเสริม 12。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-13",
+      "passed": true,
+      "case": {
+        "name": "hidden-13",
+        "input": {
+          "text": "ข้อความ 13。 ข้อมูลเสริม 13。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 13。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-14",
+      "passed": true,
+      "case": {
+        "name": "hidden-14",
+        "input": {
+          "text": "ข้อความ 14。 ข้อมูลเสริม 14。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 14。 ข้อมูลเสริม 14。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-15",
+      "passed": true,
+      "case": {
+        "name": "hidden-15",
+        "input": {
+          "text": "ข้อความ 15。 ข้อมูลเสริม 15。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 15。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-16",
+      "passed": true,
+      "case": {
+        "name": "hidden-16",
+        "input": {
+          "text": "ข้อความ 16。 ข้อมูลเสริม 16。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 16。 ข้อมูลเสริม 16。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-17",
+      "passed": true,
+      "case": {
+        "name": "hidden-17",
+        "input": {
+          "text": "ข้อความ 17。 ข้อมูลเสริม 17。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 17。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-18",
+      "passed": true,
+      "case": {
+        "name": "hidden-18",
+        "input": {
+          "text": "ข้อความ 18。 ข้อมูลเสริม 18。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 18。 ข้อมูลเสริม 18。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-19",
+      "passed": true,
+      "case": {
+        "name": "hidden-19",
+        "input": {
+          "text": "ข้อความ 19。 ข้อมูลเสริม 19。",
+          "max_sentences": 1
+        },
+        "stdout_contains": "\"sentence_count\":1",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 19。\",\"sentence_count\":1,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-20",
+      "passed": true,
+      "case": {
+        "name": "hidden-20",
+        "input": {
+          "text": "ข้อความ 20。 ข้อมูลเสริม 20。",
+          "max_sentences": 2
+        },
+        "stdout_contains": "\"sentence_count\":2",
+        "expected_files": [
+          "result.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"summary\":\"ข้อความ 20。 ข้อมูลเสริม 20。\",\"sentence_count\":2,\"source_sentence_count\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "result.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "verification_scope": "4 visible fixtures และ 20 hidden fixtures ครอบคลุมไทย อังกฤษ บรรทัดใหม่ focus และขีดจำกัดจำนวนประโยค",
+  "dependencies": [
+    {
+      "id": "python-stdlib",
+      "source": "Python official image"
+    }
+  ]
+}

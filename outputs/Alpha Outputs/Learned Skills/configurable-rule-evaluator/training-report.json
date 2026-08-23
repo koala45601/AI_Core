@@ -1,0 +1,680 @@
+{
+  "objective": "ประเมินคำขอตามกฎที่ผู้ใช้กำหนดใน Settings เท่านั้น โดยค่าเริ่มต้นเป็น allow และไม่มี blocked term ฝังในโค้ด",
+  "success_criteria": "รองรับ allow, block, warn, แสดงกฎที่ตรงกัน และไม่ปฏิเสธเมื่อ rules ว่าง",
+  "passed": true,
+  "attempt": 1,
+  "tested_at": "2026-08-23T05:06:23.477Z",
+  "tests": [
+    {
+      "name": "empty-rules-allow",
+      "passed": true,
+      "case": {
+        "name": "empty-rules-allow",
+        "input": {
+          "request": "หัวข้อใดก็ได้",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "explicit-block",
+      "passed": true,
+      "case": {
+        "name": "explicit-block",
+        "input": {
+          "request": "ห้ามคำนี้",
+          "rules": [
+            {
+              "term": "ห้ามคำนี้",
+              "action": "block",
+              "reason": "ผู้ใช้บล็อกเอง"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ผู้ใช้บล็อกเอง\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "explicit-warn",
+      "passed": true,
+      "case": {
+        "name": "explicit-warn",
+        "input": {
+          "request": "หัวข้อเตือน",
+          "rules": [
+            {
+              "term": "เตือน",
+              "action": "warn"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"warn\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"warn\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า เตือน\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "default-warn",
+      "passed": true,
+      "case": {
+        "name": "default-warn",
+        "input": {
+          "request": "ไม่ตรง",
+          "rules": [],
+          "default_action": "warn"
+        },
+        "stdout_contains": "\"decision\":\"warn\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"warn\",\"default_action\":\"warn\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "hidden_tests": [
+    {
+      "name": "hidden-1",
+      "passed": true,
+      "case": {
+        "name": "hidden-1",
+        "input": {
+          "request": "คำขอ-0",
+          "rules": [
+            {
+              "term": "คำขอ-0",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-0\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-2",
+      "passed": true,
+      "case": {
+        "name": "hidden-2",
+        "input": {
+          "request": "คำขอ-1",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-3",
+      "passed": true,
+      "case": {
+        "name": "hidden-3",
+        "input": {
+          "request": "คำขอ-2",
+          "rules": [
+            {
+              "term": "คำขอ-2",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-2\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-4",
+      "passed": true,
+      "case": {
+        "name": "hidden-4",
+        "input": {
+          "request": "คำขอ-3",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-5",
+      "passed": true,
+      "case": {
+        "name": "hidden-5",
+        "input": {
+          "request": "คำขอ-4",
+          "rules": [
+            {
+              "term": "คำขอ-4",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-4\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-6",
+      "passed": true,
+      "case": {
+        "name": "hidden-6",
+        "input": {
+          "request": "คำขอ-5",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-7",
+      "passed": true,
+      "case": {
+        "name": "hidden-7",
+        "input": {
+          "request": "คำขอ-6",
+          "rules": [
+            {
+              "term": "คำขอ-6",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-6\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-8",
+      "passed": true,
+      "case": {
+        "name": "hidden-8",
+        "input": {
+          "request": "คำขอ-7",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-9",
+      "passed": true,
+      "case": {
+        "name": "hidden-9",
+        "input": {
+          "request": "คำขอ-8",
+          "rules": [
+            {
+              "term": "คำขอ-8",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-8\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-10",
+      "passed": true,
+      "case": {
+        "name": "hidden-10",
+        "input": {
+          "request": "คำขอ-9",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-11",
+      "passed": true,
+      "case": {
+        "name": "hidden-11",
+        "input": {
+          "request": "คำขอ-10",
+          "rules": [
+            {
+              "term": "คำขอ-10",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-10\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-12",
+      "passed": true,
+      "case": {
+        "name": "hidden-12",
+        "input": {
+          "request": "คำขอ-11",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-13",
+      "passed": true,
+      "case": {
+        "name": "hidden-13",
+        "input": {
+          "request": "คำขอ-12",
+          "rules": [
+            {
+              "term": "คำขอ-12",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-12\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-14",
+      "passed": true,
+      "case": {
+        "name": "hidden-14",
+        "input": {
+          "request": "คำขอ-13",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-15",
+      "passed": true,
+      "case": {
+        "name": "hidden-15",
+        "input": {
+          "request": "คำขอ-14",
+          "rules": [
+            {
+              "term": "คำขอ-14",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-14\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-16",
+      "passed": true,
+      "case": {
+        "name": "hidden-16",
+        "input": {
+          "request": "คำขอ-15",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-17",
+      "passed": true,
+      "case": {
+        "name": "hidden-17",
+        "input": {
+          "request": "คำขอ-16",
+          "rules": [
+            {
+              "term": "คำขอ-16",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-16\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-18",
+      "passed": true,
+      "case": {
+        "name": "hidden-18",
+        "input": {
+          "request": "คำขอ-17",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-19",
+      "passed": true,
+      "case": {
+        "name": "hidden-19",
+        "input": {
+          "request": "คำขอ-18",
+          "rules": [
+            {
+              "term": "คำขอ-18",
+              "action": "block"
+            }
+          ]
+        },
+        "stdout_contains": "\"decision\":\"block\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"block\",\"default_action\":\"allow\",\"matched_rule\":0,\"reason\":\"ตรงกับกฎคำว่า คำขอ-18\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-20",
+      "passed": true,
+      "case": {
+        "name": "hidden-20",
+        "input": {
+          "request": "คำขอ-19",
+          "rules": []
+        },
+        "stdout_contains": "\"decision\":\"allow\"",
+        "expected_files": [
+          "decision.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"decision\":\"allow\",\"default_action\":\"allow\",\"matched_rule\":null,\"reason\":\"ไม่มีกฎที่ตรงกัน จึงใช้ค่าเริ่มต้นจากผู้ใช้\"}\n",
+      "stderr": "",
+      "output_files": [
+        "decision.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "verification_scope": "4 visible fixtures และ 20 hidden fixtures ครอบคลุม default allow, explicit block/warn/allow, Unicode และลำดับกฎ",
+  "dependencies": [
+    {
+      "id": "python-stdlib",
+      "source": "Python official image"
+    }
+  ]
+}

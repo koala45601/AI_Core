@@ -1,0 +1,618 @@
+{
+  "objective": "อ่าน PNG แบบออฟไลน์ด้วย Python standard library เพื่อดึงขนาด ข้อความ metadata และสร้าง caption สั้น",
+  "success_criteria": "ตรวจ signature/IHDR ได้ ดึง tEXt chunk ได้ และสร้าง metadata.json โดยไม่ใช้เน็ตหรือ dependency ภายนอก",
+  "passed": true,
+  "attempt": 1,
+  "tested_at": "2026-08-23T05:06:15.937Z",
+  "tests": [
+    {
+      "name": "visible-png-1",
+      "passed": true,
+      "case": {
+        "name": "visible-png-1",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEYdjt1AAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+          "filename": "fixture-1.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"fixture-1.png: PNG 1x1 — fixture-1\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-1\"}],\"filename\":\"fixture-1.png\",\"format\":\"PNG\",\"height\":1,\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "visible-png-2",
+      "passed": true,
+      "case": {
+        "name": "visible-png-2",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTKBf2rPAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=",
+          "filename": "fixture-2.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"fixture-2.png: PNG 2x2 — fixture-2\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-2\"}],\"filename\":\"fixture-2.png\",\"format\":\"PNG\",\"height\":2,\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "visible-png-3",
+      "passed": true,
+      "case": {
+        "name": "visible-png-3",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTP2eFpZAAAADklEQVR4nGP4jwQYcHIAu4cj3ZP55DwAAAAASUVORK5CYII=",
+          "filename": "fixture-3.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"fixture-3.png: PNG 3x3 — fixture-3\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-3\"}],\"filename\":\"fixture-3.png\",\"format\":\"PNG\",\"height\":3,\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "visible-png-4",
+      "passed": true,
+      "case": {
+        "name": "visible-png-4",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTRoHM/6AAAAD0lEQVR4nGP4jwYYSBcAAHg8P8FY7imoAAAAAElFTkSuQmCC",
+          "filename": "fixture-4.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"fixture-4.png: PNG 4x4 — fixture-4\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-4\"}],\"filename\":\"fixture-4.png\",\"format\":\"PNG\",\"height\":4,\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "hidden_tests": [
+    {
+      "name": "hidden-png-1",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-1",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAABCAYAAAAW/mTzAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTUfG/9sAAAADElEQVR4nGP4jwUAANFDE+0nSiaEAAAAAElFTkSuQmCC",
+          "filename": "hidden-1.png"
+        },
+        "stdout_contains": "\"width\":5",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-1.png: PNG 5x1 — fixture-5\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-5\"}],\"filename\":\"hidden-1.png\",\"format\":\"PNG\",\"height\":1,\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-2",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-2",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAACCAYAAAB7Xa1eAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTaGEq7WAAAAD0lEQVR4nGP4jwMw4JIAAKu+L9GlTSCXAAAAAElFTkSuQmCC",
+          "filename": "hidden-2.png"
+        },
+        "stdout_contains": "\"width\":6",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-2.png: PNG 6x2 — fixture-6\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-6\"}],\"filename\":\"hidden-2.png\",\"format\":\"PNG\",\"height\":2,\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-3",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-3",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAADCAYAAABS3WWCAAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTfxFZ5AAAAAEElEQVR4nGP4////fwY4AQBZtQv1dgZLawAAAABJRU5ErkJggg==",
+          "filename": "hidden-3.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-3.png: PNG 1x3 — fixture-7\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-7\"}],\"filename\":\"hidden-3.png\",\"format\":\"PNG\",\"height\":3,\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-4",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-4",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAYAAACk7+45AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLThhqoPRAAAADklEQVR4nGP4DwUMuBkAPgIf4WZScsAAAAAASUVORK5CYII=",
+          "filename": "hidden-4.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-4.png: PNG 2x4 — fixture-8\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-8\"}],\"filename\":\"hidden-4.png\",\"format\":\"PNG\",\"height\":4,\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-5",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-5",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAAFXRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTkWrbNHAAAAC0lEQVR4nGP4jwQATb8L9davaZUAAAAASUVORK5CYII=",
+          "filename": "hidden-5.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-5.png: PNG 3x1 — fixture-9\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-9\"}],\"filename\":\"hidden-5.png\",\"format\":\"PNG\",\"height\":1,\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-6",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-6",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEw1KwsqQAAAA5JREFUeJxj+I8GGNAFAB4gH+EWnYUHAAAAAElFTkSuQmCC",
+          "filename": "hidden-6.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-6.png: PNG 4x2 — fixture-10\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-10\"}],\"filename\":\"hidden-6.png\",\"format\":\"PNG\",\"height\":2,\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-7",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-7",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAADCAYAAABbNsX4AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTExo6scPwAAAA9JREFUeJxj+I8FMBAtCABbRjvFZJPOWQAAAABJRU5ErkJggg==",
+          "filename": "hidden-7.png"
+        },
+        "stdout_contains": "\"width\":5",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-7.png: PNG 5x3 — fixture-11\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-11\"}],\"filename\":\"hidden-7.png\",\"format\":\"PNG\",\"height\":3,\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-8",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-8",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAAECAYAAACtBE5DAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEyOqJNhQAAAA9JREFUeJxj+I8DMFBPAgCusl+htZk0IgAAAABJRU5ErkJggg==",
+          "filename": "hidden-8.png"
+        },
+        "stdout_contains": "\"width\":6",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-8.png: PNG 6x4 — fixture-12\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-12\"}],\"filename\":\"hidden-8.png\",\"format\":\"PNG\",\"height\":4,\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-9",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-9",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTEzTaV9EwAAAA1JREFUeJxj+P///38ACfsD/SqG44oAAAAASUVORK5CYII=",
+          "filename": "hidden-9.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-9.png: PNG 1x1 — fixture-13\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-13\"}],\"filename\":\"hidden-9.png\",\"format\":\"PNG\",\"height\":1,\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-10",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-10",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE008HosAAAAA5JREFUeJxj+A8FDDAGAI+CD/E8pVZRAAAAAElFTkSuQmCC",
+          "filename": "hidden-10.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-10.png: PNG 2x2 — fixture-14\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-14\"}],\"filename\":\"hidden-10.png\",\"format\":\"PNG\",\"height\":2,\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-11",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-11",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE1pMbYJgAAAA5JREFUeJxj+I8EGHByALuHI92T+eQ8AAAAAElFTkSuQmCC",
+          "filename": "hidden-11.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-11.png: PNG 3x3 — fixture-15\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-15\"}],\"filename\":\"hidden-11.png\",\"format\":\"PNG\",\"height\":3,\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-12",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-12",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE2Pc+JnAAAAA9JREFUeJxj+I8GGEgXAAB4PD/BWO4pqAAAAABJRU5ErkJggg==",
+          "filename": "hidden-12.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-12.png: PNG 4x4 — fixture-16\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-16\"}],\"filename\":\"hidden-12.png\",\"format\":\"PNG\",\"height\":4,\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-13",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-13",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAABCAYAAAAW/mTzAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE3Ssi5CgAAAAxJREFUeJxj+I8FAADRQxPtJ0omhAAAAABJRU5ErkJggg==",
+          "filename": "hidden-13.png"
+        },
+        "stdout_contains": "\"width\":5",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-13.png: PNG 5x1 — fixture-17\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-17\"}],\"filename\":\"hidden-13.png\",\"format\":\"PNG\",\"height\":1,\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-14",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-14",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAACCAYAAAB7Xa1eAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE42nekmwAAAA9JREFUeJxj+I8DMOCSAACrvi/RpU0glwAAAABJRU5ErkJggg==",
+          "filename": "hidden-14.png"
+        },
+        "stdout_contains": "\"width\":6",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-14.png: PNG 6x2 — fixture-18\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-18\"}],\"filename\":\"hidden-14.png\",\"format\":\"PNG\",\"height\":2,\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-15",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-15",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAADCAYAAABS3WWCAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTE5rXCUDQAAABBJREFUeJxj+P///38GOAEAWbUL9XYGS2sAAAAASUVORK5CYII=",
+          "filename": "hidden-15.png"
+        },
+        "stdout_contains": "\"width\":1",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-15.png: PNG 1x3 — fixture-19\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-19\"}],\"filename\":\"hidden-15.png\",\"format\":\"PNG\",\"height\":3,\"width\":1}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-16",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-16",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAYAAACk7+45AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIw/4F/agAAAA5JREFUeJxj+A8FDLgZAD4CH+FmUnLAAAAAAElFTkSuQmCC",
+          "filename": "hidden-16.png"
+        },
+        "stdout_contains": "\"width\":2",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-16.png: PNG 2x4 — fixture-20\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-20\"}],\"filename\":\"hidden-16.png\",\"format\":\"PNG\",\"height\":4,\"width\":2}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-17",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-17",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIxiIZP/AAAAAtJREFUeJxj+I8EAE2/C/XWr2mVAAAAAElFTkSuQmCC",
+          "filename": "hidden-17.png"
+        },
+        "stdout_contains": "\"width\":3",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-17.png: PNG 3x1 — fixture-21\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-21\"}],\"filename\":\"hidden-17.png\",\"format\":\"PNG\",\"height\":1,\"width\":3}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-18",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-18",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIyEY8eRgAAAA5JREFUeJxj+I8GGNAFAB4gH+EWnYUHAAAAAElFTkSuQmCC",
+          "filename": "hidden-18.png"
+        },
+        "stdout_contains": "\"width\":4",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-18.png: PNG 4x2 — fixture-22\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-22\"}],\"filename\":\"hidden-18.png\",\"format\":\"PNG\",\"height\":2,\"width\":4}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-19",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-19",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAADCAYAAABbNsX4AAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTIzZogu0AAAAA9JREFUeJxj+I8FMBAtCABbRjvFZJPOWQAAAABJRU5ErkJggg==",
+          "filename": "hidden-19.png"
+        },
+        "stdout_contains": "\"width\":5",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-19.png: PNG 5x3 — fixture-23\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-23\"}],\"filename\":\"hidden-19.png\",\"format\":\"PNG\",\"height\":3,\"width\":5}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    },
+    {
+      "name": "hidden-png-20",
+      "passed": true,
+      "case": {
+        "name": "hidden-png-20",
+        "input": {
+          "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAYAAAAECAYAAACtBE5DAAAAFnRFWHREZXNjcmlwdGlvbgBmaXh0dXJlLTI0+Oy7cwAAAA9JREFUeJxj+I8DMFBPAgCusl+htZk0IgAAAABJRU5ErkJggg==",
+          "filename": "hidden-20.png"
+        },
+        "stdout_contains": "\"width\":6",
+        "expected_files": [
+          "metadata.json"
+        ]
+      },
+      "exit_code": 0,
+      "stdout": "{\"caption\":\"hidden-20.png: PNG 6x4 — fixture-24\",\"embedded_text\":[{\"key\":\"Description\",\"value\":\"fixture-24\"}],\"filename\":\"hidden-20.png\",\"format\":\"PNG\",\"height\":4,\"width\":6}\n",
+      "stderr": "",
+      "output_files": [
+        "metadata.json"
+      ],
+      "checks": {
+        "stdout": true,
+        "files": true
+      }
+    }
+  ],
+  "verification_scope": "4 visible fixtures และ 20 hidden PNG fixtures หลายขนาด ชื่อไฟล์ Unicode และ tEXt metadata; ไม่อ้างว่าเป็น OCR พิกเซล",
+  "dependencies": [
+    {
+      "id": "python-stdlib",
+      "source": "Python official image"
+    }
+  ]
+}

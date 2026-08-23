@@ -1,0 +1,19 @@
+{
+  "summary": "- user: ฉันชอบภาษาไทย\n- assistant: รับทราบ",
+  "items": [
+    {
+      "index": 0,
+      "role": "user",
+      "content": "ฉันชอบภาษาไทย",
+      "important": true
+    },
+    {
+      "index": 1,
+      "role": "assistant",
+      "content": "รับทราบ",
+      "important": false
+    }
+  ],
+  "item_count": 2,
+  "source_count": 2
+}
