@@ -1,5 +1,24 @@
 # Alpha changelog
 
+## 1.1.0-beta.3 — 2026-08-23
+
+- Persisted host-tool approval requests to `work/host-tool-confirmations.json` with a 24-hour lifetime instead of keeping them only in process memory.
+- Added idempotent completed approval results so duplicate clicks do not repeat successful package installs.
+- Added restart recovery for interrupted approval state.
+- Added live approval/action status polling in chat while an approved host action is running.
+- Restored pending approval cards from saved chat tool events after page reload.
+- Added automatic continuation of the original chat task after a successful package install; the user no longer needs to type “ทำต่อ”.
+- Increased confirmation/install request timeout for long Homebrew installs.
+- Reduced successful Homebrew installation output to a concise status while saving detailed install output under `work/host-install-logs/`.
+- Kept the Mac-first capability policy: inspect and use built-in Mac hardware before claiming an external adapter is required.
+- Added focused beta3 regression tests and a workflow that syntax-checks the runtime and commits the generated UI patch only after tests pass.
+
+## 1.1.0-beta.2 — 2026-08-23
+
+- Added Mac host capability inventory and a controlled Homebrew package-install workflow for the security-agent preview.
+- Added the Mac Wireless Audit Controller preview skill and Mac-first hardware policy.
+- Added `start-alpha-v11.command` for the preview Host Tool Controller.
+
 ## 1.0.0 — 2026-08-23
 
 - Recovered all six findings from the recalled Auto Learn run as executable, installed skills.
