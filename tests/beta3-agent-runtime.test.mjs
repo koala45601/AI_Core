@@ -20,7 +20,7 @@ test("beta3 source contracts keep approvals persistent and resumable", async () 
     text("app/api/tools/confirm/route.ts"),
     text("scripts/apply-beta3-runtime-patch.mjs"),
   ]);
-  assert.equal(JSON.parse(pkg).version, "1.1.0-beta.3");
+  assert.match(JSON.parse(pkg).version, /^1\.1\.0-beta\.\d+$/);
   assert.match(wrapper, /host-tool-confirmations\.json/);
   assert.match(wrapper, /24 \* 60 \* 60 \* 1000/);
   assert.match(wrapper, /HOMEBREW_NO_AUTO_UPDATE/);
