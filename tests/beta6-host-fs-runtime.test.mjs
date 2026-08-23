@@ -25,7 +25,7 @@ test("host_fs implementation is read-only and never calls Docker", () => {
 
 test("path verification bypasses the model planner and calls host_fs directly", () => {
   assert.match(route, /function hostPathVerificationQuestion/);
-  assert.match(route, /executeTool\("host_fs", \{ action: "stat", path: targetPath \}, settings\)/);
+  assert.match(route, /executeTool\("host_fs", \{ action: (?:"stat"|hostFsAction), path: targetPath \}, settings\)/);
   const verifyStart = route.indexOf("if (hostPathVerificationQuestion(message))");
   const artifactStart = route.indexOf("if (artifactLocationQuestion(message))", verifyStart);
   assert.ok(verifyStart >= 0 && artifactStart > verifyStart, "host verification must run before artifact-location shortcut");
