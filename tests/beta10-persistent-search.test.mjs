@@ -6,8 +6,9 @@ const patcher = await readFile(new URL("../scripts/apply-beta10-persistent-searc
 
 test("beta10 decouples SearXNG from generic idle cleanup", () => {
   assert.match(patcher, /Search service lifetime is the Alpha session/);
+  assert.match(patcher, /not the generic heavy-tool idle timeout/);
   assert.match(patcher, /if \(alphaContext\) await alphaContext\.close/);
-  assert.doesNotMatch(patcher, /lastHeavyUse = 0;\n    await stopHeavyTools\(\)\.catch/);
+  assert.match(patcher, /alphaContext = null;/);
 });
 
 test("beta10 starts and keeps SearXNG alive while Tool Service runs", () => {
