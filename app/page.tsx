@@ -322,16 +322,26 @@ export default function Home() {
       const response = await fetch(`/api/chats/${encodeURIComponent(id)}/messages`, { cache: "no-store" });
       if (!response.ok) return;
       const data = await response.json() as {
-        messages: Array<{ id: string; role: "user" | "assistant"; content: string; metadata?: { sources?: SearchResult[]; artifacts?: ArtifactRecord[]; error?: boolean } }>;
+        messages: Array<{ id: string; role: "user" | "assistant"; content: string; metadata?: { sources?: SearchResult[]; artifacts?: ArtifactRecord[]; error?: boolean; tool_events?: Array<Record<string, unknown>> } }>;
       };
-      setMessages(data.messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        sources: message.metadata?.sources,
-        artifacts: message.metadata?.artifacts,
-        error: message.metadata?.error,
-      })));
+      setMessages(data.messages.map((message) => {
+        const permissionEvent = [...(message.metadata?.tool_events ?? [])].reverse().find((item) =>
+          item.type === "permission_required" && typeof item.confirmation_id === "string"
+        );
+        return {
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          sources: message.metadata?.sources,
+          artifacts: message.metadata?.artifacts,
+          error: message.metadata?.error,
+          permission: permissionEvent ? {
+            confirmationId: String(permissionEvent.confirmation_id),
+            summary: String(permissionEvent.summary || "อนุญาตให้ใช้เครื่องมือนี้หรือไม่?"),
+            tool: String(permissionEvent.tool || "tool"),
+          } : undefined,
+        };
+      }));
       setActiveChatId(id);
       setView("chat");
       followLatestRef.current = true;
@@ -713,30 +723,97 @@ export default function Home() {
     }
   }
 
+  // alpha-beta3-resume-v1
   async function confirmPermission(messageId: string, confirmationId: string, approved: boolean) {
+    const permissionIndex = messages.findIndex((item) => item.id === messageId);
+    const previousUser = permissionIndex > 0
+      ? [...messages.slice(0, permissionIndex)].reverse().find((item) => item.role === "user")
+      : undefined;
+    let statusTimer: number | undefined;
+    let resumed = false;
+
+    if (approved) {
+      setIsThinking(true);
+      setThinkingSteps(["ได้รับอนุญาตแล้ว", "กำลังดำเนินการที่ได้รับอนุญาต"]);
+      statusTimer = window.setInterval(async () => {
+        try {
+          const statusResponse = await fetch(`/api/tools/status?id=${encodeURIComponent(confirmationId)}`, { cache: "no-store" });
+          if (!statusResponse.ok) return;
+          const status = await statusResponse.json() as { status?: string };
+          const label = status.status === "running"
+            ? "กำลังติดตั้ง/ดำเนินการบน Mac"
+            : status.status === "completed"
+              ? "ขั้นที่อนุญาตเสร็จแล้ว กำลังเตรียมทำงานเดิมต่อ"
+              : status.status === "pending"
+                ? "คำขออนุญาตถูกเก็บไว้แล้ว กำลังเริ่มทำงาน"
+                : "กำลังตรวจผลของขั้นที่ได้รับอนุญาต";
+          setThinkingSteps((steps) => [...steps.filter((item) => item !== label), label].slice(-5));
+        } catch { /* ตัว POST หลักยังเป็นแหล่งผลลัพธ์หลัก */ }
+      }, 1_000);
+    }
+
     try {
       const response = await fetch("/api/tools/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirmation_id: confirmationId, approved, message_id: messageId }),
       });
-      const result = await response.json() as { error?: string; message?: string; artifacts?: ArtifactRecord[]; stdout?: string; stderr?: string; denied?: boolean };
+      const result = await response.json() as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+        artifacts?: ArtifactRecord[];
+        stdout?: string;
+        stderr?: string;
+        denied?: boolean;
+        expired?: boolean;
+        retryable?: boolean;
+        resume?: boolean;
+        resume_prompt?: string;
+        package?: string;
+        version?: string;
+      };
       if (!response.ok) throw new Error(result.error || "ยืนยันไม่สำเร็จ");
+
+      const conciseStatus = result.denied
+        ? "ไม่ได้ดำเนินการ เพราะคุณไม่อนุญาต"
+        : String(result.message || (result.ok === false ? result.error || "ดำเนินการไม่สำเร็จ" : "ขั้นที่ได้รับอนุญาตเสร็จแล้ว"));
       setMessages((current) => current.map((message) => message.id === messageId
         ? {
           ...message,
           permission: undefined,
+          error: result.ok === false && !result.denied,
           artifacts: result.artifacts ? [...(message.artifacts ?? []), ...result.artifacts] : message.artifacts,
-          content: result.denied
-            ? "ไม่ได้ดำเนินการ เพราะคุณไม่อนุญาต"
-            : [message.content, result.message, result.stdout ? `ผลการรัน:\n${result.stdout}` : "", result.stderr ? `ข้อผิดพลาด:\n${result.stderr}` : ""].filter(Boolean).join("\n\n"),
+          content: conciseStatus,
         }
         : message));
       void loadHealth();
+
+      if (approved && result.resume === true && previousUser && !result.denied && result.ok !== false) {
+        const resumePrompt = [
+          String(result.resume_prompt || "ขั้นที่ต้องขออนุญาตเสร็จแล้ว ให้ดำเนินงานเดิมต่อจากจุดที่ค้าง"),
+          `คำขอเดิมของผู้ใช้: ${previousUser.content}`,
+          `ผลขั้นล่าสุด: ${conciseStatus}`,
+          "ตรวจสถานะ/capability ใหม่ก่อน แล้วทำขั้นถัดไปอัตโนมัติ ถ้ายังขาด dependency อื่นให้ใช้ tool ที่เหมาะสมต่อ ห้ามหยุดเพียงเพราะขั้นติดตั้งเสร็จ",
+        ].join("\n\n");
+        resumed = true;
+        setIsThinking(false);
+        setThinkingSteps([]);
+        window.setTimeout(() => {
+          void runChat(resumePrompt, false, false, messageId, previousUser.id);
+        }, 0);
+        return;
+      }
     } catch (error) {
       setMessages((current) => current.map((message) => message.id === messageId
         ? { ...message, permission: undefined, content: `${message.content}\n\n${error instanceof Error ? error.message : "ยืนยันไม่สำเร็จ"}`, error: true }
         : message));
+    } finally {
+      if (statusTimer !== undefined) window.clearInterval(statusTimer);
+      if (!resumed) {
+        setIsThinking(false);
+        setThinkingSteps([]);
+      }
     }
   }
 
