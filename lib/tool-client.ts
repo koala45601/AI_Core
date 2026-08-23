@@ -94,8 +94,16 @@ export async function confirmTool(confirmationId: string, approved: boolean): Pr
   const response = await toolFetch("/v1/tools/confirm", {
     method: "POST",
     body: JSON.stringify({ confirmation_id: confirmationId, approved }),
-  });
+  }, 20 * 60_000 + 30_000);
   return await payload(response) as ToolExecutionResult;
+}
+
+export async function getHostConfirmationStatus(confirmationId: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v1/host/confirmations/${encodeURIComponent(confirmationId)}`, {
+    method: "GET",
+    headers: headers(false),
+  }, 5000);
+  return payload(response);
 }
 
 export async function getPairingCode(): Promise<string> {
