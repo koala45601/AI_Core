@@ -55,15 +55,94 @@ async function patchWrapper() {
     "hostFs action set",
   );
 
-  const hostFsNeedle = "async function hostFs(args = {}, settings = {}) {\n  const action =";
-  if (!source.includes(hostFsNeedle)) throw new Error("หา hostFs function ไม่พบ");
+  const helper = [
+    `// ${marker}`,
+    "async function hostCanAccess(target, mode) {",
+    "  try {",
+    "    await fs.access(target, mode);",
+    "    return true;",
+    "  } catch {",
+    "    return false;",
+    "  }",
+    "}",
+    "",
+    "async function nearestExistingHostParent(target) {",
+    "  let current = resolve(target);",
+    "  while (true) {",
+    "    try {",
+    "      const stat = await fs.lstat(current);",
+    "      if (stat.isDirectory()) return current;",
+    "      return resolve(current, \"..\");",
+    "    } catch (error) {",
+    "      if (error?.code !== \"ENOENT\") throw error;",
+    "      const parent = resolve(current, \"..\");",
+    "      if (parent === current) return current;",
+    "      current = parent;",
+    "    }",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  source = replaceOnce(
+    source,
+    "async function hostFs(args = {}, settings = {}) {",
+    helper + "async function hostFs(args = {}, settings = {}) {",
+    "hostFs helper insertion point",
+  );
 
-  const helper = `// ${marker}\nasync function hostCanAccess(target, mode) {\n  try {\n    await fs.access(target, mode);\n    return true;\n  } catch {\n    return false;\n  }\n}\n\nasync function nearestExistingHostParent(target) {\n  let current = resolve(target);\n  while (true) {\n    try {\n      const stat = await fs.lstat(current);\n      if (stat.isDirectory()) return current;\n      return resolve(current, "..");\n    } catch (error) {\n      if (error?.code !== "ENOENT") throw error;\n      const parent = resolve(current, "..");\n      if (parent === current) return current;\n      current = parent;\n    }\n  }\n}\n\n`;
-  source = source.replace("async function hostFs(args = {}, settings = {}) {", helper + "async function hostFs(args = {}, settings = {}) {");
-
-  const targetNeedle = "  const target = hostFsAllowed(args.path, settings);\n  let stat;";
-  const accessBranch = `  const target = hostFsAllowed(args.path, settings);\n  if (action === "access") {\n    try {\n      const accessStat = await fs.lstat(target);\n      const readable = await hostCanAccess(target, 4);\n      const writable = await hostCanAccess(target, 2);\n      const executable = await hostCanAccess(target, 1);\n      return {\n        ok: true,\n        host_scope: "macos",\n        docker_used: false,\n        action: "access",\n        path: target,\n        exists: true,\n        type: accessStat.isDirectory() ? "directory" : accessStat.isFile() ? "file" : accessStat.isSymbolicLink() ? "symlink" : "other",\n        readable,\n        writable,\n        executable,\n        creatable: accessStat.isDirectory() ? (writable && executable) : false,\n        nearest_existing_parent: accessStat.isDirectory() ? target : resolve(target, ".."),\n        app_dir: appDir,\n      };\n    } catch (error) {\n      if (error?.code !== "ENOENT") throw error;\n      const parent = await nearestExistingHostParent(resolve(target, ".."));\n      const parentWritable = await hostCanAccess(parent, 2);\n      const parentExecutable = await hostCanAccess(parent, 1);\n      return {\n        ok: true,\n        host_scope: "macos",\n        docker_used: false,\n        action: "access",\n        path: target,\n        exists: false,\n        readable: false,\n        writable: false,\n        executable: false,\n        creatable: parentWritable && parentExecutable,\n        nearest_existing_parent: parent,\n        parent_writable: parentWritable,\n        parent_executable: parentExecutable,\n        app_dir: appDir,\n      };\n    }\n  }\n  let stat;`;
-  source = replaceOnce(source, targetNeedle, accessBranch, "hostFs target/access branch");
+  source = replaceOnce(
+    source,
+    "  const target = hostFsAllowed(args.path, settings);\n  let stat;",
+    [
+      "  const target = hostFsAllowed(args.path, settings);",
+      "  if (action === \"access\") {",
+      "    try {",
+      "      const accessStat = await fs.lstat(target);",
+      "      const readable = await hostCanAccess(target, 4);",
+      "      const writable = await hostCanAccess(target, 2);",
+      "      const executable = await hostCanAccess(target, 1);",
+      "      return {",
+      "        ok: true,",
+      "        host_scope: \"macos\",",
+      "        docker_used: false,",
+      "        action: \"access\",",
+      "        path: target,",
+      "        exists: true,",
+      "        type: accessStat.isDirectory() ? \"directory\" : accessStat.isFile() ? \"file\" : accessStat.isSymbolicLink() ? \"symlink\" : \"other\",",
+      "        readable,",
+      "        writable,",
+      "        executable,",
+      "        creatable: accessStat.isDirectory() ? (writable && executable) : false,",
+      "        nearest_existing_parent: accessStat.isDirectory() ? target : resolve(target, \"..\"),",
+      "        app_dir: appDir,",
+      "      };",
+      "    } catch (error) {",
+      "      if (error?.code !== \"ENOENT\") throw error;",
+      "      const parent = await nearestExistingHostParent(resolve(target, \"..\"));",
+      "      const parentWritable = await hostCanAccess(parent, 2);",
+      "      const parentExecutable = await hostCanAccess(parent, 1);",
+      "      return {",
+      "        ok: true,",
+      "        host_scope: \"macos\",",
+      "        docker_used: false,",
+      "        action: \"access\",",
+      "        path: target,",
+      "        exists: false,",
+      "        readable: false,",
+      "        writable: false,",
+      "        executable: false,",
+      "        creatable: parentWritable && parentExecutable,",
+      "        nearest_existing_parent: parent,",
+      "        parent_writable: parentWritable,",
+      "        parent_executable: parentExecutable,",
+      "        app_dir: appDir,",
+      "      };",
+      "    }",
+      "  }",
+      "  let stat;",
+    ].join("\n"),
+    "hostFs target/access branch",
+  );
 
   const temp = `${path}.beta12.tmp`;
   await fs.writeFile(temp, source, "utf8");
@@ -75,22 +154,62 @@ async function patchChatRoute() {
   let source = await fs.readFile(path, "utf8");
   if (source.includes(marker)) return;
 
-  const oldDetector = `function hostPathVerificationQuestion(message: string): boolean {\n  return /(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น).{0,45}(?:ไฟล์|โฟลเดอร์|folder|path|พาธ)|(?:ไฟล์|โฟลเดอร์|folder|path|พาธ).{0,45}(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น)/i.test(message);\n}`;
-  const newDetector = `function hostPathVerificationQuestion(message: string): boolean {\n  const legacy = /(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น).{0,60}(?:ไฟล์|โฟลเดอร์|folder|path|พาธ)|(?:ไฟล์|โฟลเดอร์|folder|path|พาธ).{0,60}(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น)/i.test(message);\n  const absoluteHostPath = /\\/(?:Volumes|Users)\\//i.test(message);\n  const hostAccessIntent = /(?:เช็ค|ตรวจ|check|verify|เข้าถึง|access|อ่าน|read|เขียน|write|สิทธิ์|permission|permissions|มีจริง|exists?|อยู่ไหม|สร้างได้ไหม|create|stat|list)/i.test(message);\n  return legacy || (absoluteHostPath && hostAccessIntent);\n}\n\n// ${marker}\nfunction hostPathAccessQuestion(message: string): boolean {\n  return /(?:เข้าถึง|access|อ่าน|read|เขียน|write|สิทธิ์|permission|permissions|สร้างได้ไหม|create|writable|readable)/i.test(message);\n}`;
+  const oldDetector = [
+    "function hostPathVerificationQuestion(message: string): boolean {",
+    "  return /(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น).{0,45}(?:ไฟล์|โฟลเดอร์|folder|path|พาธ)|(?:ไฟล์|โฟลเดอร์|folder|path|พาธ).{0,45}(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น)/i.test(message);",
+    "}",
+  ].join("\n");
+  const newDetector = [
+    "function hostPathVerificationQuestion(message: string): boolean {",
+    "  const legacy = /(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น).{0,60}(?:ไฟล์|โฟลเดอร์|folder|path|พาธ)|(?:ไฟล์|โฟลเดอร์|folder|path|พาธ).{0,60}(?:เช็ค|ตรวจ|verify|มีจริง|exists?|หาไม่เจอ|ไม่เจอ|เปิดไม่ได้|มองไม่เห็น)/i.test(message);",
+    "  const absoluteHostPath = /\\/(?:Volumes|Users)\\//i.test(message);",
+    "  const hostAccessIntent = /(?:เช็ค|ตรวจ|check|verify|เข้าถึง|access|อ่าน|read|เขียน|write|สิทธิ์|permission|permissions|มีจริง|exists?|อยู่ไหม|สร้างได้ไหม|create|stat|list)/i.test(message);",
+    "  return legacy || (absoluteHostPath && hostAccessIntent);",
+    "}",
+    "",
+    `// ${marker}`,
+    "function hostPathAccessQuestion(message: string): boolean {",
+    "  return /(?:เข้าถึง|access|อ่าน|read|เขียน|write|สิทธิ์|permission|permissions|สร้างได้ไหม|create|writable|readable)/i.test(message);",
+    "}",
+  ].join("\n");
   source = replaceOnce(source, oldDetector, newDetector, "host path verification detector");
 
-  const oldReply = `function hostFsVerificationReply(path: string, result: Record<string, unknown>): string {\n  if (result.exists === false) return "❌ NOT_FOUND: ไม่พบไฟล์หรือโฟลเดอร์ที่ \\`" + path + "\\` บน macOS host จากการตรวจจริง (ไม่ได้ใช้ Docker)";\n  return "✅ EXISTS: พบ " + String(result.type || "path") + " จริงที่ \\`" + String(result.path || path) + "\\` บน macOS host\\n- size: " + String(result.size ?? "-") + " bytes\\n- permission: " + String(result.mode ?? "-") + "\\n- modified: " + String(result.mtime ?? "-") + "\\n- Docker: ไม่ได้ใช้";\n}`;
-  const newReply = `function hostFsVerificationReply(path: string, result: Record<string, unknown>): string {\n  if (result.action === "access") {\n    if (result.exists === false) {\n      return (result.creatable === true ? "✅ HOST_ACCESS" : "❌ HOST_ACCESS_DENIED") + ": \\`" + path + "\\` ยังไม่มีอยู่บน macOS host"\n        + "\\n- creatable: " + String(result.creatable === true)\n        + "\\n- nearest existing parent: \\`" + String(result.nearest_existing_parent || "-") + "\\`"\n        + "\\n- parent writable: " + String(result.parent_writable === true)\n        + "\\n- host: macOS"\n        + "\\n- Docker: ไม่ได้ใช้";\n    }\n    return "✅ HOST_ACCESS: ตรวจสิทธิ์จริงของ \\`" + String(result.path || path) + "\\` บน macOS host"\n      + "\\n- readable: " + String(result.readable === true)\n      + "\\n- writable: " + String(result.writable === true)\n      + "\\n- executable/traversable: " + String(result.executable === true)\n      + "\\n- creatable inside: " + String(result.creatable === true)\n      + "\\n- Docker: ไม่ได้ใช้";\n  }\n  if (result.exists === false) return "❌ NOT_FOUND: ไม่พบไฟล์หรือโฟลเดอร์ที่ \\`" + path + "\\` บน macOS host จากการตรวจจริง (ไม่ได้ใช้ Docker)";\n  return "✅ EXISTS: พบ " + String(result.type || "path") + " จริงที่ \\`" + String(result.path || path) + "\\` บน macOS host\\n- size: " + String(result.size ?? "-") + " bytes\\n- permission: " + String(result.mode ?? "-") + "\\n- modified: " + String(result.mtime ?? "-") + "\\n- Docker: ไม่ได้ใช้";\n}`;
-  source = replaceOnce(source, oldReply, newReply, "hostFs verification reply");
-
-  const oldCall = `        const result = await executeTool("host_fs", { action: "stat", path: targetPath }, settings);`;
-  const newCall = `        const hostFsAction = hostPathAccessQuestion(message) ? "access" : /(?:รายการ|ข้างใน|ในโฟลเดอร์|list)/i.test(message) ? "list" : "stat";\n        const result = await executeTool("host_fs", { action: hostFsAction, path: targetPath }, settings);`;
-  source = replaceOnce(source, oldCall, newCall, "direct host_fs call");
+  const replyHeader = "function hostFsVerificationReply(path: string, result: Record<string, unknown>): string {\n";
+  const accessReply = [
+    "function hostFsVerificationReply(path: string, result: Record<string, unknown>): string {",
+    "  if (result.action === \"access\") {",
+    "    if (result.exists === false) {",
+    "      return (result.creatable === true ? \"✅ HOST_ACCESS\" : \"❌ HOST_ACCESS_DENIED\") + \": \" + path + \" ยังไม่มีอยู่บน macOS host\"",
+    "        + \"\\n- creatable: \" + String(result.creatable === true)",
+    "        + \"\\n- nearest existing parent: \" + String(result.nearest_existing_parent || \"-\")",
+    "        + \"\\n- parent writable: \" + String(result.parent_writable === true)",
+    "        + \"\\n- host: macOS\"",
+    "        + \"\\n- Docker: ไม่ได้ใช้\";",
+    "    }",
+    "    return \"✅ HOST_ACCESS: ตรวจสิทธิ์จริงของ \" + String(result.path || path) + \" บน macOS host\"",
+    "      + \"\\n- readable: \" + String(result.readable === true)",
+    "      + \"\\n- writable: \" + String(result.writable === true)",
+    "      + \"\\n- executable/traversable: \" + String(result.executable === true)",
+    "      + \"\\n- creatable inside: \" + String(result.creatable === true)",
+    "      + \"\\n- Docker: ไม่ได้ใช้\";",
+    "  }",
+  ].join("\n") + "\n";
+  source = replaceOnce(source, replyHeader, accessReply, "hostFs access reply insertion");
 
   source = replaceOnce(
     source,
-    `      await updateAgentRun(runId, { status: "running", stage: "host_fs", label: "กำลังตรวจ path บน macOS host", tool: "host_fs" });`,
-    `      await updateAgentRun(runId, { status: "running", stage: "host_fs", label: hostPathAccessQuestion(message) ? "กำลังตรวจสิทธิ์เข้าถึงบน macOS host" : "กำลังตรวจ path บน macOS host", tool: "host_fs" });`,
+    '        const result = await executeTool("host_fs", { action: "stat", path: targetPath }, settings);',
+    [
+      '        const hostFsAction = hostPathAccessQuestion(message) ? "access" : /(?:รายการ|ข้างใน|ในโฟลเดอร์|list)/i.test(message) ? "list" : "stat";',
+      '        const result = await executeTool("host_fs", { action: hostFsAction, path: targetPath }, settings);',
+    ].join("\n"),
+    "direct host_fs call",
+  );
+
+  source = replaceOnce(
+    source,
+    '      await updateAgentRun(runId, { status: "running", stage: "host_fs", label: "กำลังตรวจ path บน macOS host", tool: "host_fs" });',
+    '      await updateAgentRun(runId, { status: "running", stage: "host_fs", label: hostPathAccessQuestion(message) ? "กำลังตรวจสิทธิ์เข้าถึงบน macOS host" : "กำลังตรวจ path บน macOS host", tool: "host_fs" });',
     "host_fs run label",
   );
 
