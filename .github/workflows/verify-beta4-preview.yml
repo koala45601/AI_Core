@@ -1,4 +1,4 @@
-name: Verify Alpha Beta4 Preview
+name: Verify Alpha Beta5 Preview
 
 on:
   push:
@@ -12,6 +12,7 @@ on:
       - 'app/api/tasks/**'
       - 'start-alpha-v11.command'
       - 'package.json'
+      - 'CHANGELOG.md'
       - 'tests/beta5-reasoning-runtime.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
