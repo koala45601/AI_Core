@@ -147,6 +147,6 @@ test("launcher waits for the real web health endpoint before reporting ready", a
   const launcher = await source("start-alpha-v11.command");
   assert.match(launcher, /WEB_READY=false/);
   assert.match(launcher, /http:\/\/localhost:3000\/api\/health/);
-  assert.match(launcher, /"app_version":"1\.1\.0-beta\.16"/);
+  assert.match(launcher, /"app_version":"1\.1\.0-beta\.17"/);
   assert.match(launcher, /หน้าเว็บ Alpha เปิดไม่สำเร็จ/);
 });

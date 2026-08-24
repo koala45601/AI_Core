@@ -1,5 +1,15 @@
 # Alpha changelog
 
+## 1.1.0-beta.17 — 2026-08-25
+
+- Verified one live ThaiTicketMajor flow through login, event terms, image-map zone B, quantity, event-specific attendee name, pickup, QR selection and the final KBank PromptPay page without submitting payment.
+- Fixed the false-positive checkout bug where QR/payment wording in an event's terms page was incorrectly classified as a completed payment handoff.
+- Added deterministic states for server-side close-sale, login, terms, zone selection, quantity selection, attendee details, checkout options and final QR payment evidence.
+- Final checkout now requires at least three independent signals, including the KBank QR path/frame, step 4/4, order identity, countdown and PromptPay/ThaiQR content.
+- Generated ticket projects now include `run-full-loop.command`, secure environment/terminal credential entry, image-map zone selection, optional event-specific attendee names, pickup/postal choice and Ticket Protect control.
+- Ticket Studio no longer requires address/name fields for every concert; it asks only when the selected delivery method or live event form needs them.
+- Added generated-project regression tests based on the observed ThaiTicketMajor paths and state transitions.
+
 ## 1.1.0-beta.16 — 2026-08-24
 
 - Replaced the Ticket Bot's unconditional `CHECKOUT_READY` output with an evidence-backed state machine. Unknown pages can no longer be reported as checkout success.

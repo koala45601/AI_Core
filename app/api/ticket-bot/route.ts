@@ -30,7 +30,10 @@ interface TicketBuildInput {
   quantity?: unknown;
   budget?: unknown;
   customer_name?: unknown;
+  attendee_names?: unknown;
   shipping_address?: unknown;
+  delivery_method?: unknown;
+  ticket_protect?: unknown;
   payment_method?: unknown;
   selectors?: unknown;
   captured_api?: unknown;
@@ -243,7 +246,10 @@ export async function POST(request: Request) {
           seat_grouping: seatGrouping,
           preferred_zones: Array.isArray(input.preferred_zones) ? input.preferred_zones.map((item) => asText(item, 120).toUpperCase()).filter(Boolean).slice(0, 20) : [],
           customer_name: asText(input.customer_name, 200),
+          attendee_names: Array.isArray(input.attendee_names) ? input.attendee_names.map((item) => asText(item, 200)).filter(Boolean).slice(0, quantity) : [],
           shipping_address: address,
+          delivery_method: new Set(["pickup", "postal"]).has(asText(input.delivery_method, 30)) ? asText(input.delivery_method, 30) : "pickup",
+          ticket_protect: input.ticket_protect === true,
           payment_method: paymentMethod,
           selectors: safeSelectors(input.selectors),
           captured_api: safeApiEvidence(input.captured_api),
@@ -259,7 +265,7 @@ export async function POST(request: Request) {
       const output = parseSkillOutput(skillResult);
       const createdFiles = Array.isArray(output.created_files) ? output.created_files.map((item) => asText(item, 200)).filter(Boolean) : [];
       const projectPath = asText(output.created_project_path, 2_000);
-      const expectedFiles = ["bot.py", "state_machine.py", "tests/test_state_machine.py", "config.json", "requirements.txt", "start.command", "README.md", "verification-report.json"];
+      const expectedFiles = ["bot.py", "state_machine.py", "tests/test_state_machine.py", "config.json", "requirements.txt", "start.command", "run-full-loop.command", "README.md", "verification-report.json"];
       const structuralPass = Boolean(projectPath && expectedFiles.every((file) => createdFiles.includes(file)));
       const fixtureVerification = output.fixture_verification && typeof output.fixture_verification === "object" && !Array.isArray(output.fixture_verification)
         ? output.fixture_verification as Record<string, unknown>
@@ -284,7 +290,7 @@ export async function POST(request: Request) {
           expected_files: expectedFiles,
           found_files: createdFiles,
           live_purchase_attempted: false,
-          handoff_points: ["login", "captcha", "otp", "payment"],
+          handoff_points: ["captcha", "otp", "payment"],
         },
         live_facts: eventFacts,
         functional_preflight: functionalPreflight,

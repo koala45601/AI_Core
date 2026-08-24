@@ -584,12 +584,12 @@ const skills = [
   },
   {
     objective: "ตรวจรายการคอนจากเว็บ ให้ผู้ใช้เลือกเฉพาะงานที่เปิดขายหรือกำลังจะเปิด แล้วสร้างโปรแกรมบอท Python จาก Browser/API evidence แบบไม่ทับของเก่าใน Program_Create",
-    success_criteria: "ไม่สร้างจนกว่าผู้ใช้เลือกคอน สร้าง bot.py/config/requirements/start.command/README ใช้ Playwright บน Mac รองรับ preflight คิว ฟอร์ม และค้างหน้า QR โดยไม่เก็บรหัสผ่านหรือ OTP",
-    verification_scope: "7 visible + 20 hidden fixtures ครอบคลุมการกรองคอนหมดอายุ การเลือกคอน รอบ ที่นั่ง บัตรยืน งบ จำนวน ที่อยู่ วิธีจ่าย API evidence คิว Login CAPTCHA OTP และ QR handoff บน macOS host",
+    success_criteria: "ไม่สร้างจนกว่าผู้ใช้เลือกคอน สร้างโปรเจกต์ Python+Playwright พร้อม run-full-loop.command ที่แยก close-sale, terms, zone/image-map, quantity, attendee, checkout options และยืนยันหน้า QR จากหลักฐานอย่างน้อย 3 สัญญาณ โดยไม่เก็บรหัสผ่านหรือ OTP",
+    verification_scope: "7 visible + 20 hidden skill fixtures และ generated state fixtures ครอบคลุมการกรองคอนหมดอายุ การเลือกคอน รอบ ที่นั่ง บัตรยืน งบ จำนวน ฟิลด์เฉพาะงาน วิธีรับบัตร วิธีจ่าย API evidence คิว Login CAPTCHA OTP และ QR handoff บน macOS host",
     skill: {
       id: "concert-ticket-purchase-assistant",
       name: "Python Bot Builder — Concert Ticket",
-      description: "สร้างโปรแกรมบอท Python+Playwright เฉพาะเว็บจากลิงก์และ Network/API evidence ลง Program_Create รองรับทั้งเลือกเลขที่นั่ง เลือกโซน และบัตรยืนไม่มีเลขที่นั่งบน Mac จริง",
+      description: "สร้างโปรแกรมบอท Python+Playwright เฉพาะเว็บจากลิงก์และ Network/API evidence ลง Program_Create รองรับ Login แบบ secure prompt, image-map โซน, หลายใบ, ฟิลด์เฉพาะงาน และ Full Loop ถึงหน้า QR บน Mac จริง",
       runtime: "python",
       entrypoint: "main.py",
       dependencies: ["python-stdlib"],

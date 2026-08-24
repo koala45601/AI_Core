@@ -1,4 +1,5 @@
 import json
+import getpass
 import os
 import pathlib
 import re
@@ -40,7 +41,10 @@ zones = [str(item).strip().upper() for item in payload.get("preferred_zones", []
 quantity = max(0, int(payload.get("quantity", 0) or 0))
 budget = max(0.0, float(payload.get("budget", 0) or 0))
 customer_name = str(payload.get("customer_name", "")).strip()
+attendee_names = [str(item).strip() for item in payload.get("attendee_names", []) if str(item).strip()] if isinstance(payload.get("attendee_names"), list) else []
 shipping_address = payload.get("shipping_address") if isinstance(payload.get("shipping_address"), dict) else {}
+delivery_method = str(payload.get("delivery_method", "pickup")).casefold()
+ticket_protect = bool(payload.get("ticket_protect", False))
 payment_method = str(payload.get("payment_method", "")).casefold()
 
 missing = []
@@ -62,9 +66,9 @@ if seat_mode == "reserved" and not zones:
     missing.append("preferred_zones")
 if seat_mode == "reserved" and seat_grouping not in {"adjacent", "same_zone", "any"}:
     missing.append("seat_grouping")
-if not customer_name:
-    missing.append("customer_name")
-if not shipping_address:
+if delivery_method not in {"pickup", "postal"}:
+    missing.append("delivery_method")
+if delivery_method == "postal" and not shipping_address:
     missing.append("shipping_address")
 if payment_method not in {"qr", "promptpay"}:
     missing.append("payment_method")
@@ -114,7 +118,10 @@ if not missing:
         "preferredZones": zones,
         "budget": budget,
         "customerName": customer_name,
+        "attendeeNames": attendee_names,
         "shippingAddress": shipping_address,
+        "deliveryMethod": delivery_method,
+        "ticketProtect": ticket_protect,
         "paymentMethod": payment_method,
         "selectors": selectors,
         "purchaseControls": facts.get("purchase_controls", []),
@@ -129,7 +136,8 @@ if not missing:
             "maxBackoffSeconds": 30,
             "preserveSession": True,
         },
-        "handoffPoints": ["login", "captcha", "otp", "payment"],
+        "credentialEnvironment": {"username": "TICKET_USERNAME", "password": "TICKET_PASSWORD"},
+        "handoffPoints": ["captcha", "otp", "payment"],
         "resumeAfterHandoff": True,
     }
 
@@ -160,6 +168,8 @@ def queue_position_from_text(text):
 
 def classify_snapshot(snapshot, now=None, sale_open_at=""):
     text = _text(snapshot)
+    url = str(snapshot.get("url", "")).casefold()
+    body = str(snapshot.get("body", "")).casefold()
     queue_position = queue_position_from_text(text)
     evidence = []
     state = "unknown"
@@ -183,21 +193,41 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         http_status = int(snapshot.get("http_status") or 0)
     except (TypeError, ValueError):
         http_status = 0
+    payment_signals = [
+        "payment_kbankqr.php" in url or "kpaymentframe" in text,
+        bool(re.search(r"ขั้นตอนที่\s*4/4|step\s*4/4", body)),
+        bool(re.search(r"หมายเลขการสั่งซื้อ|order\s*(?:number|no\.?|id)", body)),
+        bool(re.search(r"remaining\s*time|ภายในเวลา\s*10\s*นาที", body)),
+        bool(re.search(r"promptpay|thaiqr|พร้อมเพย์", body)),
+    ]
+    payment_evidence_count = sum(bool(item) for item in payment_signals)
     if http_status in {429, 500, 502, 503, 504}:
         state, evidence = "server_unavailable", [f"http status {http_status}"]
     elif re.search(r"captcha|recaptcha|hcaptcha|ยืนยันว่า.*มนุษย์", text):
         state, evidence = "captcha_handoff", ["captcha marker"]
     elif re.search(r"otp|one[ -]?time|รหัสยืนยัน", text):
         state, evidence = "otp_handoff", ["otp marker"]
-    elif re.search(r"login|sign in|เข้าสู่ระบบ|รหัสผ่าน", text):
-        state, evidence = "login_handoff", ["login marker"]
+    elif "close-sale" in url or re.search(r"ปิดจำหน่ายบัตรผ่านช่องทางออนไลน์|online\s+sale\s+is\s+closed", body):
+        state, evidence = "sale_closed", ["server returned close-sale state"]
     elif re.search(r"entry zone|join waiting room|join (?:the )?queue|เข้าห้องรอ|กดรับคิว|รับคิว", text):
         state, evidence = "waiting_room_entry", ["waiting-room entry control"]
     elif re.search(r"buying queue|you are (?:now )?in (?:the )?queue|place in line|status last updated|waiting room|อยู่ในคิว|กำลังเข้าคิว|คิวรอซื้อ", text):
         state, evidence = "queue", ["active queue marker"]
-    elif re.search(r"promptpay|พร้อมเพย์|qr code|payment method|ชำระเงิน", text):
-        state, evidence = "payment_handoff", ["payment marker"]
-    elif re.search(r"select seat|seat map|available seat|เลือกที่นั่ง|เลือกโซน|จำนวนบัตร", text):
+    elif payment_evidence_count >= 3 and ("payment_kbankqr.php" in url or "kpaymentframe" in text):
+        state, evidence = "payment_handoff", [f"verified QR payment page ({payment_evidence_count}/5 signals)"]
+    elif "paymentall.php" in url or re.search(r"ขั้นตอนที่\s*3/4|เลือกวิธีการชำระเงิน", body):
+        state, evidence = "checkout_options", ["delivery and payment options page"]
+    elif "enroll.php" in url or re.search(r"กรุณากรอกรายละเอียด|ชื่อ-นามสกุลบน\s*ticket", body):
+        state, evidence = "attendee_details", ["event-specific attendee form"]
+    elif "verify_condition.php" in url or re.search(r"conditions|เงื่อนไข\s*ข้อตกลง|i accept the terms", body):
+        state, evidence = "terms_conditions", ["event terms page"]
+    elif "signin.php" in url or (re.search(r"เข้าสู่ระบบ|sign in", body) and re.search(r"รหัสผ่าน|password", body)):
+        state, evidence = "login", ["login form"]
+    elif "festival.php" in url or re.search(r"เลือกจำนวนบัตร|ขั้นตอนที่\s*2/4", body):
+        state, evidence = "quantity_selection", ["ticket quantity page"]
+    elif "zones.php" in url or re.search(r"ขั้นตอนที่\s*1/4|เลือกโซน|select\s+(?:round|zone)", body):
+        state, evidence = "zone_selection", ["round and zone page"]
+    elif re.search(r"select seat|seat map|available seat|เลือกที่นั่ง|จำนวนบัตร", text):
         state, evidence = "ticket_selection", ["ticket-selection marker"]
     elif re.search(r"buy now|book now|purchase|checkout|ซื้อบัตร|จองบัตร", text):
         state, evidence = "sale_entry", ["purchase-entry marker"]
@@ -219,11 +249,12 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         "clock_source": "http_date" if snapshot.get("server_date") else "local_clock",
         "queue_position": queue_position,
         "queue_position_verified": queue_position is not None,
+        "payment_evidence_count": payment_evidence_count,
     }
 
 
 def verified_payment_handoff(checkpoint):
-    return checkpoint.get("state") == "payment_handoff" and bool(checkpoint.get("evidence"))
+    return checkpoint.get("state") == "payment_handoff" and int(checkpoint.get("payment_evidence_count") or 0) >= 3
 
 
 def next_action(checkpoint):
@@ -235,10 +266,16 @@ def next_action(checkpoint):
         "sale_entry": "activate_verified_purchase_control",
         "queue": "keep_same_session_and_wait_retry_after",
         "server_unavailable": "keep_same_session_and_wait_retry_after",
-        "login_handoff": "user_handoff",
+        "sale_closed": "stop_and_report_sale_closed",
+        "login": "fill_credentials_or_prompt_securely",
         "captcha_handoff": "user_handoff",
         "otp_handoff": "user_handoff",
+        "terms_conditions": "accept_terms_and_continue",
+        "zone_selection": "select_preferred_zone",
+        "quantity_selection": "select_ticket_quantity",
         "ticket_selection": "apply_ticket_preferences",
+        "attendee_details": "fill_required_attendee_names",
+        "checkout_options": "select_delivery_payment_and_confirm_order",
         "payment_handoff": "user_handoff",
     }.get(state, "stop_and_request_new_evidence")
 
@@ -273,7 +310,9 @@ def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=No
 '''
 
     bot_source = r'''import argparse
+import getpass
 import json
+import os
 import re
 import subprocess
 import sys
@@ -343,6 +382,66 @@ def semantic_click(page, labels):
     return False
 
 
+def semantic_select_if_present(page, wanted_labels, family_labels, field_name):
+    """Select an option only when that option family exists on the current page.
+
+    Ticket forms differ per event. An absent delivery/payment family is therefore a
+    valid no-op, while a visible family whose requested choice cannot be selected is
+    a real failure. This keeps event-specific fields out of the global workflow.
+    """
+    wanted = re.compile("|".join(re.escape(label) for label in wanted_labels), re.I)
+    family = re.compile("|".join(re.escape(label) for label in family_labels), re.I)
+    family_present = False
+    for scope in [page, *page.frames]:
+        for role in ("radio", "button", "link"):
+            family_locator = scope.get_by_role(role, name=family).first
+            try:
+                if family_locator.count() and family_locator.is_visible(timeout=300):
+                    family_present = True
+            except Exception:
+                pass
+            locator = scope.get_by_role(role, name=wanted).first
+            try:
+                if not locator.count() or not locator.is_visible(timeout=300):
+                    continue
+                family_present = True
+                if role == "radio" and locator.is_checked():
+                    record("action", {"action": "option_already_selected", "field": field_name})
+                    return "selected"
+                if locator.is_enabled():
+                    locator.click(force=role == "radio")
+                    record("action", {"action": "select_option", "field": field_name, "role": role})
+                    return "selected"
+            except Exception:
+                pass
+        try:
+            family_text = scope.get_by_text(family).first
+            if family_text.count() and family_text.is_visible(timeout=300):
+                family_present = True
+            wanted_text = scope.get_by_text(wanted).first
+            if wanted_text.count() and wanted_text.is_visible(timeout=300):
+                wanted_text.evaluate("element => (element.closest('label,button,a') || element).click()")
+                record("action", {"action": "select_option", "field": field_name, "role": "label"})
+                return "selected"
+        except Exception:
+            pass
+    if not family_present:
+        record("action", {"action": "event_specific_option_absent", "field": field_name, "skipped": True})
+        return "absent"
+    return "failed"
+
+
+def field_descriptor(locator):
+    try:
+        return str(locator.evaluate("""element => {
+            const labels = element.labels ? Array.from(element.labels).map(item => item.innerText || item.textContent || '') : [];
+            return [element.getAttribute('aria-label'), element.getAttribute('placeholder'), element.getAttribute('name'), element.id, ...labels]
+              .filter(Boolean).join(' ');
+        }""") or "").strip()
+    except Exception:
+        return ""
+
+
 def sale_entry_labels():
     labels = []
     schedule = str(CONFIG.get("schedule", ""))
@@ -353,6 +452,178 @@ def sale_entry_labels():
             labels.append(label)
     labels.extend(["เลือกรอบ/ประเภทบัตร", "ซื้อบัตร", "จองบัตร", "buy now", "book now"])
     return list(dict.fromkeys(labels))
+
+
+def fill_login(page):
+    username = os.environ.get("TICKET_USERNAME", "").strip()
+    password = os.environ.get("TICKET_PASSWORD", "")
+    if not username:
+        username = input("อีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตรนี้: ").strip()
+    if not password:
+        password = getpass.getpass("รหัสผ่าน (ไม่แสดงและไม่บันทึก): ")
+    username_box = page.get_by_role("textbox", name=re.compile(r"ชื่อผู้ใช้|อีเมล|email|username", re.I)).first
+    password_box = page.locator("input[type='password']").first
+    if not username or not password or username_box.count() == 0 or password_box.count() == 0:
+        return False
+    username_box.fill(username)
+    password_box.fill(password)
+    if not semantic_click(page, ["เข้าสู่ระบบ", "login", "sign in"]):
+        return False
+    record("action", {"action": "login_submit", "credentials_persisted": False, "same_session": True})
+    return True
+
+
+def accept_event_terms(page):
+    checkbox = page.get_by_role("checkbox", name=re.compile(r"ยอมรับข้อกำหนด|ยอมรับ.*เงื่อนไข|accept.*terms", re.I)).first
+    try:
+        if checkbox.count() and not checkbox.is_checked():
+            checkbox.check(force=True)
+    except Exception:
+        return False
+    clicked = semantic_click(page, ["ซื้อบัตร / Buy Ticket", "ซื้อบัตร", "Buy Ticket", "ดำเนินการต่อ", "Continue"])
+    if clicked:
+        record("action", {"action": "accept_event_terms"})
+    return clicked
+
+
+def select_preferred_zone(page):
+    zones = [str(item).strip().upper() for item in CONFIG.get("preferredZones", []) if str(item).strip()]
+    area_nodes = page.locator("area[href*='festival.php#']")
+    discovered = []
+    for index in range(area_nodes.count()):
+        href = area_nodes.nth(index).get_attribute("href") or ""
+        zone = href.rsplit("#", 1)[-1].upper() if "#" in href else ""
+        if zone and not zone.startswith("VIP"):
+            discovered.append((zone, area_nodes.nth(index)))
+    ordered = zones or [zone for zone, _ in discovered]
+    for zone in ordered:
+        for discovered_zone, locator in discovered:
+            if discovered_zone != zone:
+                continue
+            locator.evaluate("element => element.click()")
+            record("action", {"action": "select_image_map_zone", "zone": zone, "selector": f"area[href$='#{zone}']"})
+            return True
+        locator = page.get_by_text(zone, exact=True).first
+        try:
+            if locator.count() and locator.is_visible(timeout=500) and locator.is_enabled():
+                locator.click()
+                record("action", {"action": "select_zone", "zone": zone})
+                return True
+        except Exception:
+            pass
+    record("selection", {"mode": "zone", "preferred": zones, "discovered": [zone for zone, _ in discovered], "complete": False})
+    return False
+
+
+def select_ticket_quantity(page):
+    wanted = max(1, int(CONFIG.get("quantity", 1)))
+    selects = page.locator("select")
+    selected = False
+    for index in range(selects.count()):
+        locator = selects.nth(index)
+        labels = [str(item).strip() for item in locator.locator("option").all_text_contents()]
+        if str(wanted) not in labels:
+            continue
+        try:
+            locator.select_option(label=str(wanted))
+        except Exception:
+            locator.select_option(str(wanted))
+        selected = True
+        break
+    if not selected:
+        locator = page.get_by_label(re.compile(r"quantity|qty|จำนวน", re.I)).first
+        try:
+            if locator.count() and locator.is_visible(timeout=500):
+                locator.fill(str(wanted))
+                selected = True
+        except Exception:
+            pass
+    if not selected:
+        return False
+    if not semantic_click(page, ["ยืนยันที่นั่ง", "ยืนยัน", "ดำเนินการต่อ", "continue", "next"]):
+        return False
+    record("selection", {"mode": CONFIG.get("seatMode"), "wanted": wanted, "selected": wanted, "complete": True})
+    return True
+
+
+def fill_attendee_details(page):
+    boxes = page.locator("input[type='text'], input:not([type])")
+    names = [str(item).strip() for item in CONFIG.get("attendeeNames", []) if str(item).strip()]
+    fallback = str(CONFIG.get("customerName", "")).strip()
+    candidates = []
+    for index in range(boxes.count()):
+        locator = boxes.nth(index)
+        try:
+            if not locator.is_visible(timeout=300) or not locator.is_enabled():
+                continue
+        except Exception:
+            continue
+        descriptor = field_descriptor(locator)
+        if re.search(r"search|ค้นหา|coupon|promo", descriptor, re.I):
+            continue
+        if re.search(r"ชื่อ|name|attendee|ticket|ผู้เข้าชม", descriptor, re.I) or boxes.count() <= max(1, int(CONFIG.get("quantity", 1))):
+            candidates.append((locator, descriptor))
+    count = len(candidates)
+    for index, (locator, descriptor) in enumerate(candidates):
+        if index < len(names):
+            value = names[index]
+        elif fallback and count == 1:
+            value = fallback
+        else:
+            prompt_label = descriptor or f"บัตรใบที่ {index + 1}"
+            value = input(f"หน้าเว็บคอนนี้ต้องการข้อมูล '{prompt_label}': ").strip()
+        if not value:
+            return False
+        locator.fill(value)
+    if count == 0:
+        record("action", {"action": "event_specific_attendee_fields_absent", "skipped": True})
+        return semantic_click(page, ["บันทึก", "save", "ดำเนินการต่อ", "continue"])
+    if not semantic_click(page, ["บันทึก", "save", "ดำเนินการต่อ", "continue"]):
+        return False
+    record("action", {"action": "fill_attendee_details", "count": count, "values_logged": False})
+    return True
+
+
+def select_checkout_options(page, confirm_order=False):
+    delivery = str(CONFIG.get("deliveryMethod", "pickup"))
+    delivery_labels = ["รับบัตรด้วยตนเอง", "self pickup", "pick up"] if delivery == "pickup" else ["จัดส่งทางไปรษณีย์", "postal", "delivery"]
+    delivery_result = semantic_select_if_present(
+        page,
+        delivery_labels,
+        ["รับบัตรด้วยตนเอง", "self pickup", "pick up", "จัดส่งทางไปรษณีย์", "postal", "delivery"],
+        "delivery_method",
+    )
+    if delivery_result == "failed":
+        return False
+    payment = str(CONFIG.get("paymentMethod", "qr"))
+    payment_labels = ["QR", "PromptPay", "พร้อมเพย์"] if payment in {"qr", "promptpay"} else [payment]
+    payment_result = semantic_select_if_present(
+        page,
+        payment_labels,
+        ["QR", "PromptPay", "พร้อมเพย์", "credit card", "บัตรเครดิต", "debit", "ชำระเงิน"],
+        "payment_method",
+    )
+    if payment_result == "failed":
+        return False
+    protect = page.get_by_role("checkbox", name=re.compile(r"Ticket Protect", re.I)).first
+    try:
+        if protect.count() and protect.is_checked() and not bool(CONFIG.get("ticketProtect", False)):
+            protect.uncheck(force=True)
+    except Exception:
+        pass
+    agreement = page.get_by_role("checkbox", name=re.compile(r"ยอมรับข้อตกลงในการใช้บริการ|accept.*service", re.I)).first
+    try:
+        if agreement.count() and not agreement.is_checked():
+            agreement.check(force=True)
+    except Exception:
+        return False
+    if not confirm_order:
+        record("handoff", {"status": "ORDER_CONFIRMATION_REQUIRED", "same_session": True, "next_action": "rerun_with_--confirm-order"})
+        return None
+    clicked = semantic_click(page, ["ยืนยันการสั่งซื้อ", "confirm order"])
+    if clicked:
+        record("action", {"action": "confirm_unpaid_order", "payment_submitted": False})
+    return clicked
 
 
 def apply_ticket_preferences(page):
@@ -424,7 +695,7 @@ def wait_until(value, label):
         time.sleep(min(30, max(0.2, remaining)))
 
 
-def run_live(inspect_only=False, wait_for_window=False):
+def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as runtime:
@@ -500,10 +771,42 @@ def run_live(inspect_only=False, wait_for_window=False):
                     return 2
                 page.wait_for_timeout(1000)
                 continue
-            if state in {"login_handoff", "captcha_handoff", "otp_handoff"}:
+            if state == "sale_closed":
+                record("result", {"status": "SALE_CLOSED_BY_SERVER", "live_checkout_verified": False, "url": page.url})
+                context.close()
+                return 4
+            if state == "login":
+                if not fill_login(page):
+                    record("result", {"status": "LOGIN_FORM_NOT_VERIFIED", "live_checkout_verified": False})
+                    context.close()
+                    return 2
+                page.wait_for_timeout(1000)
+                continue
+            if state in {"captcha_handoff", "otp_handoff"}:
                 record("handoff", {"status": state.upper(), "resume_supported": True, "same_session": True})
                 input("รับช่วงในหน้าต่าง Chrome เฉพาะขั้นนี้ แล้วกลับมากด Enter; บอทจะทำงานต่อด้วย session เดิม: ")
                 page.wait_for_timeout(500)
+                continue
+            if state == "terms_conditions":
+                if not accept_event_terms(page):
+                    record("result", {"status": "TERMS_CONTINUE_CONTROL_NOT_VERIFIED", "live_checkout_verified": False})
+                    context.close()
+                    return 2
+                page.wait_for_timeout(1000)
+                continue
+            if state == "zone_selection":
+                if not select_preferred_zone(page):
+                    record("result", {"status": "ZONE_NOT_SELECTED", "preferred_zones": CONFIG.get("preferredZones", []), "live_checkout_verified": False})
+                    context.close()
+                    return 2
+                page.wait_for_timeout(1000)
+                continue
+            if state == "quantity_selection":
+                if not select_ticket_quantity(page):
+                    record("result", {"status": "TICKET_QUANTITY_NOT_COMPLETE", "wanted": CONFIG.get("quantity"), "live_checkout_verified": False})
+                    context.close()
+                    return 2
+                page.wait_for_timeout(1000)
                 continue
             if state == "ticket_selection":
                 if not apply_ticket_preferences(page):
@@ -515,8 +818,27 @@ def run_live(inspect_only=False, wait_for_window=False):
                     input("ตรวจรายการและกดดำเนินการต่อใน Chrome แล้วกลับมากด Enter: ")
                 page.wait_for_timeout(1000)
                 continue
+            if state == "attendee_details":
+                if not fill_attendee_details(page):
+                    record("result", {"status": "ATTENDEE_DETAILS_INCOMPLETE", "live_checkout_verified": False})
+                    context.close()
+                    return 2
+                page.wait_for_timeout(1000)
+                continue
+            if state == "checkout_options":
+                checkout_result = select_checkout_options(page, confirm_order=confirm_order)
+                if checkout_result is None:
+                    input("เลือกวิธีรับบัตร/QR แล้ว ระบบหยุดก่อนสร้างคำสั่งซื้อ กด Enter เพื่อปิด หรือรันใหม่ด้วย --confirm-order: ")
+                    context.close()
+                    return 0
+                if not checkout_result:
+                    record("result", {"status": "CHECKOUT_OPTIONS_INCOMPLETE", "live_checkout_verified": False})
+                    context.close()
+                    return 2
+                page.wait_for_timeout(1500)
+                continue
             if state == "payment_handoff":
-                record("result", {"status": "PAYMENT_HANDOFF", "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True})
+                record("result", {"status": "PAYMENT_HANDOFF", "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True, "payment_evidence_count": checkpoint.get("payment_evidence_count")})
                 input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
                 context.close()
                 return 0
@@ -532,10 +854,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--inspect-only", action="store_true")
     parser.add_argument("--wait-for-window", action="store_true")
+    parser.add_argument("--confirm-order", action="store_true", help="สร้างคำสั่งซื้อที่ยังไม่ชำระเพื่อไปถึงหน้า QR")
     args = parser.parse_args()
     if args.dry_run:
         raise SystemExit(verify_fixtures())
-    raise SystemExit(run_live(args.inspect_only, args.wait_for_window))
+    raise SystemExit(run_live(args.inspect_only, args.wait_for_window, args.confirm_order))
 
 
 if __name__ == "__main__":
@@ -603,8 +926,10 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(result["retry_after_seconds"], 12)
         self.assertEqual(next_action(result), "keep_same_session_and_wait_retry_after")
 
-    def test_login_handoff(self):
-        self.assertEqual(self.state("Login รหัสผ่าน")["state"], "login_handoff")
+    def test_login_can_use_secure_credentials(self):
+        result = self.state("เข้าสู่ระบบ รหัสผ่าน", url="https://event.example/user/signin.php")
+        self.assertEqual(result["state"], "login")
+        self.assertEqual(next_action(result), "fill_credentials_or_prompt_securely")
 
     def test_captcha_handoff(self):
         self.assertEqual(self.state("reCAPTCHA")["state"], "captcha_handoff")
@@ -616,11 +941,30 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(self.state("Seat map เลือกที่นั่ง")["state"], "ticket_selection")
 
     def test_general_admission_selection(self):
-        self.assertEqual(self.state("จำนวนบัตร General Admission")["state"], "ticket_selection")
+        self.assertEqual(self.state("ขั้นตอนที่ 2/4 เลือกจำนวนบัตร General Admission", url="https://tickets.test/festival.php")["state"], "quantity_selection")
 
     def test_multiple_ticket_selection_state(self):
         checkpoint = self.state("Seat map เลือกที่นั่ง จำนวนบัตร 4")
         self.assertEqual(checkpoint["state"], "ticket_selection")
+
+    def test_terms_page_is_not_mistaken_for_payment(self):
+        checkpoint = self.state("เงื่อนไข ข้อตกลง Payment Methods QR PromptPay I accept the Terms", url="https://booking.test/verify_condition.php?query=927")
+        self.assertEqual(checkpoint["state"], "terms_conditions")
+        self.assertFalse(verified_payment_handoff(checkpoint))
+
+    def test_zone_and_attendee_states_follow_real_paths(self):
+        self.assertEqual(self.state("ขั้นตอนที่ 1/4 เลือกรอบ & โซนการแสดง", url="https://booking.test/zones.php?query=927")["state"], "zone_selection")
+        self.assertEqual(self.state("กรุณากรอกรายละเอียด ชื่อ-นามสกุลบน Ticket", url="https://booking.test/enroll.php?k=test")["state"], "attendee_details")
+
+    def test_payment_options_are_not_final_payment(self):
+        checkpoint = self.state("ขั้นตอนที่ 3/4 เลือกวิธีการชำระเงิน QR", url="https://booking.test/paymentall.php?k=test")
+        self.assertEqual(checkpoint["state"], "checkout_options")
+        self.assertFalse(verified_payment_handoff(checkpoint))
+
+    def test_server_close_sale_is_terminal(self):
+        checkpoint = self.state("ขณะนี้ปิดจำหน่ายบัตรผ่านช่องทางออนไลน์", url="https://tickets.test/close-sale/?t=1")
+        self.assertEqual(checkpoint["state"], "sale_closed")
+        self.assertEqual(next_action(checkpoint), "stop_and_report_sale_closed")
 
     def test_adjacent_seats_require_consecutive_numbers(self):
         seats = [
@@ -655,9 +999,14 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(choose_seat_indices(seats, 2, "any", ["A", "B"]), [])
 
     def test_payment_is_verified_only_with_evidence(self):
-        checkpoint = self.state("PromptPay QR Code ชำระเงิน", url="https://tickets.test/payment")
+        checkpoint = self.state("ขั้นตอนที่ 4/4 ชำระเงิน หมายเลขการสั่งซื้อ 2529889 PromptPay Remaining time: 590", url="https://booking.test/payment_kbankqr.php")
         self.assertEqual(checkpoint["state"], "payment_handoff")
         self.assertTrue(verified_payment_handoff(checkpoint))
+
+    def test_generic_qr_copy_is_not_verified_checkout(self):
+        checkpoint = self.state("Payment Methods include QR and PromptPay", url="https://tickets.test/conditions")
+        self.assertNotEqual(checkpoint["state"], "payment_handoff")
+        self.assertFalse(verified_payment_handoff(checkpoint))
 
     def test_unknown_is_never_checkout(self):
         checkpoint = self.state("หน้าแรกทั่วไป")
@@ -678,6 +1027,12 @@ if [[ ! -x .venv/bin/python ]]; then "$PYTHON_BIN" -m venv .venv; fi
 .venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
 exec .venv/bin/python bot.py "$@"
 '''
+    full_loop_script = '''#!/bin/zsh
+set -euo pipefail
+PROGRAM_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROGRAM_DIR"
+exec "$PROGRAM_DIR/start.command" --wait-for-window --confirm-order
+'''
     readme = f'''# {project.name}
 
 Evidence-backed Python + Playwright ticket assistant for **{event_name}**.
@@ -687,8 +1042,11 @@ Evidence-backed Python + Playwright ticket assistant for **{event_name}**.
 - `verification-report.json`: local state-machine fixture results.
 - `python3 bot.py --inspect-only`: read the live public page and write evidence without entering a purchase.
 - `python3 bot.py --wait-for-window`: keep one Chrome session, enter the normal queue window, respect Retry-After, and stop for Login/CAPTCHA/OTP/payment.
+- `./run-full-loop.command`: run the verified browser loop through terms, zone, quantity, event-specific attendee fields, delivery/payment options, and stop on the generated QR page before payment.
 
 Fixture verification does not mean a live queue or checkout was observed. `CHECKOUT_READY` is never emitted without payment-page evidence.
+
+Login uses the isolated browser session first. If login is required, set `TICKET_USERNAME` and `TICKET_PASSWORD` in the Terminal session or enter them at the secure prompt. The password is never written to config, reports, or memory.
 
 ## Start on macOS
 
@@ -702,6 +1060,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
         "tests/test_state_machine.py": test_source,
         "requirements.txt": "playwright>=1.55,<2\n",
         "start.command": start_script,
+        "run-full-loop.command": full_loop_script,
         "README.md": readme,
     }
     for relative, content in files.items():
@@ -709,6 +1068,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     (project / "start.command").chmod(0o755)
+    (project / "run-full-loop.command").chmod(0o755)
     # Build and verify on the container-local filesystem first. Docker Desktop
     # can make an external-volume write visible to macOS before a nested process
     # in the same container can reopen it.

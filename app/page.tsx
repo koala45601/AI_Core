@@ -389,10 +389,13 @@ export default function Home() {
   const [ticketQuantity, setTicketQuantity] = useState(1);
   const [ticketBudget, setTicketBudget] = useState(0);
   const [ticketCustomerName, setTicketCustomerName] = useState("");
+  const [ticketAttendeeNames, setTicketAttendeeNames] = useState("");
   const [ticketAddress, setTicketAddress] = useState("");
   const [ticketCity, setTicketCity] = useState("");
   const [ticketProvince, setTicketProvince] = useState("");
   const [ticketPostalCode, setTicketPostalCode] = useState("");
+  const [ticketDelivery, setTicketDelivery] = useState<"pickup" | "postal">("pickup");
+  const [ticketProtect, setTicketProtect] = useState(false);
   const [ticketPayment, setTicketPayment] = useState<"qr" | "promptpay">("qr");
   const [ticketProjectName, setTicketProjectName] = useState("");
   const [ticketBuildReport, setTicketBuildReport] = useState<TicketBuildReport | null>(null);
@@ -1273,9 +1276,9 @@ export default function Home() {
     event.preventDefault();
     const selected = ticketEvents.find((item) => item.id === ticketSelectedId);
     if (!selected || ticketStage === "building") return;
-    if (!ticketCustomerName.trim() || !ticketAddress.trim()) {
+    if (ticketDelivery === "postal" && !ticketAddress.trim()) {
       setTicketStage("error");
-      setTicketStatus("กรุณาใส่ชื่อและที่อยู่สำหรับสร้าง config ก่อน");
+      setTicketStatus("เลือกจัดส่งทางไปรษณีย์จึงต้องใส่ที่อยู่ก่อน");
       return;
     }
     if (ticketSeatMode === "reserved" && !ticketZones.trim()) {
@@ -1306,12 +1309,15 @@ export default function Home() {
             quantity: ticketQuantity,
             budget: ticketBudget,
             customer_name: ticketCustomerName,
+            attendee_names: ticketAttendeeNames.split(/\n/).map((item) => item.trim()).filter(Boolean),
             shipping_address: {
               address: ticketAddress,
               city: ticketCity,
               province: ticketProvince,
               postalCode: ticketPostalCode,
             },
+            delivery_method: ticketDelivery,
+            ticket_protect: ticketProtect,
             payment_method: ticketPayment,
             selectors: selectorsFromTicketInspection(ticketInspection),
             captured_api: ticketInspection?.api_calls ?? [],
@@ -1752,13 +1758,13 @@ export default function Home() {
                     </section>
 
                     <section className="ticket-form-section">
-                      <div className="ticket-form-heading"><span>02</span><div><strong>ข้อมูลสำหรับกรอกฟอร์ม</strong><small>ไม่รับหรือเก็บ password, OTP และข้อมูลบัตร</small></div></div>
+                      <div className="ticket-form-heading"><span>02</span><div><strong>ข้อมูลสำหรับกรอกฟอร์ม</strong><small>ถามเฉพาะฟิลด์ที่งานนั้นบังคับ; password รับจาก secure prompt และไม่บันทึก</small></div></div>
                       <div className="ticket-form-grid">
-                        <label className="field"><span>ชื่อผู้ซื้อ</span><input value={ticketCustomerName} onChange={(event) => setTicketCustomerName(event.target.value)} placeholder="ชื่อที่ใช้ในคำสั่งซื้อ" /></label>
-                        <label className="field ticket-field-wide"><span>ที่อยู่</span><input value={ticketAddress} onChange={(event) => setTicketAddress(event.target.value)} placeholder="บ้านเลขที่ ถนน แขวง/ตำบล เขต/อำเภอ" /></label>
-                        <label className="field"><span>เมือง/อำเภอ</span><input value={ticketCity} onChange={(event) => setTicketCity(event.target.value)} /></label>
-                        <label className="field"><span>จังหวัด</span><input value={ticketProvince} onChange={(event) => setTicketProvince(event.target.value)} /></label>
-                        <label className="field"><span>รหัสไปรษณีย์</span><input value={ticketPostalCode} onChange={(event) => setTicketPostalCode(event.target.value)} inputMode="numeric" /></label>
+                        <label className="field"><span>ชื่อผู้ซื้อ (ถ้าหน้าจริงถาม)</span><input value={ticketCustomerName} onChange={(event) => setTicketCustomerName(event.target.value)} placeholder="เว้นว่างให้บอทถามตอนพบฟิลด์" /></label>
+                        <label className="field ticket-field-wide"><span>ชื่อผู้เข้าชมแต่ละใบ (หนึ่งบรรทัดต่อคน)</span><textarea value={ticketAttendeeNames} onChange={(event) => setTicketAttendeeNames(event.target.value)} placeholder="กรอกเมื่อคอนนั้นพิมพ์ชื่อบนบัตร; เว้นว่างให้ถามเฉพาะตอนพบฟิลด์" /></label>
+                        <label className="field"><span>วิธีรับบัตร</span><select value={ticketDelivery} onChange={(event) => setTicketDelivery(event.target.value as typeof ticketDelivery)}><option value="pickup">รับบัตรด้วยตนเอง</option><option value="postal">จัดส่งทางไปรษณีย์</option></select></label>
+                        {ticketDelivery === "postal" && <><label className="field ticket-field-wide"><span>ที่อยู่</span><input value={ticketAddress} onChange={(event) => setTicketAddress(event.target.value)} placeholder="บ้านเลขที่ ถนน แขวง/ตำบล เขต/อำเภอ" /></label><label className="field"><span>เมือง/อำเภอ</span><input value={ticketCity} onChange={(event) => setTicketCity(event.target.value)} /></label><label className="field"><span>จังหวัด</span><input value={ticketProvince} onChange={(event) => setTicketProvince(event.target.value)} /></label><label className="field"><span>รหัสไปรษณีย์</span><input value={ticketPostalCode} onChange={(event) => setTicketPostalCode(event.target.value)} inputMode="numeric" /></label></>}
+                        <label className="field"><span>Ticket Protect</span><select value={ticketProtect ? "on" : "off"} onChange={(event) => setTicketProtect(event.target.value === "on")}><option value="off">ไม่เพิ่ม (ค่าเริ่มต้น)</option><option value="on">เพิ่ม Ticket Protect</option></select></label>
                       </div>
                     </section>
 
@@ -1770,12 +1776,12 @@ export default function Home() {
                       </div>
                     </section>
 
-                    <section className="ticket-handoff-note"><strong>ทำงานเบื้องหลังโดยไม่ยึดเมาส์</strong><span>รับช่วงเฉพาะ Login · CAPTCHA · OTP · Payment</span><p>บอทใช้ DOM/API ในโปรไฟล์แยก ไม่ขยับเมาส์ระบบ และทำต่อด้วย session เดิมหลังพี่รับช่วง ส่วนการจ่ายเงินจริงจะหยุดให้พี่ตรวจเสมอ</p></section>
+                    <section className="ticket-handoff-note"><strong>ทำงานเบื้องหลังโดยไม่ยึดเมาส์</strong><span>Login อัตโนมัติจาก session/secure prompt · รับช่วงเฉพาะ CAPTCHA · OTP · Payment</span><p>บอทใช้ DOM ในโปรไฟล์แยก รองรับ image-map ของโซนและไม่ขยับเมาส์ระบบ รหัสผ่านไม่ถูกเขียนลง config ส่วนการจ่ายเงินจริงจะหยุดที่หน้า QR ให้พี่ตรวจเสมอ</p></section>
 
                     {ticketBuildReport && <section className="ticket-result-card">
                       <div><span>✓</span><div><strong>สร้าง state machine และผ่านชุดทดสอบภายใน</strong><p>{ticketBuildReport.project_path}</p></div></div>
                       <div className="ticket-result-files">{ticketBuildReport.created_files.map((file) => <span key={file}>{file}</span>)}</div>
-                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · Queue fixtures: {ticketBuildReport.verification?.queue_fixture_verified ? "ผ่าน" : "ไม่ผ่าน"} · หน้าจริง: {ticketBuildReport.verification?.live_public_page_verified ? "อ่านได้" : "ยังไม่ผ่าน"} · คิวจริง: {ticketBuildReport.verification?.live_queue_observed ? "พบแล้ว" : "ยังไม่พบ"} · Checkout จริง: {ticketBuildReport.verification?.live_checkout_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</small>
+                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · State fixtures: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · คิวจริง: {ticketBuildReport.verification?.live_queue_observed ? "พบแล้ว" : "ยังไม่พบ"} · Checkout จริง: {ticketBuildReport.verification?.live_checkout_verified ? "ยืนยันแล้ว" : "รอรันโปรเจกต์"} · รันด้วย run-full-loop.command</small>
                     </section>}
 
                     <div className="ticket-build-actions"><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting"}>ตรวจหน้าอีกครั้ง</button><button className="save-button" type="submit" disabled={!ticketInspection?.functional_preflight?.can_build || ticketStage === "building"}>{ticketStage === "building" ? "กำลังสร้างและทดสอบ…" : "สร้างและทดสอบบอท"}</button></div>

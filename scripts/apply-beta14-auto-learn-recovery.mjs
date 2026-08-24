@@ -459,7 +459,7 @@ if (await update("lib/agent-tools.ts", (source) => {
   source = replaceRequired(
     source,
     '- สกิล Hacker Lab, System Access และ Cybersecurity เป็นตัววิเคราะห์/แปลงหลักฐานจริง ต้องเก็บข้อมูลที่ต้องใช้จาก host_fs, system_capability, browser_action หรือ api_discovery ก่อน แล้วจึงเรียกสกิล ห้ามสร้าง input หรือผลตรวจขึ้นเอง',
-    '- สกิล Hacker Lab, System Access และ Cybersecurity เป็นตัววิเคราะห์/แปลงหลักฐานจริง ต้องเก็บข้อมูลที่ต้องใช้จาก host_fs, system_capability, browser_action หรือ api_discovery ก่อน แล้วจึงเรียกสกิล ห้ามสร้าง input หรือผลตรวจขึ้นเอง\n- สำหรับสกิล concert-ticket-purchase-assistant อัลฟ่ามีหน้าที่สร้างโปรแกรม ไม่ใช่กดบัตรเอง: เปิด URL แล้วเรียก browser_action action=inspect_events ก่อนเสมอ กรองและแสดงเฉพาะคอนเสิร์ตที่เปิดขายอยู่หรือกำลังจะเปิด พร้อมชื่อคอน วันที่แสดง และวันเปิดขาย แล้วหยุดถามผู้ใช้ให้เลือกคอนก่อนสร้างโปรแกรม ห้ามรวมงานหมดอายุ ปิดขาย ยกเลิก หรือขายหมด; หลังผู้ใช้เลือกแล้วจึงถามรอบ จำนวน ที่นั่ง/โซน งบ ชื่อ-ที่อยู่ และวิธีชำระที่ขาด ใช้ action=inspect_form อ่าน field/label/options/selectors จริงและใช้ api_discovery เก็บ fetch/XHR แล้วเรียก web-api-contract-discovery ก่อนส่งหลักฐานและ selected_event ให้สกิลสร้างโปรเจกต์ Python+Playwright บน macOS host ใน Program_Create; ถ้าฟิลด์สำคัญมีหลาย candidate หรือ confidence ต่ำให้ถามผู้ใช้เฉพาะจุดนั้น ห้ามเดา; โปรแกรมที่สร้างต้องเตรียม session ล่วงหน้า รักษาคิวตาม Retry-After และค้างที่ Login/CAPTCHA/OTP/QR โดยไม่เก็บ password/OTP ลงความจำ',
+    '- สกิล Hacker Lab, System Access และ Cybersecurity เป็นตัววิเคราะห์/แปลงหลักฐานจริง ต้องเก็บข้อมูลที่ต้องใช้จาก host_fs, system_capability, browser_action หรือ api_discovery ก่อน แล้วจึงเรียกสกิล ห้ามสร้าง input หรือผลตรวจขึ้นเอง\n- สำหรับสกิล concert-ticket-purchase-assistant อัลฟ่ามีหน้าที่สร้างโปรแกรมและ Full Loop launcher: เปิด URL แล้วเรียก browser_action action=inspect_events ก่อนเสมอ กรองและแสดงเฉพาะคอนเสิร์ตที่เปิดขายอยู่หรือกำลังจะเปิด พร้อมชื่อคอน วันที่แสดง และวันเปิดขาย แล้วหยุดถามผู้ใช้ให้เลือกคอนก่อนสร้างโปรแกรม ห้ามรวมงานหมดอายุ ปิดขาย ยกเลิก หรือขายหมด; หลังผู้ใช้เลือกแล้วจึงถามรอบ จำนวน ที่นั่ง/โซน งบ และวิธีชำระที่ขาด ใช้ action=inspect_form อ่าน field/label/options/selectors จริงและใช้ api_discovery เก็บ fetch/XHR แล้วเรียก web-api-contract-discovery ก่อนส่งหลักฐานและ selected_event ให้สกิลสร้างโปรเจกต์ Python+Playwright บน macOS host ใน Program_Create; ข้อมูลชื่อผู้เข้าชมหรือที่อยู่ให้ถามเฉพาะเมื่อหน้าเว็บของงานนั้นต้องใช้; โปรแกรมต้องเตรียม session ล่วงหน้า ล็อกอินจาก environment/secure prompt โดยไม่บันทึกรหัสผ่าน รักษาคิวตาม Retry-After ทำ terms → zone/image-map → quantity → attendee → delivery/payment และค้างที่ CAPTCHA/OTP/QR โดยไม่เก็บ password/OTP ลงความจำ',
     "เปิด URL แล้วเรียก browser_action action=inspect_events ก่อนเสมอ",
     "ticket assistant workflow",
   );
@@ -674,7 +674,7 @@ if (await update("tool-service/server.mjs", (source) => {
 
 if (await update("package.json", (source) => {
   const data = JSON.parse(source);
-  if (["1.1.0-beta.14", "1.1.0-beta.15", "1.1.0-beta.16"].includes(data.version)) return source;
+  if (["1.1.0-beta.14", "1.1.0-beta.15", "1.1.0-beta.16", "1.1.0-beta.17"].includes(data.version)) return source;
   data.version = "1.1.0-beta.14";
   return `${JSON.stringify(data, null, 2)}\n`;
 })) changed.push("package.json");

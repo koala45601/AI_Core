@@ -16,7 +16,7 @@ test("Ticket Bot Studio is a fixed workspace with all user preference fields", a
   assert.match(page, /ประเภทบัตร/);
   assert.match(page, /QR Payment/);
   assert.match(page, /PromptPay/);
-  assert.match(page, /Login · CAPTCHA · OTP · Payment/);
+  assert.match(page, /Login อัตโนมัติจาก session\/secure prompt/);
   assert.doesNotMatch(page, /type="password"/);
   assert.match(css, /\.ticket-workspace \{[^}]*overflow: hidden/);
   assert.match(css, /\.ticket-event-list \{[^}]*overflow-y: auto/);
@@ -33,7 +33,7 @@ test("Ticket Bot API uses deterministic tools and never attempts a live purchase
   assert.match(route, /skill_id: "concert-ticket-purchase-assistant"/);
   assert.match(route, /execution_target: "macos_host"/);
   assert.match(route, /live_purchase_attempted: false/);
-  assert.match(route, /handoff_points: \["login", "captcha", "otp", "payment"\]/);
+  assert.match(route, /handoff_points: \["captcha", "otp", "payment"\]/);
   assert.match(route, /domainAllowed\(url, settings\)/);
   assert.match(route, /settings\.web_search_enabled/);
   assert.match(route, /selected\.url !== eventUrl/);
