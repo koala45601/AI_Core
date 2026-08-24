@@ -143,5 +143,20 @@ else
   echo "สกิลแกนหลัก Beta14 ติดตั้งครบแล้ว"
 fi
 
+WEB_READY=false
+for _ in {1..120}; do
+  WEB_HEALTH="$(curl --max-time 2 -fsS http://localhost:3000/api/health 2>/dev/null || true)"
+  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.16"'* ]]; then
+    WEB_READY=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$WEB_READY" != true ]]; then
+  echo "หน้าเว็บ Alpha เปิดไม่สำเร็จที่ http://localhost:3000"
+  echo "ดู log: $ALPHA_DIR/work/alpha.log"
+  exit 1
+fi
+
 echo "Alpha v1.1.0-beta.16 พร้อม: Ticket Bot state machine + evidence-based verification + queue/outage fixtures"
 open "http://localhost:3000" >/dev/null 2>&1 || true

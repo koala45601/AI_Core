@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from urllib.parse import urlsplit
 
 
@@ -93,6 +94,9 @@ if not missing:
     while project.exists():
         project = root / f"{project_name}-{suffix}"
         suffix += 1
+    destination_project = project
+    verification_root = pathlib.Path(tempfile.mkdtemp(prefix="alpha-ticket-verification-"))
+    project = verification_root / destination_project.name
     (project / "tests").mkdir(parents=True)
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
@@ -705,6 +709,9 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     (project / "start.command").chmod(0o755)
+    # Build and verify on the container-local filesystem first. Docker Desktop
+    # can make an external-volume write visible to macOS before a nested process
+    # in the same container can reopen it.
     completed = subprocess.run(
         [sys.executable, str(project / "tests" / "test_state_machine.py")],
         cwd=project,
@@ -727,6 +734,9 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
         "scope": "local deterministic fixtures plus public event-page facts; no live purchase, queue, login or payment was attempted",
     }
     (project / "verification-report.json").write_text(json.dumps(verification, ensure_ascii=False, indent=2), encoding="utf-8")
+    shutil.copytree(project, destination_project)
+    shutil.rmtree(verification_root, ignore_errors=True)
+    project = destination_project
     result.update({
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",

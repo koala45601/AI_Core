@@ -649,6 +649,17 @@ for (let index = 0; index < skills.length; index += 1) {
   });
   if (!result.passed || result.skill?.verification_status !== "verified") {
     process.stdout.write("FAILED\n");
+    const failedChecks = [...(result.tests || []), ...(result.hidden_tests || [])]
+      .filter((test) => !test.passed)
+      .map((test) => ({
+        name: test.name,
+        exit_code: test.exit_code,
+        checks: test.checks,
+        stderr: String(test.stderr || "").slice(0, 1200),
+        stdout: String(test.stdout || "").slice(0, 1200),
+        output_files: test.output_files,
+      }));
+    if (failedChecks.length) process.stdout.write(`${JSON.stringify({ failed_checks: failedChecks }, null, 2)}\n`);
     throw new Error(`${item.skill.id}: ${result.reason || "verification failed"}`);
   }
   for (const executionTarget of item.skill.execution_targets) {

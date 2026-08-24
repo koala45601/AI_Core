@@ -100,6 +100,8 @@ test("generated project verifies queue, outage, multiple tickets, and never fake
   assert.match(template, /server_date/);
   assert.match(template, /mouse_control.*False/);
   assert.match(template, /resume_supported.*True/);
+  assert.match(template, /mkdtemp\(prefix="alpha-ticket-verification-"\)/);
+  assert.match(template, /shutil\.copytree\(project, destination_project\)/);
   assert.match(template, /live_queue_observed["']:\s*False/);
   assert.doesNotMatch(template, /print\(["']CHECKOUT_READY/);
   assert.doesNotMatch(template, /button\[type=submit\]/);
@@ -139,4 +141,12 @@ test("tool service returns page facts and functional preflight with form inspect
   assert.match(service, /functional_preflight/);
   assert.match(service, /a\[href\]/);
   assert.match(service, /context_text/);
+});
+
+test("launcher waits for the real web health endpoint before reporting ready", async () => {
+  const launcher = await source("start-alpha-v11.command");
+  assert.match(launcher, /WEB_READY=false/);
+  assert.match(launcher, /http:\/\/localhost:3000\/api\/health/);
+  assert.match(launcher, /"app_version":"1\.1\.0-beta\.16"/);
+  assert.match(launcher, /หน้าเว็บ Alpha เปิดไม่สำเร็จ/);
 });

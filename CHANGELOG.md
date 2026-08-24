@@ -13,6 +13,9 @@
 - Treat verified performance-time links such as `19:00` as sale-entry controls, expose the discovered rounds in Ticket Studio, and keep the same browser session after Login/CAPTCHA/OTP handoff instead of exiting the workflow.
 - Ticket automation now uses an isolated background Chrome window and DOM/API actions without controlling the system mouse; the window is only handed to the user at Login/CAPTCHA/OTP/payment checkpoints.
 - Preferred ticket zones are normalized to uppercase in the UI, API, generated config and seat-selection runtime. Multi-ticket `any` selection remains restricted to one zone.
+- Ticket-skill verification now builds and runs nested Python fixtures on the container-local temporary filesystem before copying the verified project to an external drive, avoiding Docker Desktop visibility races on `/Volumes/...`.
+- Core-skill installation prints the exact failed fixture, stdout/stderr and missing outputs instead of stopping with only `test criteria not met`.
+- The Beta16 launcher now waits for the real `http://localhost:3000/api/health` response before reporting that Alpha is ready.
 
 ## 1.1.0-beta.15 — 2026-08-24
 
