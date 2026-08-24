@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.19..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.20..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -146,7 +146,7 @@ fi
 WEB_READY=false
 for _ in {1..120}; do
   WEB_HEALTH="$(curl --max-time 2 -fsS http://localhost:3000/api/health 2>/dev/null || true)"
-  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.19"'* ]]; then
+  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.20"'* ]]; then
     WEB_READY=true
     break
   fi
@@ -158,5 +158,5 @@ if [[ "$WEB_READY" != true ]]; then
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.19 พร้อม: เลือกงานแล้วสร้างได้ทันที · ตรวจ public แบบเบื้องหลัง · Full Loop ยืนยัน Login ก่อน Checkout"
+echo "Alpha v1.1.0-beta.20 พร้อม: ตั้งชื่อโปรเจกต์อัตโนมัติ · เลือกงานแล้วสร้างได้ทันที · Full Loop ยืนยัน Login ก่อน Checkout"
 open "http://localhost:3000" >/dev/null 2>&1 || true

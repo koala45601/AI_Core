@@ -251,6 +251,22 @@ function ticketSaleStatus(status: TicketEventChoice["sale_status"]) {
   return TICKET_SALE_STATUS[status || "unknown"];
 }
 
+function automaticTicketProjectName(event?: TicketEventChoice) {
+  if (!event) return "ticket-bot";
+  let urlSlug = "";
+  try {
+    urlSlug = new URL(event.url).pathname.split("/").filter(Boolean).at(-1)?.replace(/\.[^.]+$/, "") || "";
+  } catch {
+    urlSlug = "";
+  }
+  const base = (urlSlug.replace(/^concert-/, "") || event.id || "ticket")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return `${base || "ticket"}-ticket-bot`;
+}
+
 function Toggle({ checked, onChange, label, disabled = false }: {
   checked: boolean;
   onChange: (value: boolean) => void;
@@ -1439,7 +1455,7 @@ export default function Home() {
             captured_api: ticketInspection?.api_calls ?? [],
             event_facts: ticketInspection?.facts ?? {},
             functional_preflight: ticketInspection?.functional_preflight ?? {},
-            project_name: ticketProjectName,
+            project_name: effectiveTicketProjectName,
           },
         }),
       });
@@ -1458,6 +1474,9 @@ export default function Home() {
   const memoryPercent = health ? Math.min(100, (health.model_memory_bytes / Math.max(1, health.memory_target_bytes)) * 100) : 0;
   const runtimeReady = Boolean(health?.ollama_connected && health?.model_installed);
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
+  const selectedTicketEvent = ticketEvents.find((event) => event.id === ticketSelectedId);
+  const generatedTicketProjectName = automaticTicketProjectName(selectedTicketEvent);
+  const effectiveTicketProjectName = ticketProjectName.trim() || generatedTicketProjectName;
   const autoLearnProgress = autoLearnJob?.status === "running" && autoLearnJob.started_at && autoLearnJob.deadline
     ? Math.min(100, Math.max(1, ((Date.now() - autoLearnJob.started_at) / (autoLearnJob.deadline - autoLearnJob.started_at)) * 100))
     : autoLearnJob && ["completed", "stopped"].includes(autoLearnJob.status) ? 100 : 0;
@@ -1840,6 +1859,7 @@ export default function Home() {
                   <label className={`ticket-event-card ${ticketSelectedId === event.id ? "selected" : ""} ${selectable ? "" : "unavailable"}`} key={event.id}>
                     <input type="radio" name="ticket-event" disabled={!selectable} checked={ticketSelectedId === event.id} onChange={() => {
                       setTicketSelectedId(event.id);
+                      setTicketProjectName("");
                       setTicketSchedule(event.start_date || "");
                       setTicketInspection(null);
                       setTicketBuildReport(null);
@@ -1904,7 +1924,15 @@ export default function Home() {
                         </>}
                         <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
                         <label className="field"><span>งบสูงสุดรวม (ไม่บังคับ)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่จำกัดงบ" /><small>ปล่อยเป็น 0 ได้ บอทจะไม่ใช้ราคาเป็นเงื่อนไขตัดออก</small></label>
-                        <label className="field"><span>ชื่อโฟลเดอร์โปรเจกต์</span><input value={ticketProjectName} onChange={(event) => setTicketProjectName(event.target.value)} placeholder="เว้นว่างเพื่อสร้างชื่ออัตโนมัติ" /></label>
+                        <div className="ticket-project-destination ticket-field-wide">
+                          <span>ตำแหน่งไฟล์โปรแกรม</span>
+                          <code>/Volumes/petong/Disk/AI/Program_Create/{effectiveTicketProjectName}/</code>
+                          <small>ระบบตั้งชื่อให้แล้ว ถ้าชื่อซ้ำจะสร้างโฟลเดอร์ใหม่โดยเติมเลขท้ายและไม่เขียนทับของเดิม</small>
+                          <details>
+                            <summary>เปลี่ยนชื่อโฟลเดอร์เอง (ไม่จำเป็น)</summary>
+                            <label className="field"><span>ชื่อที่ต้องการ</span><input value={ticketProjectName} onChange={(event) => setTicketProjectName(event.target.value)} placeholder={generatedTicketProjectName} /></label>
+                          </details>
+                        </div>
                       </div>
                     </section>
 

@@ -21,6 +21,16 @@ test("selected open or upcoming event can build without mandatory detail inspect
   assert.match(route, /can_build: true/);
 });
 
+test("project folder is named automatically and the optional override explains the destination", async () => {
+  const page = await source("app/page.tsx");
+  assert.match(page, /function automaticTicketProjectName/);
+  assert.match(page, /ตำแหน่งไฟล์โปรแกรม/);
+  assert.match(page, /Program_Create\/{effectiveTicketProjectName}/);
+  assert.match(page, /เปลี่ยนชื่อโฟลเดอร์เอง \(ไม่จำเป็น\)/);
+  assert.match(page, /project_name: effectiveTicketProjectName/);
+  assert.match(page, /setTicketProjectName\(""\)/);
+});
+
 test("status filters stay visible even when a source returns zero sold-out records", async () => {
   const [page, route] = await Promise.all([source("app/page.tsx"), source("app/api/ticket-bot/route.ts")]);
   for (const label of ["เปิดช่วงขาย — ยังไม่ยืนยันที่นั่ง", "กำลังจะเปิดช่วงขาย", "พบป้าย SOLD OUT", "ปิดขาย", "งานจบแล้ว", "ยกเลิก", "ยังยืนยันไม่ได้"]) {
