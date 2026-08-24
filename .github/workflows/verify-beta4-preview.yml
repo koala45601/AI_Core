@@ -1,9 +1,10 @@
-name: Verify Alpha Beta12 Preview
+name: Verify Alpha Beta13 Preview
 
 on:
   push:
     branches:
       - audit/security-agent-v1
+      - 'fix/**'
     paths:
       - 'scripts/apply-beta4-*.mjs'
       - 'scripts/apply-beta5-*.mjs'
@@ -14,6 +15,12 @@ on:
       - 'scripts/apply-beta10-*.mjs'
       - 'scripts/apply-beta11-*.mjs'
       - 'scripts/apply-beta12-*.mjs'
+      - 'scripts/apply-beta13-*.mjs'
+      - 'app/api/chat/route.ts'
+      - 'app/api/chats/**/postprocess/**'
+      - 'app/page.tsx'
+      - 'lib/chat-postprocess.ts'
+      - 'lib/ollama.ts'
       - 'lib/conversation-router.js'
       - 'lib/agent-run-store.ts'
       - 'app/api/tasks/**'
@@ -28,6 +35,7 @@ on:
       - 'tests/beta10-host-execution.test.mjs'
       - 'tests/beta11-full-host-permission.test.mjs'
       - 'tests/beta12-host-access-routing.test.mjs'
+      - 'tests/beta13-nonblocking-post-response.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
     branches:
@@ -42,8 +50,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: audit/security-agent-v1
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -78,6 +84,8 @@ jobs:
         run: node scripts/apply-beta11-full-host-permission.mjs .
       - name: Apply beta12 deterministic host access routing
         run: node scripts/apply-beta12-host-access-routing.mjs .
+      - name: Apply beta13 non-blocking post-response runtime
+        run: node scripts/apply-beta13-nonblocking-post-response.mjs .
       - name: Syntax check host services and patchers
         run: |
           node --check tool-service/server.mjs
@@ -95,7 +103,8 @@ jobs:
           node --check scripts/apply-beta10-host-execution.mjs
           node --check scripts/apply-beta11-full-host-permission.mjs
           node --check scripts/apply-beta12-host-access-routing.mjs
+          node --check scripts/apply-beta13-nonblocking-post-response.mjs
       - name: Focused tests
-        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs tests/beta13-nonblocking-post-response.test.mjs
       - name: Build
         run: npm run build
