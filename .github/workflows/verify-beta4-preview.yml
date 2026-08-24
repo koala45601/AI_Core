@@ -1,4 +1,4 @@
-name: Verify Alpha Beta14 Preview
+name: Verify Alpha Beta15 Preview
 
 on:
   push:
@@ -20,6 +20,7 @@ on:
       - 'scripts/install-security-skills.mjs'
       - 'app/api/train/route.ts'
       - 'app/api/chat/route.ts'
+      - 'app/api/ticket-bot/route.ts'
       - 'app/api/chats/**/postprocess/**'
       - 'app/page.tsx'
       - 'lib/chat-postprocess.ts'
@@ -43,6 +44,7 @@ on:
       - 'tests/beta12-host-access-routing.test.mjs'
       - 'tests/beta13-nonblocking-post-response.test.mjs'
       - 'tests/beta14-auto-learn-recovery.test.mjs'
+      - 'tests/beta15-ticket-studio.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
     branches:
@@ -119,6 +121,6 @@ jobs:
           node --check scripts/apply-beta14-ticket-workflow.mjs
           node --check scripts/install-security-skills.mjs
       - name: Focused tests
-        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs tests/beta13-nonblocking-post-response.test.mjs tests/beta14-auto-learn-recovery.test.mjs
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs tests/beta13-nonblocking-post-response.test.mjs tests/beta14-auto-learn-recovery.test.mjs tests/beta15-ticket-studio.test.mjs
       - name: Build
         run: npm run build

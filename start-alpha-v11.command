@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.14..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.15..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -81,7 +81,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta14 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta15 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -104,7 +104,7 @@ for _ in {1..120}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta14 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta15 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
@@ -138,5 +138,5 @@ else
   echo "สกิลแกนหลัก Beta14 ติดตั้งครบแล้ว"
 fi
 
-echo "Alpha v1.1.0-beta.14 พร้อม: Auto Learn recovery + Skills + ticket bot workflow + ตอบเสร็จแล้วส่งคำถามถัดไปได้ทันที"
+echo "Alpha v1.1.0-beta.15 พร้อม: Ticket Bot Studio Full Loop + Auto Learn recovery + Skills + ตอบเสร็จแล้วส่งคำถามถัดไปได้ทันที"
 open "http://localhost:3000" >/dev/null 2>&1 || true

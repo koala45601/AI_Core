@@ -673,7 +673,7 @@ if (await update("tool-service/server.mjs", (source) => {
 
 if (await update("package.json", (source) => {
   const data = JSON.parse(source);
-  if (data.version === "1.1.0-beta.14") return source;
+  if (["1.1.0-beta.14", "1.1.0-beta.15"].includes(data.version)) return source;
   data.version = "1.1.0-beta.14";
   return `${JSON.stringify(data, null, 2)}\n`;
 })) changed.push("package.json");

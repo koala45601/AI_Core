@@ -1,5 +1,13 @@
 # Alpha changelog
 
+## 1.1.0-beta.15 — 2026-08-24
+
+- Added Ticket Bot Studio as a fixed-height workspace with internal scrolling for event discovery, concert selection, reserved/standing ticket preferences, buyer address, and QR/PromptPay handoff settings.
+- Added a deterministic `/api/ticket-bot` Full Loop that inspects open/upcoming events, reads page controls, captures passive fetch/XHR evidence, runs the verified ticket-project skill, and validates the five generated project files without making a live purchase.
+- Improved public event extraction by merging duplicate URLs, preferring structured names, and filtering generic navigation/button entries such as “คอนเสิร์ต” and “ซื้อบัตร”.
+- Verified the read-only discovery flow against multiple current ThaiTicketMajor concert pages and generated retained dry-run projects for both reserved seating and standing tickets.
+- Internet and domain settings remain authoritative; the UI reports the exact capability or allowlist issue instead of silently failing.
+
 ## 1.1.0-beta.14 — 2026-08-24
 
 - Fixed the adaptive-reasoning runtime patch that referenced `deepWorker` before initialization and prevented every autonomous skill build.

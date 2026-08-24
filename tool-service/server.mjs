@@ -711,12 +711,16 @@ async function inspectBrowserEvents(page) {
       "[class*='concert-card']", "[class*='concertCard']", "a[href*='/event']", "a[href*='/concert']",
     ].join(",");
     for (const element of [...document.querySelectorAll(selectors)].slice(0, 500)) {
-      const text = String(element.innerText || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 900);
+      const card = element.matches("article,[data-event-id],[data-event],[class*='event-card'],[class*='eventCard'],[class*='concert-card'],[class*='concertCard']")
+        ? element
+        : element.closest("article,li,[data-event-id],[data-event],[class*='event-card'],[class*='eventCard'],[class*='concert-card'],[class*='concertCard']") || element;
+      const text = String(card.innerText || card.textContent || element.innerText || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 900);
       if (text.length < 3) continue;
-      const heading = element.querySelector("h1,h2,h3,h4,[role=heading]");
+      const heading = element.querySelector("h1,h2,h3,h4,[role=heading]") || card.querySelector("h1,h2,h3,h4,[role=heading]");
       const link = element.matches("a[href]") ? element : element.querySelector("a[href]");
-      const times = [...element.querySelectorAll("time")];
-      const name = String(heading?.textContent || element.getAttribute("aria-label") || text.split(/\s[|·•-]\s/)[0] || text).trim().replace(/\s+/g, " ").slice(0, 240);
+      const times = [...card.querySelectorAll("time")];
+      const imageAlt = card.querySelector("img[alt]")?.getAttribute("alt") || "";
+      const name = String(heading?.textContent || imageAlt || element.getAttribute("aria-label") || text.split(/\s[|·•-]\s/)[0] || text).trim().replace(/\s+/g, " ").slice(0, 240);
       const url = link ? new URL(link.getAttribute("href"), location.href).toString() : location.href;
       records.push({
         source: "page_card",
@@ -737,11 +741,50 @@ async function inspectBrowserEvents(page) {
   const closedPattern = /sold.?out|sale.?ended|closed|cancelled|canceled|past.?event|หมดเขต|ปิดขาย|ยกเลิก|สิ้นสุดแล้ว|ขายหมด/;
   const openPattern = /on.?sale|buy.?now|book.?now|available|จำหน่ายแล้ว|เปิดขาย|ซื้อบัตร|จองบัตร/;
   const upcomingPattern = /coming.?soon|sale.?starts|on.?sale.?soon|เร็ว.?ๆ.?นี้|เตรียมเปิดขาย|เปิดขายวันที่|เริ่มจำหน่าย/;
+  const genericNamePattern = /^(?:ซื้อบัตร|จองบัตร|buy(?:\s+now)?|book(?:\s+now)?|คอนเสิร์ต|concerts?|events?|กิจกรรม)$/i;
+  const candidateScore = (candidate) => {
+    const name = String(candidate.name || "").trim();
+    return (candidate.source === "structured_data" ? 200 : 0)
+      + (genericNamePattern.test(name) ? 0 : 120)
+      + (candidate.start_date ? 30 : 0)
+      + (candidate.sale_open_at ? 20 : 0)
+      + Math.min(60, name.length);
+  };
+  const mergedByUrl = new Map();
+  for (const candidate of rawEvents) {
+    let normalizedUrl;
+    try {
+      const parsed = new URL(String(candidate.url || ""), page.url());
+      parsed.hash = "";
+      parsed.search = "";
+      normalizedUrl = parsed.toString().replace(/\/$/, "");
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      if (segments.length < 2 && /^(?:concert|concerts|event|events)$/i.test(segments[0] || "")) continue;
+    } catch { continue; }
+    const current = mergedByUrl.get(normalizedUrl);
+    if (!current) {
+      mergedByUrl.set(normalizedUrl, { ...candidate, normalized_url: normalizedUrl });
+      continue;
+    }
+    const preferred = candidateScore(candidate) > candidateScore(current) ? candidate : current;
+    const fallback = preferred === candidate ? current : candidate;
+    mergedByUrl.set(normalizedUrl, {
+      ...preferred,
+      normalized_url: normalizedUrl,
+      start_date: preferred.start_date || fallback.start_date,
+      end_date: preferred.end_date || fallback.end_date,
+      sale_open_at: preferred.sale_open_at || fallback.sale_open_at,
+      availability: preferred.availability || fallback.availability,
+      event_status: preferred.event_status || fallback.event_status,
+      text: `${preferred.text || ""} ${fallback.text || ""}`.trim().slice(0, 1200),
+    });
+  }
   const seen = new Set();
   const eligible = [];
   const excluded = [];
-  for (const candidate of rawEvents) {
-    const key = `${String(candidate.url || "").replace(/[?#].*$/, "")}\n${String(candidate.name || "").toLowerCase()}`;
+  for (const candidate of mergedByUrl.values()) {
+    if (genericNamePattern.test(String(candidate.name || "").trim())) continue;
+    const key = String(candidate.normalized_url || candidate.url || "");
     if (seen.has(key)) continue;
     seen.add(key);
     const combined = `${candidate.availability || ""} ${candidate.event_status || ""} ${candidate.text || ""}`.toLowerCase();
@@ -758,9 +801,9 @@ async function inspectBrowserEvents(page) {
       continue;
     }
     eligible.push({
-      id: candidate.id || candidate.url,
+      id: candidate.normalized_url || candidate.id || candidate.url,
       name: candidate.name,
-      url: candidate.url,
+      url: candidate.normalized_url || candidate.url,
       start_date: candidate.start_date,
       end_date: candidate.end_date,
       sale_open_at: candidate.sale_open_at,
