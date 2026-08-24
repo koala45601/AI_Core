@@ -4,6 +4,7 @@ import { executeTool, ToolExecutionResult } from "@/lib/tool-client";
 import { AppSettings } from "@/lib/types";
 
 type TicketAction = "inspect" | "inspect_form" | "build";
+type TicketSaleStatus = "open" | "upcoming" | "sold_out" | "closed" | "ended" | "cancelled" | "unknown";
 
 interface TicketEvent {
   id: string;
@@ -12,8 +13,10 @@ interface TicketEvent {
   start_date?: string;
   end_date?: string;
   sale_open_at?: string;
-  sale_status?: "open" | "upcoming";
+  sale_status?: TicketSaleStatus;
   source?: string;
+  selectable?: boolean;
+  status_evidence?: string;
 }
 
 interface TicketBuildInput {
@@ -27,6 +30,9 @@ interface TicketBuildInput {
   seat_mode?: unknown;
   seat_grouping?: unknown;
   preferred_zones?: unknown;
+  preferred_rows?: unknown;
+  preferred_seat_numbers?: unknown;
+  seat_fallback_mode?: unknown;
   quantity?: unknown;
   budget?: unknown;
   customer_name?: unknown;
@@ -62,14 +68,16 @@ function assertInternetAndDomain(url: string, settings: AppSettings) {
 
 function normalizedEvents(result: ToolExecutionResult): TicketEvent[] {
   if (!Array.isArray(result.events)) return [];
+  const allowedStatuses = new Set<TicketSaleStatus>(["open", "upcoming", "sold_out", "closed", "ended", "cancelled", "unknown"]);
   return result.events.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
     const id = asText(record.id, 500);
     const name = asText(record.name, 500);
     const url = asText(record.url, 2_000);
-    const status = asText(record.sale_status, 30);
-    if (!id || !name || !url || !["open", "upcoming"].includes(status)) return [];
+    const rawStatus = asText(record.sale_status, 30) as TicketSaleStatus;
+    const status = allowedStatuses.has(rawStatus) ? rawStatus : "unknown";
+    if (!id || !name || !url) return [];
     return [{
       id,
       name,
@@ -77,8 +85,10 @@ function normalizedEvents(result: ToolExecutionResult): TicketEvent[] {
       start_date: asText(record.start_date, 100),
       end_date: asText(record.end_date, 100),
       sale_open_at: asText(record.sale_open_at, 100),
-      sale_status: status as "open" | "upcoming",
+      sale_status: status,
       source: asText(record.source, 50),
+      selectable: record.selectable !== false && ["open", "upcoming"].includes(status),
+      status_evidence: asText(record.status_evidence, 300),
     }];
   }).slice(0, 100);
 }
@@ -92,7 +102,7 @@ function safeCandidates(value: unknown): TicketEvent[] {
     const name = asText(record.name, 500);
     const url = asText(record.url, 2_000);
     const status = asText(record.sale_status, 30);
-    if (!id || !name || !url || !["open", "upcoming"].includes(status)) return [];
+    if (!id || !name || !url || !["open", "upcoming"].includes(status) || record.selectable === false) return [];
     return [{
       id, name, url,
       start_date: asText(record.start_date, 100),
@@ -100,6 +110,8 @@ function safeCandidates(value: unknown): TicketEvent[] {
       sale_open_at: asText(record.sale_open_at, 100),
       sale_status: status as "open" | "upcoming",
       source: asText(record.source, 50),
+      selectable: true,
+      status_evidence: asText(record.status_evidence, 300),
     }];
   }).slice(0, 100);
 }
@@ -139,9 +151,36 @@ function parseSkillOutput(result: ToolExecutionResult): Record<string, unknown> 
   return {};
 }
 
-async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form") {
-  await executeTool("browser_action", { action: "open", url }, settings);
-  return executeTool("browser_action", { action: mode === "events" ? "inspect_events" : "inspect_form" }, settings);
+function publicInspectionFallback(url: string): string {
+  const parsed = new URL(url);
+  if (!new Set(["www.thaiticketmajor.com", "thaiticketmajor.com"]).has(parsed.hostname.toLowerCase())) return "";
+  parsed.hostname = "booking.thaiticketmajor.com";
+  if (["/", "/index.html"].includes(parsed.pathname)) parsed.pathname = "/index.php";
+  return parsed.toString();
+}
+
+function inspectionBlocked(result: ToolExecutionResult): boolean {
+  return result.access_blocked === true
+    || /access\s*denied|permission\s+to\s+access|errors\.edgesuite\.net/i.test(`${asText(result.title, 500)} ${asText(result.content, 5_000)}`);
+}
+
+async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form"): Promise<ToolExecutionResult & { requested_url: string; inspection_url: string; used_public_fallback: boolean }> {
+  const inspectAction = mode === "events" ? "inspect_events" : "inspect_form";
+  await executeTool("browser_action", { action: "open", url, fresh_page: true, public_inspection: true }, settings);
+  let result = await executeTool("browser_action", { action: inspectAction }, settings);
+  let inspectionUrl = url;
+  let usedPublicFallback = false;
+  if (inspectionBlocked(result)) {
+    const fallback = publicInspectionFallback(url);
+    if (!fallback || fallback === url) throw new Error(`หน้า public ถูกเว็บไซต์ปฏิเสธ (${asText(result.block_reason, 500) || "Access Denied"})`);
+    assertInternetAndDomain(fallback, settings);
+    await executeTool("browser_action", { action: "open", url: fallback, fresh_page: true, public_inspection: true }, settings);
+    result = await executeTool("browser_action", { action: inspectAction }, settings);
+    inspectionUrl = fallback;
+    usedPublicFallback = true;
+  }
+  if (inspectionBlocked(result)) throw new Error(`ตรวจหน้าสาธารณะไม่ได้: ${asText(result.block_reason, 500) || "Access Denied"}`);
+  return Object.assign({}, result, { requested_url: url, inspection_url: inspectionUrl, used_public_fallback: usedPublicFallback });
 }
 
 export async function POST(request: Request) {
@@ -155,13 +194,22 @@ export async function POST(request: Request) {
       assertInternetAndDomain(url, settings);
       const inspected = await inspectPage(url, settings, "events");
       const events = normalizedEvents(inspected);
+      const counts = events.reduce((result, event) => {
+        const status = event.sale_status || "unknown";
+        result[status] = (result[status] || 0) + 1;
+        return result;
+      }, {} as Record<string, number>);
+      const availableCount = (counts.open || 0) + (counts.upcoming || 0);
+      const unavailableCount = events.length - availableCount;
+      const fallbackNote = inspected.used_public_fallback === true ? " · ใช้หน้ารวม official สำรองเพราะหน้าแรกตอบ Access Denied" : "";
       return Response.json({
         ok: true,
         stage: "events_inspected",
-        page: { url: asText(inspected.url, 2_000), title: asText(inspected.title, 500) },
+        page: { url: asText(inspected.url, 2_000), title: asText(inspected.title, 500), requested_url: url, inspection_url: asText(inspected.inspection_url, 2_000), used_public_fallback: inspected.used_public_fallback === true },
         events,
-        excluded_count: Number(inspected.excluded_count || 0),
-        message: events.length ? `พบคอนเสิร์ตที่เปิดขายหรือกำลังจะเปิด ${events.length} รายการ` : "ไม่พบคอนเสิร์ตที่เปิดขายหรือกำลังจะเปิดจากหน้านี้",
+        counts,
+        excluded_count: unavailableCount,
+        message: events.length ? `เปิดขาย ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · ขายหมด/ปิด/จบแล้ว ${unavailableCount}${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
       });
     }
 
@@ -182,7 +230,7 @@ export async function POST(request: Request) {
       return Response.json({
         ok: true,
         stage: "form_inspected",
-        page: { url: asText(inspected.url, 2_000), title: asText(inspected.title, 500) },
+        page: { url: asText(inspected.url, 2_000), title: asText(inspected.title, 500), requested_url: url, inspection_url: asText(inspected.inspection_url, 2_000), used_public_fallback: inspected.used_public_fallback === true },
         controls: Array.isArray(inspected.controls) ? inspected.controls.slice(0, 300) : [],
         candidates: inspected.candidates && typeof inspected.candidates === "object" ? inspected.candidates : {},
         ambiguous_roles: Array.isArray(inspected.ambiguous_roles) ? inspected.ambiguous_roles.slice(0, 30) : [],
@@ -219,6 +267,8 @@ export async function POST(request: Request) {
       if (!new Set(["reserved", "standing", "general_admission"]).has(seatMode)) throw new Error("กรุณาเลือกประเภทบัตร");
       const seatGrouping = asText(input.seat_grouping, 30) || "adjacent";
       if (seatMode === "reserved" && !new Set(["adjacent", "same_zone", "any"]).has(seatGrouping)) throw new Error("กรุณาเลือกว่าจะเอาที่นั่งติดกัน คละในโซน หรือใบไหนก็ได้");
+      const seatFallbackMode = asText(input.seat_fallback_mode, 30) || "nearest";
+      if (seatMode === "reserved" && !new Set(["exact", "nearest", "zone_any"]).has(seatFallbackMode)) throw new Error("กรุณาเลือกวิธีสำรองเมื่อที่นั่งเป้าหมายไม่ว่าง");
       const paymentMethod = asText(input.payment_method, 30).toLowerCase();
       if (!new Set(["qr", "promptpay"]).has(paymentMethod)) throw new Error("รองรับวิธีชำระเงิน QR หรือ PromptPay ใน Full Loop นี้");
       const quantity = Math.min(10, Math.max(1, Math.floor(Number(input.quantity || 1))));
@@ -245,6 +295,9 @@ export async function POST(request: Request) {
           seat_mode: seatMode,
           seat_grouping: seatGrouping,
           preferred_zones: Array.isArray(input.preferred_zones) ? input.preferred_zones.map((item) => asText(item, 120).toUpperCase()).filter(Boolean).slice(0, 20) : [],
+          preferred_rows: Array.isArray(input.preferred_rows) ? input.preferred_rows.map((item) => asText(item, 30).toUpperCase()).filter(Boolean).slice(0, 50) : [],
+          preferred_seat_numbers: Array.isArray(input.preferred_seat_numbers) ? input.preferred_seat_numbers.map((item) => asText(item, 30).toUpperCase()).filter(Boolean).slice(0, 100) : [],
+          seat_fallback_mode: seatFallbackMode,
           customer_name: asText(input.customer_name, 200),
           attendee_names: Array.isArray(input.attendee_names) ? input.attendee_names.map((item) => asText(item, 200)).filter(Boolean).slice(0, quantity) : [],
           shipping_address: address,

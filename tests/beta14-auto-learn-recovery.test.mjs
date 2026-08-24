@@ -61,7 +61,7 @@ test("beta14 repairs an already-patched legacy runtime", async () => {
     assert.doesNotMatch(repaired, /deepWorkerOptions\(settings, deepWorker\.numPredict\)/);
     assert.match(repaired, /const deepWorker = \{ think: false, numCtx: Math\.min\(settings\.max_context_tokens, 4096\), numPredict: Math\.min\(1200/);
     assert.match(repaired, /num_predict: deepWorker\.numPredict/);
-    assert.equal(JSON.parse(await fs.readFile(resolve(temporary, "package.json"), "utf8")).version, "1.1.0-beta.17");
+    assert.equal(JSON.parse(await fs.readFile(resolve(temporary, "package.json"), "utf8")).version, "1.1.0-beta.18");
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
   }
@@ -175,7 +175,7 @@ test("Beta14 launcher applies every runtime patch and installs missing core skil
     text("start-alpha-v11.command"),
     text("CHANGELOG.md"),
   ]);
-  assert.equal(JSON.parse(pkg).version, "1.1.0-beta.17");
+  assert.equal(JSON.parse(pkg).version, "1.1.0-beta.18");
   const beta13 = launcher.indexOf("apply-beta13-nonblocking-post-response.mjs");
   const beta14 = launcher.indexOf("apply-beta14-auto-learn-recovery.mjs");
   const ticket = launcher.indexOf('"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs" "$ALPHA_DIR"');

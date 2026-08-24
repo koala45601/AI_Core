@@ -1,5 +1,14 @@
 # Alpha changelog
 
+## 1.1.0-beta.18 — 2026-08-25
+
+- Public concert discovery now detects a ThaiTicketMajor homepage `Access Denied` response and retries the official `booking.thaiticketmajor.com` public listing without requiring Login.
+- Ticket Studio now shows open, upcoming, sold-out, closed, ended, cancelled and unknown states separately; only open/upcoming records can be selected.
+- Reserved-seat configuration no longer forces users to guess zone names. It displays discovered A/A1/A2-style zones when available and otherwise asks after Login on the live zone page.
+- Added preferred row, seat number/range and exact/nearest/same-zone fallback controls. A requested zone is never silently changed and multi-ticket fallback never mixes zones.
+- Generated Full Loop programs must verify an existing authenticated account marker or a successful Login-form transition before Checkout or QR handoff. Public inspection remains login-free and passwords are never persisted.
+- Added regression coverage for official public fallback, sale-state labels, zone/row discovery, deferred zone choice, exact seat targeting and Login gating.
+
 ## 1.1.0-beta.17 — 2026-08-25
 
 - Verified one live ThaiTicketMajor flow through login, event terms, image-map zone B, quantity, event-specific attendee name, pickup, QR selection and the final KBank PromptPay page without submitting payment.

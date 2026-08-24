@@ -131,12 +131,14 @@ interface TicketEventChoice {
   start_date?: string;
   end_date?: string;
   sale_open_at?: string;
-  sale_status?: "open" | "upcoming";
+  sale_status?: "open" | "upcoming" | "sold_out" | "closed" | "ended" | "cancelled" | "unknown";
   source?: string;
+  selectable?: boolean;
+  status_evidence?: string;
 }
 
 interface TicketFormInspection {
-  page?: { url?: string; title?: string };
+  page?: { url?: string; title?: string; requested_url?: string; inspection_url?: string; used_public_fallback?: boolean };
   candidates: Record<string, Array<{ selector?: string; selector_confidence?: number; label?: string; name?: string; id?: string; type?: string }>>;
   ambiguous_roles: string[];
   api_calls: Array<Record<string, unknown>>;
@@ -154,6 +156,9 @@ interface TicketFormInspection {
     purchase_controls?: Array<{ selector?: string; label?: string }>;
     sale_entry_controls?: Array<{ selector?: string; label?: string; semantic_role?: string; context_text?: string }>;
     performance_options?: Array<{ selector?: string; label?: string; semantic_role?: string; context_text?: string }>;
+    zones?: string[];
+    seat_rows?: string[];
+    seat_map_detected?: boolean;
     evidence?: Array<{ field?: string; text?: string; source?: string }>;
   };
   functional_preflight?: {
@@ -211,6 +216,20 @@ function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+const TICKET_SALE_STATUS: Record<NonNullable<TicketEventChoice["sale_status"]>, { label: string; className: string }> = {
+  open: { label: "เปิดขายอยู่", className: "open" },
+  upcoming: { label: "กำลังจะเปิด", className: "upcoming" },
+  sold_out: { label: "ขายหมด", className: "sold-out" },
+  closed: { label: "ปิดขาย", className: "closed" },
+  ended: { label: "งานจบแล้ว", className: "ended" },
+  cancelled: { label: "ยกเลิก", className: "cancelled" },
+  unknown: { label: "ยังยืนยันไม่ได้", className: "unknown" },
+};
+
+function ticketSaleStatus(status: TicketEventChoice["sale_status"]) {
+  return TICKET_SALE_STATUS[status || "unknown"];
 }
 
 function Toggle({ checked, onChange, label, disabled = false }: {
@@ -386,6 +405,9 @@ export default function Home() {
   const [ticketSeatMode, setTicketSeatMode] = useState<"reserved" | "standing" | "general_admission">("reserved");
   const [ticketSeatGrouping, setTicketSeatGrouping] = useState<"adjacent" | "same_zone" | "any">("adjacent");
   const [ticketZones, setTicketZones] = useState("");
+  const [ticketRows, setTicketRows] = useState("");
+  const [ticketSeatNumbers, setTicketSeatNumbers] = useState("");
+  const [ticketSeatFallback, setTicketSeatFallback] = useState<"exact" | "nearest" | "zone_any">("nearest");
   const [ticketQuantity, setTicketQuantity] = useState(1);
   const [ticketBudget, setTicketBudget] = useState(0);
   const [ticketCustomerName, setTicketCustomerName] = useState("");
@@ -1220,7 +1242,7 @@ export default function Home() {
       const events = data.events ?? [];
       setTicketEvents(events);
       setTicketStatus(data.message || `พบ ${events.length} รายการ`);
-      setTicketStage(events.length ? "event_ready" : "idle");
+      setTicketStage(events.some((event) => event.selectable !== false && ["open", "upcoming"].includes(event.sale_status || "unknown")) ? "event_ready" : "idle");
     } catch (error) {
       setTicketStage("error");
       setTicketStatus(error instanceof Error ? error.message : "ตรวจรายการคอนเสิร์ตไม่สำเร็จ");
@@ -1281,11 +1303,6 @@ export default function Home() {
       setTicketStatus("เลือกจัดส่งทางไปรษณีย์จึงต้องใส่ที่อยู่ก่อน");
       return;
     }
-    if (ticketSeatMode === "reserved" && !ticketZones.trim()) {
-      setTicketStage("error");
-      setTicketStatus("บัตรแบบเลือกที่นั่งต้องระบุโซนที่ต้องการอย่างน้อย 1 โซน");
-      return;
-    }
     setTicketStage("building");
     setTicketStatus("กำลังเรียกสกิลที่ Verified แล้วเพื่อสร้างโปรเจกต์ Python และตรวจไฟล์…");
     setTicketBuildReport(null);
@@ -1306,6 +1323,9 @@ export default function Home() {
             seat_mode: ticketSeatMode,
             seat_grouping: ticketSeatGrouping,
             preferred_zones: ticketZones.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+            preferred_rows: ticketRows.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+            preferred_seat_numbers: ticketSeatNumbers.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+            seat_fallback_mode: ticketSeatFallback,
             quantity: ticketQuantity,
             budget: ticketBudget,
             customer_name: ticketCustomerName,
@@ -1696,10 +1716,21 @@ export default function Home() {
                 <span className="ticket-status-dot" />
                 <div><strong>สถานะ Full Loop</strong><p>{ticketStatus}</p></div>
               </div>
+              {ticketEvents.length > 0 && <div className="ticket-status-legend">
+                {(["open", "upcoming", "sold_out", "closed", "ended", "cancelled", "unknown"] as const).map((status) => {
+                  const count = ticketEvents.filter((event) => (event.sale_status || "unknown") === status).length;
+                  if (!count) return null;
+                  const meta = ticketSaleStatus(status);
+                  return <span key={status} className={`ticket-sale-pill ${meta.className}`}>{meta.label} {count}</span>;
+                })}
+              </div>}
               <div className="ticket-event-list">
-                {ticketEvents.map((event) => (
-                  <label className={`ticket-event-card ${ticketSelectedId === event.id ? "selected" : ""}`} key={event.id}>
-                    <input type="radio" name="ticket-event" checked={ticketSelectedId === event.id} onChange={() => {
+                {ticketEvents.map((event) => {
+                  const selectable = event.selectable !== false && ["open", "upcoming"].includes(event.sale_status || "unknown");
+                  const saleMeta = ticketSaleStatus(event.sale_status);
+                  return (
+                  <label className={`ticket-event-card ${ticketSelectedId === event.id ? "selected" : ""} ${selectable ? "" : "unavailable"}`} key={event.id}>
+                    <input type="radio" name="ticket-event" disabled={!selectable} checked={ticketSelectedId === event.id} onChange={() => {
                       setTicketSelectedId(event.id);
                       setTicketSchedule(event.start_date || "");
                       setTicketInspection(null);
@@ -1707,12 +1738,12 @@ export default function Home() {
                       setTicketStage("event_ready");
                     }} />
                     <span>
-                      <strong>{event.name}</strong>
+                      <span className="ticket-event-title"><strong>{event.name}</strong><span className={`ticket-sale-pill ${saleMeta.className}`}>{saleMeta.label}</span></span>
                       <small>{event.start_date ? `วันแสดง ${event.start_date}` : "ตรวจรอบจากหน้าถัดไป"}</small>
-                      <small>{event.sale_status === "upcoming" ? "กำลังจะเปิดขาย" : "เปิดขายอยู่"}{event.sale_open_at ? ` · เปิดขาย ${event.sale_open_at}` : ""}</small>
+                      <small>{event.sale_open_at ? `เปิดขาย ${event.sale_open_at}` : event.status_evidence || (selectable ? "เลือกเพื่อตรวจรายละเอียดต่อได้" : "แสดงไว้เพื่อบอกสถานะ แต่สร้างบอทไม่ได้")}</small>
                     </span>
                   </label>
-                ))}
+                );})}
                 {!ticketEvents.length && <div className="ticket-empty"><span>▱</span><strong>ยังไม่มีรายการคอนเสิร์ต</strong><p>ระบบจะแสดงเฉพาะงานที่เปิดขายหรือกำลังจะเปิด</p></div>}
               </div>
               <div className="ticket-discovery-actions">
@@ -1736,6 +1767,7 @@ export default function Home() {
                     {ticketInspection && <section className="ticket-evidence-card">
                       <div><strong>หลักฐานจากหน้าเว็บ</strong><span>{ticketInspection.functional_preflight?.public_page_verified ? "ยืนยันข้อมูลสาธารณะแล้ว" : "หลักฐานยังไม่ครบ"} · {ticketInspection.api_calls.length} API calls</span></div>
                       <p>สถานะ: {ticketInspection.functional_preflight?.workflow_state || "unknown"} · วันแสดง: {ticketInspection.facts?.show_dates?.[0]?.raw || ticketInspection.facts?.show_dates?.[0]?.iso || "ไม่พบ"} · เปิดขาย: {ticketInspection.facts?.sale_open_at_raw || ticketInspection.facts?.sale_open_at || "ไม่พบ"}</p>
+                      <p>การตรวจสอบรายการใช้หน้าสาธารณะโดยไม่ล็อกอิน{ticketInspection.page?.used_public_fallback ? ` · หน้าแรกถูกปฏิเสธ จึงใช้หน้า official สำรอง ${ticketInspection.page.inspection_url || ""}` : ""} ส่วนโปรแกรมจริงจะต้องยืนยัน Login ก่อน Checkout</p>
                       {ticketInspection.facts?.prices?.length ? <p>ราคาที่อ่านได้: {ticketInspection.facts.prices.map((price) => price.toLocaleString()).join(" / ")} บาท</p> : null}
                       <p>ปุ่มเข้าซื้อ: {ticketInspection.functional_preflight?.purchase_controls_ready ? "พบจาก DOM จริง" : ticketInspection.functional_preflight?.workflow_state === "pre_sale" ? "ยังไม่เปิด (COMING SOON)" : "ยังยืนยันไม่ได้"}</p>
                       {ticketInspection.functional_preflight?.unresolved?.length ? <p>ข้อมูลที่ยังขาด: {ticketInspection.functional_preflight.unresolved.join(", ")} — ระบบจะไม่สร้างผลผ่านปลอม</p> : null}
@@ -1750,7 +1782,15 @@ export default function Home() {
                         <label className="field"><span>เวลาเริ่มรับคิว (ถ้ามี)</span><input value={ticketQueueOpenAt} onChange={(event) => setTicketQueueOpenAt(event.target.value)} placeholder="เช่น 2026-08-29T09:00:00+07:00" /></label>
                         <label className="field"><span>ประเภทบัตร</span><select value={ticketSeatMode} onChange={(event) => setTicketSeatMode(event.target.value as typeof ticketSeatMode)}><option value="reserved">เลือกที่นั่ง</option><option value="standing">บัตรยืน</option><option value="general_admission">ไม่ระบุที่นั่ง</option></select></label>
                         {ticketSeatMode === "reserved" && <label className="field"><span>การจัดที่นั่งหลายใบ</span><select value={ticketSeatGrouping} onChange={(event) => setTicketSeatGrouping(event.target.value as typeof ticketSeatGrouping)}><option value="adjacent">ต้องติดกันในโซนเดียว</option><option value="same_zone">ไม่ติดกันได้ แต่โซนเดียวกัน</option><option value="any">ใบไหนก็ได้ในโซนเดียวกัน</option></select></label>}
-                        <label className="field"><span>โซนที่ต้องการ</span><input value={ticketZones} onChange={(event) => setTicketZones(event.target.value.toUpperCase())} placeholder={ticketSeatMode === "reserved" ? "เช่น A, B1 (ระบบใช้ตัวพิมพ์ใหญ่)" : "เว้นว่างได้"} /></label>
+                        <label className="field ticket-field-wide"><span>โซนที่ต้องการ</span><input value={ticketZones} onChange={(event) => setTicketZones(event.target.value.toUpperCase())} placeholder={ticketSeatMode === "reserved" ? "เช่น A1, A2 — เว้นว่างได้ถ้ายังไม่รู้" : "เว้นว่างได้"} />
+                          {ticketSeatMode === "reserved" && <small>{ticketInspection?.facts?.zones?.length ? `โซนที่อ่านได้จากหน้าปัจจุบัน: ${ticketInspection.facts.zones.join(", ")}` : "ไม่ต้องเดาโซนล่วงหน้า — ถ้าเว้นว่าง โปรแกรมจริงจะอ่านโซนหลัง Login แล้วถามก่อนเลือก"}</small>}
+                        </label>
+                        {ticketSeatMode === "reserved" && <>
+                          {ticketInspection?.facts?.zones?.length ? <div className="ticket-zone-options ticket-field-wide">{ticketInspection.facts.zones.map((zone) => <button type="button" className="ticket-zone-chip" key={zone} onClick={() => setTicketZones((current) => Array.from(new Set([...current.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), zone.toUpperCase()])).join(", "))}>{zone}</button>)}</div> : null}
+                          <label className="field"><span>แถวที่ต้องการ</span><input value={ticketRows} onChange={(event) => setTicketRows(event.target.value.toUpperCase())} placeholder="เช่น K หรือ K, L" /><small>เว้นว่าง = แถวใดก็ได้ในโซนที่เลือก</small></label>
+                          <label className="field"><span>เลขที่นั่งที่ต้องการ</span><input value={ticketSeatNumbers} onChange={(event) => setTicketSeatNumbers(event.target.value.toUpperCase())} placeholder="เช่น 10 หรือ 10-12" /><small>รองรับ K10 โดยจะแยกเลข 10 ให้อัตโนมัติ</small></label>
+                          <label className="field"><span>ถ้าที่นั่งเป้าหมายไม่ว่าง</span><select value={ticketSeatFallback} onChange={(event) => setTicketSeatFallback(event.target.value as typeof ticketSeatFallback)}><option value="exact">เอาตรงตามที่ระบุเท่านั้น</option><option value="nearest">เลือกเลขใกล้ที่สุดในโซนเดิม</option><option value="zone_any">ใบไหนก็ได้ แต่ต้องอยู่โซนเดิม</option></select></label>
+                        </>}
                         <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
                         <label className="field"><span>งบสูงสุดรวม (บาท)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่กำหนด" /></label>
                         <label className="field"><span>ชื่อโฟลเดอร์โปรเจกต์</span><input value={ticketProjectName} onChange={(event) => setTicketProjectName(event.target.value)} placeholder="เว้นว่างเพื่อสร้างชื่ออัตโนมัติ" /></label>

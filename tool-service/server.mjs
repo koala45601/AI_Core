@@ -643,7 +643,32 @@ function classifyFormControl(control) {
   return "unknown";
 }
 
+async function browserAccessBlock(page) {
+  const title = String(await page.title().catch(() => ""));
+  const body = String(await page.locator("body").innerText({ timeout: 3000 }).catch(() => "")).slice(0, 10_000);
+  const combined = `${title}\n${body}`;
+  if (/access\s*denied|permission\s+to\s+access|errors\.edgesuite\.net|reference\s*#[\d.]+/i.test(combined)) {
+    return { blocked: true, reason: "เว็บไซต์ปฏิเสธหน้า public ใน browser session นี้", title, body };
+  }
+  return { blocked: false, reason: "", title, body };
+}
+
 async function inspectBrowserForm(page) {
+  const accessBlock = await browserAccessBlock(page);
+  if (accessBlock.blocked) {
+    return {
+      ok: false,
+      access_blocked: true,
+      block_reason: accessBlock.reason,
+      url: page.url(),
+      title: accessBlock.title,
+      controls: [],
+      candidates: {},
+      ambiguous_roles: [],
+      facts: {},
+      functional_preflight: { passed: false, public_page_verified: false, unresolved: ["access_denied"], can_build: false },
+    };
+  }
   const controls = await page.locator("input, select, textarea, button, a[href], [role=button], [role=option]").evaluateAll((nodes) => nodes.slice(0, 500).map((node) => {
     const element = node;
     const id = element.getAttribute("id") || "";
@@ -701,6 +726,12 @@ async function inspectBrowserForm(page) {
       title: document.title,
       body_text: String(document.body?.innerText || "").slice(0, 60_000),
       structured_events: structured_events.slice(0, 30),
+      discovered_zones: [...new Set([...document.querySelectorAll("area[href*='#'], [data-zone], [data-section]")].map((element) => {
+        const href = String(element.getAttribute("href") || "");
+        return String(element.getAttribute("data-zone") || element.getAttribute("data-section") || element.getAttribute("alt") || element.getAttribute("title") || href.split("#").pop() || "").trim();
+      }).filter(Boolean))].slice(0, 100),
+      discovered_rows: [...new Set([...document.querySelectorAll("[data-row]")].map((element) => String(element.getAttribute("data-row") || "").trim()).filter(Boolean))].slice(0, 200),
+      seat_map_detected: Boolean(document.querySelector("map area, [data-seat], [data-zone], [data-section], [data-row]")),
     };
   });
   const facts = extractTicketPageFacts({ ...pageSnapshot, controls: mapped });
@@ -719,6 +750,19 @@ async function inspectBrowserForm(page) {
 }
 
 async function inspectBrowserEvents(page) {
+  const accessBlock = await browserAccessBlock(page);
+  if (accessBlock.blocked) {
+    return {
+      ok: false,
+      access_blocked: true,
+      block_reason: accessBlock.reason,
+      url: page.url(),
+      title: accessBlock.title,
+      events: [],
+      excluded_count: 0,
+      counts: { open: 0, upcoming: 0, sold_out: 0, closed: 0 },
+    };
+  }
   const rawEvents = await page.evaluate(() => {
     const records = [];
     const pushRecord = (item) => {
@@ -840,11 +884,27 @@ async function inspectBrowserEvents(page) {
     const saleAt = Date.parse(candidate.sale_open_at || "");
     const dateExpired = Number.isFinite(endAt) ? endAt < now : Number.isFinite(startAt) ? startAt < now - 24 * 60 * 60 * 1000 : false;
     const isClosed = dateExpired || closedPattern.test(combined);
+    const statusEvidence = String(candidate.text || candidate.availability || candidate.event_status || "").slice(0, 300);
     let sale_status = "open";
     if (Number.isFinite(saleAt) && saleAt > now) sale_status = "upcoming";
     else if (upcomingPattern.test(combined) || (Number.isFinite(startAt) && startAt > now && !openPattern.test(combined))) sale_status = "upcoming";
     if (isClosed) {
-      excluded.push({ ...candidate, exclusion_reason: dateExpired ? "event_ended" : "sale_closed" });
+      const closedStatus = /sold.?out|ขายหมด/.test(combined) ? "sold_out"
+        : /cancelled|canceled|ยกเลิก/.test(combined) ? "cancelled"
+          : dateExpired ? "ended" : "closed";
+      excluded.push({
+        id: candidate.normalized_url || candidate.id || candidate.url,
+        name: candidate.name,
+        url: candidate.normalized_url || candidate.url,
+        start_date: candidate.start_date,
+        end_date: candidate.end_date,
+        sale_open_at: candidate.sale_open_at,
+        sale_status: closedStatus,
+        source: candidate.source,
+        selectable: false,
+        status_evidence: statusEvidence,
+        exclusion_reason: dateExpired ? "event_ended" : "sale_closed",
+      });
       continue;
     }
     eligible.push({
@@ -856,19 +916,30 @@ async function inspectBrowserEvents(page) {
       sale_open_at: candidate.sale_open_at,
       sale_status,
       source: candidate.source,
+      selectable: true,
+      status_evidence: statusEvidence,
     });
   }
-  eligible.sort((a, b) => {
+  const statusOrder = { open: 0, upcoming: 1, sold_out: 2, closed: 3, ended: 4, cancelled: 5 };
+  const events = [...eligible, ...excluded];
+  events.sort((a, b) => {
+    const statusDifference = (statusOrder[a.sale_status] ?? 9) - (statusOrder[b.sale_status] ?? 9);
+    if (statusDifference) return statusDifference;
     const aTime = Date.parse(a.start_date || a.sale_open_at || "") || Number.MAX_SAFE_INTEGER;
     const bTime = Date.parse(b.start_date || b.sale_open_at || "") || Number.MAX_SAFE_INTEGER;
     return aTime - bTime || a.name.localeCompare(b.name, "th");
   });
+  const counts = events.reduce((result, event) => {
+    result[event.sale_status] = (result[event.sale_status] || 0) + 1;
+    return result;
+  }, { open: 0, upcoming: 0, sold_out: 0, closed: 0, ended: 0, cancelled: 0 });
   return {
     ok: true,
     url: page.url(),
     title: await page.title(),
-    events: eligible.slice(0, 100),
+    events: events.slice(0, 100),
     excluded_count: excluded.length,
+    counts,
     needs_user_choice: eligible.length > 0,
     selection_instruction: eligible.length
       ? "แสดงชื่อคอนเสิร์ต วันที่แสดง และวันเปิดขายทั้งหมดนี้ให้ผู้ใช้เลือกก่อนสร้างโปรแกรม"
@@ -887,6 +958,16 @@ async function alphaBrowserAction(action, args) {
   }
   if (action === "open") {
     const url = (await assertPublicUrl(args.url)).toString();
+    if (args.fresh_page === true) {
+      page = await context.newPage();
+      pages = context.pages();
+      while (pages.length > 3) {
+        const candidate = pages.find((item) => item !== page);
+        if (!candidate) break;
+        await candidate.close();
+        pages = context.pages();
+      }
+    }
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
   } else if (action === "inspect_form") {
     return inspectBrowserForm(page);

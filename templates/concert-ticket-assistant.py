@@ -38,6 +38,9 @@ queue_open_at = str(payload.get("queue_open_at") or "").strip()
 seat_mode = str(payload.get("seat_mode", "")).casefold()
 seat_grouping = str(payload.get("seat_grouping", "adjacent")).casefold()
 zones = [str(item).strip().upper() for item in payload.get("preferred_zones", []) if str(item).strip()] if isinstance(payload.get("preferred_zones"), list) else []
+rows = [str(item).strip().upper() for item in payload.get("preferred_rows", []) if str(item).strip()] if isinstance(payload.get("preferred_rows"), list) else []
+seat_numbers = [str(item).strip().upper() for item in payload.get("preferred_seat_numbers", []) if str(item).strip()] if isinstance(payload.get("preferred_seat_numbers"), list) else []
+seat_fallback_mode = str(payload.get("seat_fallback_mode", "nearest")).casefold()
 quantity = max(0, int(payload.get("quantity", 0) or 0))
 budget = max(0.0, float(payload.get("budget", 0) or 0))
 customer_name = str(payload.get("customer_name", "")).strip()
@@ -62,10 +65,10 @@ if quantity < 1:
     missing.append("quantity")
 if seat_mode not in {"reserved", "standing", "general_admission"}:
     missing.append("seat_mode")
-if seat_mode == "reserved" and not zones:
-    missing.append("preferred_zones")
 if seat_mode == "reserved" and seat_grouping not in {"adjacent", "same_zone", "any"}:
     missing.append("seat_grouping")
+if seat_mode == "reserved" and seat_fallback_mode not in {"exact", "nearest", "zone_any"}:
+    missing.append("seat_fallback_mode")
 if delivery_method not in {"pickup", "postal"}:
     missing.append("delivery_method")
 if delivery_method == "postal" and not shipping_address:
@@ -116,6 +119,9 @@ if not missing:
         "seatMode": seat_mode,
         "seatGrouping": seat_grouping,
         "preferredZones": zones,
+        "preferredRows": rows,
+        "preferredSeatNumbers": seat_numbers,
+        "seatFallbackMode": seat_fallback_mode,
         "budget": budget,
         "customerName": customer_name,
         "attendeeNames": attendee_names,
@@ -280,17 +286,56 @@ def next_action(checkpoint):
     }.get(state, "stop_and_request_new_evidence")
 
 
-def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=None):
+def _preferred_seat_numbers(values):
+    numbers = []
+    for value in values or []:
+        text = str(value).strip().upper()
+        range_match = re.fullmatch(r"(?:[A-Z]+)?(\d+)\s*-\s*(?:[A-Z]+)?(\d+)", text)
+        if range_match:
+            start, end = sorted((int(range_match.group(1)), int(range_match.group(2))))
+            numbers.extend(range(start, min(end, start + 100) + 1))
+            continue
+        match = re.search(r"(\d+)", text)
+        if match:
+            numbers.append(int(match.group(1)))
+    return list(dict.fromkeys(numbers))
+
+
+def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=None, preferred_rows=None, preferred_numbers=None, fallback_mode="nearest"):
     wanted = max(1, int(quantity))
-    zones = [str(item) for item in (preferred_zones or [])]
+    zones = [str(item).upper() for item in (preferred_zones or [])]
+    rows = [str(item).upper() for item in (preferred_rows or [])]
+    numbers = _preferred_seat_numbers(preferred_numbers)
     available = []
     for index, seat in enumerate(seats):
         if not isinstance(seat, dict) or seat.get("available", True) is False:
             continue
-        zone = str(seat.get("zone", ""))
+        zone = str(seat.get("zone", "")).upper()
+        row = str(seat.get("row", "")).upper()
+        number_text = str(seat.get("number", ""))
+        number = int(number_text) if number_text.isdigit() else None
         zone_rank = zones.index(zone) if zone in zones else len(zones)
-        available.append({**seat, "_index": index, "_zone_rank": zone_rank})
-    available.sort(key=lambda item: (item["_zone_rank"], str(item.get("zone", "")), str(item.get("row", "")), int(item.get("number", 10**9)) if str(item.get("number", "")).isdigit() else 10**9, item["_index"]))
+        row_rank = rows.index(row) if row in rows else len(rows)
+        number_rank = min((abs(number - target) for target in numbers), default=0) if number is not None else 10**9
+        available.append({**seat, "zone": zone, "row": row, "_index": index, "_zone_rank": zone_rank, "_row_rank": row_rank, "_number_rank": number_rank})
+    available.sort(key=lambda item: (item["_zone_rank"], item["_row_rank"], item["_number_rank"], str(item.get("zone", "")), str(item.get("row", "")), int(item.get("number", 10**9)) if str(item.get("number", "")).isdigit() else 10**9, item["_index"]))
+    if zones:
+        in_requested_zones = [item for item in available if item.get("zone") in zones]
+        if not in_requested_zones:
+            return []
+        available = in_requested_zones
+    if rows:
+        in_requested_rows = [item for item in available if item.get("row") in rows]
+        if in_requested_rows:
+            available = in_requested_rows
+        elif fallback_mode == "exact":
+            return []
+    if numbers:
+        exact = [item for item in available if str(item.get("number", "")).isdigit() and int(item["number"]) in numbers]
+        if len(exact) >= wanted:
+            available = exact
+        elif fallback_mode == "exact":
+            return []
     grouped = {}
     for item in available:
         key = str(item.get("zone", "")) if grouping in {"same_zone", "any"} else (str(item.get("zone", "")), str(item.get("row", "")))
@@ -473,6 +518,18 @@ def fill_login(page):
     return True
 
 
+def authenticated_account_marker(page):
+    marker = re.compile(r"ออกจากระบบ|log\s*out|บัญชีของฉัน|my\s*account|ข้อมูลสมาชิก|member\s*profile", re.I)
+    for scope in [page, *page.frames]:
+        try:
+            locator = scope.get_by_text(marker).first
+            if locator.count() and locator.is_visible(timeout=300):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def accept_event_terms(page):
     checkbox = page.get_by_role("checkbox", name=re.compile(r"ยอมรับข้อกำหนด|ยอมรับ.*เงื่อนไข|accept.*terms", re.I)).first
     try:
@@ -488,14 +545,29 @@ def accept_event_terms(page):
 
 def select_preferred_zone(page):
     zones = [str(item).strip().upper() for item in CONFIG.get("preferredZones", []) if str(item).strip()]
-    area_nodes = page.locator("area[href*='festival.php#']")
+    area_nodes = page.locator("area[href*='#']")
     discovered = []
     for index in range(area_nodes.count()):
         href = area_nodes.nth(index).get_attribute("href") or ""
         zone = href.rsplit("#", 1)[-1].upper() if "#" in href else ""
-        if zone and not zone.startswith("VIP"):
+        if zone and len(zone) <= 30:
             discovered.append((zone, area_nodes.nth(index)))
-    ordered = zones or [zone for zone, _ in discovered]
+    for selector in ("[data-zone]", "[data-section]"):
+        nodes = page.locator(selector)
+        for index in range(min(nodes.count(), 500)):
+            node = nodes.nth(index)
+            zone = (node.get_attribute("data-zone") or node.get_attribute("data-section") or "").strip().upper()
+            if zone and len(zone) <= 30 and all(item[0] != zone for item in discovered):
+                discovered.append((zone, node))
+    discovered_names = list(dict.fromkeys(zone for zone, _ in discovered))
+    if not zones:
+        print("โซนที่พบจากหน้าจริง: " + (", ".join(discovered_names) if discovered_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
+        answer = input("เลือกโซนก่อนให้บอททำต่อ (เช่น A หรือ A1; หลายโซนคั่นด้วย comma): ").strip().upper()
+        zones = [item.strip() for item in re.split(r"[,\n]", answer) if item.strip()]
+        if not zones:
+            record("selection", {"mode": "zone", "preferred": [], "discovered": discovered_names, "complete": False, "reason": "USER_ZONE_REQUIRED"})
+            return False
+    ordered = zones
     for zone in ordered:
         for discovered_zone, locator in discovered:
             if discovered_zone != zone:
@@ -511,7 +583,7 @@ def select_preferred_zone(page):
                 return True
         except Exception:
             pass
-    record("selection", {"mode": "zone", "preferred": zones, "discovered": [zone for zone, _ in discovered], "complete": False})
+    record("selection", {"mode": "zone", "preferred": zones, "discovered": discovered_names, "complete": False})
     return False
 
 
@@ -629,6 +701,9 @@ def select_checkout_options(page, confirm_order=False):
 def apply_ticket_preferences(page):
     wanted = max(1, int(CONFIG.get("quantity", 1)))
     zones = [str(item) for item in CONFIG.get("preferredZones", []) if str(item)]
+    rows = [str(item) for item in CONFIG.get("preferredRows", []) if str(item)]
+    seat_numbers = [str(item) for item in CONFIG.get("preferredSeatNumbers", []) if str(item)]
+    fallback_mode = str(CONFIG.get("seatFallbackMode", "nearest"))
     for zone in zones:
         try:
             locator = page.get_by_text(zone, exact=True).first
@@ -653,11 +728,11 @@ def apply_ticket_preferences(page):
             except Exception:
                 metadata.append({"available": False})
         grouping = str(CONFIG.get("seatGrouping", "adjacent"))
-        selected_indices = choose_seat_indices(metadata, wanted, grouping, zones)
+        selected_indices = choose_seat_indices(metadata, wanted, grouping, zones, rows, seat_numbers, fallback_mode)
         for index in selected_indices:
             seats.nth(index).click()
         selected = len(selected_indices)
-        record("selection", {"mode": "reserved", "grouping": grouping, "wanted": wanted, "selected": selected, "indices": selected_indices, "complete": selected == wanted})
+        record("selection", {"mode": "reserved", "grouping": grouping, "wanted": wanted, "selected": selected, "indices": selected_indices, "preferred_zones": zones, "preferred_rows": rows, "preferred_seat_numbers": seat_numbers, "fallback_mode": fallback_mode, "complete": selected == wanted})
         return selected == wanted
     label_pattern = re.compile(r"quantity|qty|จำนวน", re.I)
     locator = page.get_by_label(label_pattern).first
@@ -708,6 +783,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         record("runtime", {"mouse_control": False, "background_window": True, "profile": "isolated"})
         page = context.pages[-1] if context.pages else context.new_page()
         observed = {"retry_after": None, "http_status": None, "server_date": None}
+        login_submitted = False
+        login_verified = False
 
         def on_response(response):
             value = response.headers.get("retry-after")
@@ -739,6 +816,12 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
             state = checkpoint["state"]
+            if not login_verified and authenticated_account_marker(page):
+                login_verified = True
+                record("authentication", {"status": "EXISTING_SESSION_VERIFIED", "method": "account_marker", "credentials_persisted": False})
+            if login_submitted and state not in {"login", "captcha_handoff", "otp_handoff", "unknown", "server_unavailable"} and not login_verified:
+                login_verified = True
+                record("authentication", {"status": "LOGIN_VERIFIED", "method": "successful_form_transition", "credentials_persisted": False})
             if state not in {"queue", "server_unavailable"}:
                 workflow_steps += 1
                 if workflow_steps > 30:
@@ -780,7 +863,13 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     record("result", {"status": "LOGIN_FORM_NOT_VERIFIED", "live_checkout_verified": False})
                     context.close()
                     return 2
-                page.wait_for_timeout(1000)
+                login_submitted = True
+                page.wait_for_timeout(1500)
+                after_login = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
+                if after_login["state"] == "login":
+                    record("result", {"status": "LOGIN_FAILED_OR_FORM_STILL_VISIBLE", "live_checkout_verified": False, "credentials_persisted": False})
+                    context.close()
+                    return 2
                 continue
             if state in {"captcha_handoff", "otp_handoff"}:
                 record("handoff", {"status": state.upper(), "resume_supported": True, "same_session": True})
@@ -826,6 +915,10 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 page.wait_for_timeout(1000)
                 continue
             if state == "checkout_options":
+                if not login_verified:
+                    record("result", {"status": "LOGIN_REQUIRED_BEFORE_CHECKOUT", "live_checkout_verified": False, "credentials_persisted": False})
+                    context.close()
+                    return 2
                 checkout_result = select_checkout_options(page, confirm_order=confirm_order)
                 if checkout_result is None:
                     input("เลือกวิธีรับบัตร/QR แล้ว ระบบหยุดก่อนสร้างคำสั่งซื้อ กด Enter เพื่อปิด หรือรันใหม่ด้วย --confirm-order: ")
@@ -838,7 +931,11 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 page.wait_for_timeout(1500)
                 continue
             if state == "payment_handoff":
-                record("result", {"status": "PAYMENT_HANDOFF", "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True, "payment_evidence_count": checkpoint.get("payment_evidence_count")})
+                if not login_verified:
+                    record("result", {"status": "LOGIN_REQUIRED_BEFORE_PAYMENT", "live_checkout_verified": False, "credentials_persisted": False})
+                    context.close()
+                    return 2
+                record("result", {"status": "PAYMENT_HANDOFF", "login_verified": True, "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True, "payment_evidence_count": checkpoint.get("payment_evidence_count")})
                 input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
                 context.close()
                 return 0
@@ -998,6 +1095,30 @@ class TicketStateMachineTests(unittest.TestCase):
         ]
         self.assertEqual(choose_seat_indices(seats, 2, "any", ["A", "B"]), [])
 
+    def test_exact_row_and_seat_number(self):
+        seats = [
+            {"zone": "A", "row": "J", "number": "10"},
+            {"zone": "A", "row": "K", "number": "10"},
+            {"zone": "A", "row": "K", "number": "11"},
+        ]
+        self.assertEqual(choose_seat_indices(seats, 1, "adjacent", ["A"], ["K"], ["10"], "exact"), [1])
+
+    def test_nearest_number_stays_in_requested_zone(self):
+        seats = [
+            {"zone": "B", "row": "K", "number": "10"},
+            {"zone": "A", "row": "K", "number": "8"},
+            {"zone": "A", "row": "K", "number": "11"},
+        ]
+        self.assertEqual(choose_seat_indices(seats, 1, "adjacent", ["A"], ["K"], ["10"], "nearest"), [2])
+
+    def test_requested_zone_is_never_silently_changed(self):
+        seats = [{"zone": "B", "row": "K", "number": "10"}]
+        self.assertEqual(choose_seat_indices(seats, 1, "any", ["A"], [], [], "zone_any"), [])
+
+    def test_exact_mode_fails_when_requested_seat_is_missing(self):
+        seats = [{"zone": "A", "row": "K", "number": "11"}]
+        self.assertEqual(choose_seat_indices(seats, 1, "adjacent", ["A"], ["K"], ["10"], "exact"), [])
+
     def test_payment_is_verified_only_with_evidence(self):
         checkpoint = self.state("ขั้นตอนที่ 4/4 ชำระเงิน หมายเลขการสั่งซื้อ 2529889 PromptPay Remaining time: 590", url="https://booking.test/payment_kbankqr.php")
         self.assertEqual(checkpoint["state"], "payment_handoff")
@@ -1041,12 +1162,14 @@ Evidence-backed Python + Playwright ticket assistant for **{event_name}**.
 
 - `verification-report.json`: local state-machine fixture results.
 - `python3 bot.py --inspect-only`: read the live public page and write evidence without entering a purchase.
-- `python3 bot.py --wait-for-window`: keep one Chrome session, enter the normal queue window, respect Retry-After, and stop for Login/CAPTCHA/OTP/payment.
+- `python3 bot.py --wait-for-window`: keep one Chrome session, enter the normal queue window, respect Retry-After, complete Login from environment/secure prompt, and stop only for CAPTCHA/OTP/payment handoff.
 - `./run-full-loop.command`: run the verified browser loop through terms, zone, quantity, event-specific attendee fields, delivery/payment options, and stop on the generated QR page before payment.
 
 Fixture verification does not mean a live queue or checkout was observed. `CHECKOUT_READY` is never emitted without payment-page evidence.
 
-Login uses the isolated browser session first. If login is required, set `TICKET_USERNAME` and `TICKET_PASSWORD` in the Terminal session or enter them at the secure prompt. The password is never written to config, reports, or memory.
+Public inspection does not require Login. A real run must verify either an existing member session or a successful Login-form transition before Checkout. Set `TICKET_USERNAME` and `TICKET_PASSWORD` in the Terminal session or enter them at the secure prompt; the password is never written to config, reports, or memory.
+
+`preferredZones` may be empty when the zone map is not public yet. At runtime the bot reads A/A1/A2-style zones from the authenticated page and asks before selecting; it never silently chooses the first zone. `preferredRows`, `preferredSeatNumbers`, and `seatFallbackMode` control exact/nearest selection while keeping all tickets in the chosen zone.
 
 ## Start on macOS
 

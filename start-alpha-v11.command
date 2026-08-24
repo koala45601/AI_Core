@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.17..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.18..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -83,7 +83,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta17 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta18 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -106,7 +106,7 @@ for _ in {1..120}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta17 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta18 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
@@ -133,20 +133,20 @@ for ALPHA_SKILL_ID in "${ALPHA_REQUIRED_SKILLS[@]}"; do
     break
   fi
 done
-if [[ ! -f "$ALPHA_SKILL_ROOT/concert-ticket-purchase-assistant/main.py" ]] || ! grep -q "payment_kbankqr.php" "$ALPHA_SKILL_ROOT/concert-ticket-purchase-assistant/main.py"; then
+if [[ ! -f "$ALPHA_SKILL_ROOT/concert-ticket-purchase-assistant/main.py" ]] || ! grep -q "payment_kbankqr.php" "$ALPHA_SKILL_ROOT/concert-ticket-purchase-assistant/main.py" || ! grep -q "LOGIN_REQUIRED_BEFORE_CHECKOUT" "$ALPHA_SKILL_ROOT/concert-ticket-purchase-assistant/main.py" || ! grep -q "preferredSeatNumbers" "$ALPHA_SKILL_ROOT/concert-ticket-purchase-assistant/main.py"; then
   ALPHA_INSTALL_SKILLS=true
 fi
 if [[ "$ALPHA_INSTALL_SKILLS" == true ]]; then
   echo "กำลังทดสอบและติดตั้งสกิลแกนหลักที่ยังขาด..."
   "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/install-security-skills.mjs" "$ALPHA_DIR"
 else
-  echo "สกิลแกนหลัก Beta17 ติดตั้งครบแล้ว"
+  echo "สกิลแกนหลัก Beta18 ติดตั้งครบแล้ว"
 fi
 
 WEB_READY=false
 for _ in {1..120}; do
   WEB_HEALTH="$(curl --max-time 2 -fsS http://localhost:3000/api/health 2>/dev/null || true)"
-  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.17"'* ]]; then
+  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.18"'* ]]; then
     WEB_READY=true
     break
   fi
@@ -158,5 +158,5 @@ if [[ "$WEB_READY" != true ]]; then
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.17 พร้อม: Ticket Bot Full Loop ถึงหน้า QR + state verification จาก flow จริง"
+echo "Alpha v1.1.0-beta.18 พร้อม: ตรวจรายการ public ไม่ต้อง Login · Full Loop ยืนยัน Login ก่อน Checkout · เลือกโซน/แถว/เลขที่นั่งได้"
 open "http://localhost:3000" >/dev/null 2>&1 || true
