@@ -37,6 +37,7 @@ if (await update("lib/ollama.ts", (source) => {
     const section = source.slice(start, end);
     if (section.includes(healthy)) continue;
     const legacy = section.match(/const deepWorker = deepWorkerOptions\(settings, (?:deepWorker\.numPredict|Math\.min\([^;]+)\);/);
+    if (!legacy && section.includes("think: false") && section.includes("options:")) continue;
     if (!legacy) throw new Error(`worker ${startNeedle} ไม่มี initializer ที่รู้จัก`);
     source = source.slice(0, start) + section.replace(legacy[0], healthy) + source.slice(end);
   }
@@ -673,7 +674,7 @@ if (await update("tool-service/server.mjs", (source) => {
 
 if (await update("package.json", (source) => {
   const data = JSON.parse(source);
-  if (["1.1.0-beta.14", "1.1.0-beta.15"].includes(data.version)) return source;
+  if (["1.1.0-beta.14", "1.1.0-beta.15", "1.1.0-beta.16"].includes(data.version)) return source;
   data.version = "1.1.0-beta.14";
   return `${JSON.stringify(data, null, 2)}\n`;
 })) changed.push("package.json");

@@ -1,5 +1,19 @@
 # Alpha changelog
 
+## 1.1.0-beta.16 — 2026-08-24
+
+- Replaced the Ticket Bot's unconditional `CHECKOUT_READY` output with an evidence-backed state machine. Unknown pages can no longer be reported as checkout success.
+- Added deterministic extraction of Thai Buddhist show/sale dates, venue, prices, sale status and semantic purchase controls from the live event page; missing sale time is never replaced with project build time.
+- Added separate `queueOpenAt` and `saleOpenAt` settings for events whose waiting room opens before ticket sales.
+- Generated projects now include state-machine source, retained fixtures, a verification report and a JSONL live run journal. The API requires all eight project files and passing fixture evidence before returning success.
+- Added fixtures for waiting rooms, Retry-After, 429/503 outages, same-session recovery, login/CAPTCHA/OTP/payment handoff, reserved/general-admission tickets and multiple-ticket selection.
+- Split verification into structure, fixture tests, public live-page inspection, live queue observation and live checkout evidence. A fixture pass no longer claims a real queue or purchase was tested.
+- Ticket Studio and chat now carry the same page facts and preflight state; the UI is optional rather than a smarter execution path.
+- Split upcoming sales into `pre_sale` (more than 30 minutes away) and `armed_pre_sale` (within 30 minutes), using the website sale timestamp plus the HTTP `Date` header before falling back to the Mac clock.
+- Treat verified performance-time links such as `19:00` as sale-entry controls, expose the discovered rounds in Ticket Studio, and keep the same browser session after Login/CAPTCHA/OTP handoff instead of exiting the workflow.
+- Ticket automation now uses an isolated background Chrome window and DOM/API actions without controlling the system mouse; the window is only handed to the user at Login/CAPTCHA/OTP/payment checkpoints.
+- Preferred ticket zones are normalized to uppercase in the UI, API, generated config and seat-selection runtime. Multi-ticket `any` selection remains restricted to one zone.
+
 ## 1.1.0-beta.15 — 2026-08-24
 
 - Added Ticket Bot Studio as a fixed-height workspace with internal scrolling for event discovery, concert selection, reserved/standing ticket preferences, buyer address, and QR/PromptPay handoff settings.

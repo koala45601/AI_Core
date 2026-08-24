@@ -141,6 +141,33 @@ interface TicketFormInspection {
   ambiguous_roles: string[];
   api_calls: Array<Record<string, unknown>>;
   api_warning?: string;
+  facts?: {
+    event_name?: string;
+    event_url?: string;
+    show_dates?: Array<{ raw?: string; iso?: string }>;
+    sale_open_at?: string;
+    sale_open_at_raw?: string;
+    sale_status?: string;
+    ticket_status?: string;
+    venue?: string;
+    prices?: number[];
+    purchase_controls?: Array<{ selector?: string; label?: string }>;
+    sale_entry_controls?: Array<{ selector?: string; label?: string; semantic_role?: string; context_text?: string }>;
+    performance_options?: Array<{ selector?: string; label?: string; semantic_role?: string; context_text?: string }>;
+    evidence?: Array<{ field?: string; text?: string; source?: string }>;
+  };
+  functional_preflight?: {
+    passed?: boolean;
+    public_page_verified?: boolean;
+    purchase_controls_ready?: boolean;
+    sale_entry_controls_ready?: boolean;
+    sale_opens_within_30_minutes?: boolean;
+    sale_remaining_seconds?: number | null;
+    workflow_state?: string;
+    unresolved?: string[];
+    can_build?: boolean;
+    can_run_live_selection?: boolean;
+  };
 }
 
 interface TicketBuildReport {
@@ -148,13 +175,21 @@ interface TicketBuildReport {
   stage: string;
   project_path: string;
   created_files: string[];
-  dry_run?: {
-    passed?: boolean;
+  verification?: {
+    structure_passed?: boolean;
+    fixture_tests_passed?: boolean;
+    queue_fixture_verified?: boolean;
+    live_public_page_verified?: boolean;
+    live_queue_observed?: boolean;
+    live_checkout_verified?: boolean;
+    workflow_state?: string;
+    purchase_controls_ready?: boolean;
     expected_files?: string[];
     found_files?: string[];
     live_purchase_attempted?: boolean;
     handoff_points?: string[];
   };
+  live_facts?: TicketFormInspection["facts"];
   output?: Record<string, unknown>;
 }
 
@@ -347,7 +382,9 @@ export default function Home() {
   const [ticketStage, setTicketStage] = useState<"idle" | "inspecting" | "event_ready" | "form_inspecting" | "preferences" | "building" | "ready" | "error">("idle");
   const [ticketStatus, setTicketStatus] = useState("ใส่ลิงก์หน้ารวมคอนเสิร์ต แล้วให้อัลฟ่าตรวจเฉพาะงานที่เปิดขายหรือกำลังจะเปิด");
   const [ticketSchedule, setTicketSchedule] = useState("");
+  const [ticketQueueOpenAt, setTicketQueueOpenAt] = useState("");
   const [ticketSeatMode, setTicketSeatMode] = useState<"reserved" | "standing" | "general_admission">("reserved");
+  const [ticketSeatGrouping, setTicketSeatGrouping] = useState<"adjacent" | "same_zone" | "any">("adjacent");
   const [ticketZones, setTicketZones] = useState("");
   const [ticketQuantity, setTicketQuantity] = useState(1);
   const [ticketBudget, setTicketBudget] = useState(0);
@@ -1208,9 +1245,23 @@ export default function Home() {
         ambiguous_roles: data.ambiguous_roles ?? [],
         api_calls: data.api_calls ?? [],
         api_warning: data.api_warning,
+        facts: data.facts ?? {},
+        functional_preflight: data.functional_preflight ?? {},
       });
-      setTicketSchedule(selected.start_date || "");
-      setTicketStatus(`ตรวจหน้าเว็บแล้ว พบกลุ่มฟิลด์ ${Object.keys(data.candidates ?? {}).length} แบบ และ API ${data.api_calls?.length ?? 0} รายการ`);
+      const verifiedSchedule = data.facts?.show_dates?.[0]?.iso || data.facts?.show_dates?.[0]?.raw || selected.start_date || "";
+      const firstPerformance = data.facts?.performance_options?.find((option) => /^\s*\d{1,2}:\d{2}/.test(option.label || ""))?.label?.trim()
+        || data.facts?.performance_options?.find((option) => option.label?.trim())?.label?.trim()
+        || "";
+      setTicketSchedule(firstPerformance && !verifiedSchedule.includes(firstPerformance) ? `${verifiedSchedule} ${firstPerformance}`.trim() : verifiedSchedule);
+      const workflowState = data.functional_preflight?.workflow_state || "unknown";
+      const workflowLabel = workflowState === "armed_pre_sale" ? "เตรียมพร้อม — เปิดขายภายใน 30 นาที"
+        : workflowState === "pre_sale" ? "ยังไม่เปิดขาย — เหลือมากกว่า 30 นาที"
+          : workflowState === "sale_entry" ? "เปิดขายและพบทางเข้าซื้อจริง"
+            : workflowState;
+      const unresolved = data.functional_preflight?.unresolved ?? [];
+      setTicketStatus(data.functional_preflight?.public_page_verified
+        ? `ยืนยันข้อมูลหน้าจริงแล้ว · ${workflowLabel}${data.functional_preflight.purchase_controls_ready ? " · พบทางเข้าซื้อ" : " · ยังไม่พบทางเข้าซื้อ"}`
+        : `หลักฐานหน้าจริงยังไม่ครบ: ${unresolved.join(", ") || "ไม่พบวันแสดง/วันเปิดขาย"}`);
       setTicketStage("preferences");
     } catch (error) {
       setTicketStage("error");
@@ -1247,8 +1298,10 @@ export default function Home() {
             selected_event_id: selected.id,
             selected_event_name: selected.name,
             schedule: ticketSchedule || selected.start_date,
-            sale_open_at: selected.sale_open_at,
+            sale_open_at: ticketInspection?.facts?.sale_open_at,
+            queue_open_at: ticketQueueOpenAt,
             seat_mode: ticketSeatMode,
+            seat_grouping: ticketSeatGrouping,
             preferred_zones: ticketZones.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
             quantity: ticketQuantity,
             budget: ticketBudget,
@@ -1262,6 +1315,8 @@ export default function Home() {
             payment_method: ticketPayment,
             selectors: selectorsFromTicketInspection(ticketInspection),
             captured_api: ticketInspection?.api_calls ?? [],
+            event_facts: ticketInspection?.facts ?? {},
+            functional_preflight: ticketInspection?.functional_preflight ?? {},
             project_name: ticketProjectName,
           },
         }),
@@ -1270,7 +1325,7 @@ export default function Home() {
       if (!response.ok || !data.ok) throw new Error(data.error || "สร้างหรือทดสอบโปรเจกต์ไม่ผ่าน");
       setTicketBuildReport(data);
       setTicketStage("ready");
-      setTicketStatus(`สร้างโปรเจกต์สำเร็จและผ่าน dry-run โครงสร้าง ${data.created_files?.length ?? 0} ไฟล์ โดยยังไม่ได้ซื้อหรือชำระเงินจริง`);
+      setTicketStatus(`สร้างโปรเจกต์ ${data.created_files?.length ?? 0} ไฟล์ · fixture ${data.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · คิวจริง ${data.verification?.live_queue_observed ? "พบและตรวจแล้ว" : "ยังไม่ได้พบ"}`);
     } catch (error) {
       setTicketStage("error");
       setTicketStatus(error instanceof Error ? error.message : "สร้างโปรเจกต์ไม่สำเร็จ");
@@ -1661,7 +1716,7 @@ export default function Home() {
 
             <section className="ticket-config-pane">
               <header className="ticket-config-header">
-                <div><span className="section-kicker">STEP 2–3 · CONFIGURE & BUILD</span><h2>ตั้งค่าบอทและวิธีชำระเงิน</h2><p>ระบบสร้างโปรเจกต์ Python+Playwright บน Mac และตรวจโครงสร้างแบบ dry-run โดยไม่ล็อกอิน ซื้อ หรือจ่ายเงินจริง</p></div>
+                <div><span className="section-kicker">STEP 2–3 · CONFIGURE & BUILD</span><h2>ตั้งค่าบอทและวิธีชำระเงิน</h2><p>ระบบสร้าง Python+Playwright state machine และแยกผล fixture, หน้าจริง, คิวจริง และ checkout จริงออกจากกัน</p></div>
                 <div className="ticket-loop-steps"><span className={ticketEvents.length ? "done" : ""}>1 ตรวจงาน</span><span className={ticketInspection ? "done" : ""}>2 อ่านฟอร์ม</span><span className={ticketBuildReport?.ok ? "done" : ""}>3 สร้างโปรเจกต์</span></div>
               </header>
               <div className="ticket-config-scroll">
@@ -1673,17 +1728,23 @@ export default function Home() {
                     </section>
 
                     {ticketInspection && <section className="ticket-evidence-card">
-                      <div><strong>หลักฐานจากหน้าเว็บ</strong><span>{Object.keys(ticketInspection.candidates).length} กลุ่มฟิลด์ · {ticketInspection.api_calls.length} API calls</span></div>
-                      {ticketInspection.ambiguous_roles.length > 0 && <p>ฟิลด์ที่มีหลายตัวเลือก: {ticketInspection.ambiguous_roles.join(", ")} — บอทจะใช้ selector ที่มีคะแนนสูงสุดและต้องตรวจ config ก่อนรันจริง</p>}
+                      <div><strong>หลักฐานจากหน้าเว็บ</strong><span>{ticketInspection.functional_preflight?.public_page_verified ? "ยืนยันข้อมูลสาธารณะแล้ว" : "หลักฐานยังไม่ครบ"} · {ticketInspection.api_calls.length} API calls</span></div>
+                      <p>สถานะ: {ticketInspection.functional_preflight?.workflow_state || "unknown"} · วันแสดง: {ticketInspection.facts?.show_dates?.[0]?.raw || ticketInspection.facts?.show_dates?.[0]?.iso || "ไม่พบ"} · เปิดขาย: {ticketInspection.facts?.sale_open_at_raw || ticketInspection.facts?.sale_open_at || "ไม่พบ"}</p>
+                      {ticketInspection.facts?.prices?.length ? <p>ราคาที่อ่านได้: {ticketInspection.facts.prices.map((price) => price.toLocaleString()).join(" / ")} บาท</p> : null}
+                      <p>ปุ่มเข้าซื้อ: {ticketInspection.functional_preflight?.purchase_controls_ready ? "พบจาก DOM จริง" : ticketInspection.functional_preflight?.workflow_state === "pre_sale" ? "ยังไม่เปิด (COMING SOON)" : "ยังยืนยันไม่ได้"}</p>
+                      {ticketInspection.functional_preflight?.unresolved?.length ? <p>ข้อมูลที่ยังขาด: {ticketInspection.functional_preflight.unresolved.join(", ")} — ระบบจะไม่สร้างผลผ่านปลอม</p> : null}
+                      {ticketInspection.ambiguous_roles.length > 0 && <p>ฟิลด์ที่มีหลายตัวเลือก: {ticketInspection.ambiguous_roles.join(", ")} — จะไม่ใช้ปุ่ม submit ทั่วไปแทนปุ่มซื้อ</p>}
                       {ticketInspection.api_warning && <p>{ticketInspection.api_warning}</p>}
                     </section>}
 
                     <section className="ticket-form-section">
                       <div className="ticket-form-heading"><span>01</span><div><strong>รอบและประเภทบัตร</strong><small>รองรับทั้งเลือกที่นั่งและบัตรยืน/ไม่ระบุที่นั่ง</small></div></div>
                       <div className="ticket-form-grid">
-                        <label className="field"><span>รอบ/วันแสดง</span><input value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)} placeholder="เช่น 2026-09-11 18:00" /></label>
+                        <label className="field"><span>รอบ/วันแสดง</span><input list="ticket-performance-options" value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)} placeholder="เช่น 2026-09-11 18:00" /><datalist id="ticket-performance-options">{ticketInspection?.facts?.performance_options?.map((option, index) => <option key={`${option.label}-${index}`} value={option.label || ""}>{option.context_text || option.label}</option>)}</datalist></label>
+                        <label className="field"><span>เวลาเริ่มรับคิว (ถ้ามี)</span><input value={ticketQueueOpenAt} onChange={(event) => setTicketQueueOpenAt(event.target.value)} placeholder="เช่น 2026-08-29T09:00:00+07:00" /></label>
                         <label className="field"><span>ประเภทบัตร</span><select value={ticketSeatMode} onChange={(event) => setTicketSeatMode(event.target.value as typeof ticketSeatMode)}><option value="reserved">เลือกที่นั่ง</option><option value="standing">บัตรยืน</option><option value="general_admission">ไม่ระบุที่นั่ง</option></select></label>
-                        <label className="field"><span>โซนที่ต้องการ</span><input value={ticketZones} onChange={(event) => setTicketZones(event.target.value)} placeholder={ticketSeatMode === "reserved" ? "เช่น A, B (เรียงตามลำดับ)" : "เว้นว่างได้"} /></label>
+                        {ticketSeatMode === "reserved" && <label className="field"><span>การจัดที่นั่งหลายใบ</span><select value={ticketSeatGrouping} onChange={(event) => setTicketSeatGrouping(event.target.value as typeof ticketSeatGrouping)}><option value="adjacent">ต้องติดกันในโซนเดียว</option><option value="same_zone">ไม่ติดกันได้ แต่โซนเดียวกัน</option><option value="any">ใบไหนก็ได้ในโซนเดียวกัน</option></select></label>}
+                        <label className="field"><span>โซนที่ต้องการ</span><input value={ticketZones} onChange={(event) => setTicketZones(event.target.value.toUpperCase())} placeholder={ticketSeatMode === "reserved" ? "เช่น A, B1 (ระบบใช้ตัวพิมพ์ใหญ่)" : "เว้นว่างได้"} /></label>
                         <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
                         <label className="field"><span>งบสูงสุดรวม (บาท)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่กำหนด" /></label>
                         <label className="field"><span>ชื่อโฟลเดอร์โปรเจกต์</span><input value={ticketProjectName} onChange={(event) => setTicketProjectName(event.target.value)} placeholder="เว้นว่างเพื่อสร้างชื่ออัตโนมัติ" /></label>
@@ -1709,15 +1770,15 @@ export default function Home() {
                       </div>
                     </section>
 
-                    <section className="ticket-handoff-note"><strong>จุดที่ต้องรับช่วงเอง</strong><span>Login · CAPTCHA · OTP · Payment</span><p>Full Loop นี้ตรวจเว็บ สร้าง config และโปรเจกต์ได้ครบ แต่จะไม่ส่งคำสั่งซื้อหรือชำระเงินจริงในการทดสอบ</p></section>
+                    <section className="ticket-handoff-note"><strong>ทำงานเบื้องหลังโดยไม่ยึดเมาส์</strong><span>รับช่วงเฉพาะ Login · CAPTCHA · OTP · Payment</span><p>บอทใช้ DOM/API ในโปรไฟล์แยก ไม่ขยับเมาส์ระบบ และทำต่อด้วย session เดิมหลังพี่รับช่วง ส่วนการจ่ายเงินจริงจะหยุดให้พี่ตรวจเสมอ</p></section>
 
                     {ticketBuildReport && <section className="ticket-result-card">
-                      <div><span>✓</span><div><strong>สร้างและตรวจโปรเจกต์ผ่าน</strong><p>{ticketBuildReport.project_path}</p></div></div>
+                      <div><span>✓</span><div><strong>สร้าง state machine และผ่านชุดทดสอบภายใน</strong><p>{ticketBuildReport.project_path}</p></div></div>
                       <div className="ticket-result-files">{ticketBuildReport.created_files.map((file) => <span key={file}>{file}</span>)}</div>
-                      <small>Dry-run: {ticketBuildReport.dry_run?.passed ? "ผ่าน" : "ไม่ผ่าน"} · ไม่มีการซื้อจริง · ไฟล์บอทยังคงอยู่ใน Program_Create</small>
+                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · Queue fixtures: {ticketBuildReport.verification?.queue_fixture_verified ? "ผ่าน" : "ไม่ผ่าน"} · หน้าจริง: {ticketBuildReport.verification?.live_public_page_verified ? "อ่านได้" : "ยังไม่ผ่าน"} · คิวจริง: {ticketBuildReport.verification?.live_queue_observed ? "พบแล้ว" : "ยังไม่พบ"} · Checkout จริง: {ticketBuildReport.verification?.live_checkout_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</small>
                     </section>}
 
-                    <div className="ticket-build-actions"><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting"}>ตรวจหน้าอีกครั้ง</button><button className="save-button" type="submit" disabled={!ticketInspection || ticketStage === "building"}>{ticketStage === "building" ? "กำลังสร้างและทดสอบ…" : "สร้างและทดสอบบอท"}</button></div>
+                    <div className="ticket-build-actions"><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting"}>ตรวจหน้าอีกครั้ง</button><button className="save-button" type="submit" disabled={!ticketInspection?.functional_preflight?.can_build || ticketStage === "building"}>{ticketStage === "building" ? "กำลังสร้างและทดสอบ…" : "สร้างและทดสอบบอท"}</button></div>
                   </form>
                 )}
               </div>

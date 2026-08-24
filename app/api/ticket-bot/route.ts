@@ -23,7 +23,9 @@ interface TicketBuildInput {
   selected_event_name?: unknown;
   schedule?: unknown;
   sale_open_at?: unknown;
+  queue_open_at?: unknown;
   seat_mode?: unknown;
+  seat_grouping?: unknown;
   preferred_zones?: unknown;
   quantity?: unknown;
   budget?: unknown;
@@ -33,6 +35,8 @@ interface TicketBuildInput {
   selectors?: unknown;
   captured_api?: unknown;
   project_name?: unknown;
+  event_facts?: unknown;
+  functional_preflight?: unknown;
 }
 
 function asText(value: unknown, max = 500): string {
@@ -179,6 +183,8 @@ export async function POST(request: Request) {
         controls: Array.isArray(inspected.controls) ? inspected.controls.slice(0, 300) : [],
         candidates: inspected.candidates && typeof inspected.candidates === "object" ? inspected.candidates : {},
         ambiguous_roles: Array.isArray(inspected.ambiguous_roles) ? inspected.ambiguous_roles.slice(0, 30) : [],
+        facts: inspected.facts && typeof inspected.facts === "object" ? inspected.facts : {},
+        functional_preflight: inspected.functional_preflight && typeof inspected.functional_preflight === "object" ? inspected.functional_preflight : {},
         api_calls: apiCalls,
         api_warning: apiWarning,
       });
@@ -194,8 +200,22 @@ export async function POST(request: Request) {
       if (!selected) throw new Error("กรุณาเลือกคอนเสิร์ตจากรายการที่ตรวจพบก่อนสร้างบอท");
       if (selected.url !== eventUrl) throw new Error("URL ของคอนเสิร์ตไม่ตรงกับรายการที่เลือก กรุณาตรวจหน้าเว็บใหม่");
       assertInternetAndDomain(selected.url, settings);
+      const liveInspection = await inspectPage(selected.url, settings, "form");
+      const eventFacts = liveInspection.facts && typeof liveInspection.facts === "object" && !Array.isArray(liveInspection.facts)
+        ? liveInspection.facts as Record<string, unknown>
+        : {};
+      const functionalPreflight = liveInspection.functional_preflight && typeof liveInspection.functional_preflight === "object" && !Array.isArray(liveInspection.functional_preflight)
+        ? liveInspection.functional_preflight as Record<string, unknown>
+        : {};
+      if (functionalPreflight.public_page_verified !== true) {
+        const unresolved = Array.isArray(functionalPreflight.unresolved) ? functionalPreflight.unresolved.map((item) => asText(item, 80)).filter(Boolean) : [];
+        throw new Error(`หลักฐานหน้าคอนเสิร์ตยังไม่ครบ${unresolved.length ? `: ${unresolved.join(", ")}` : ""} — ยังไม่สร้างโปรเจกต์เพื่อป้องกันผลผ่านปลอม`);
+      }
+      if (functionalPreflight.can_build !== true) throw new Error("คอนเสิร์ตนี้ไม่อยู่ในสถานะที่สร้าง workflow ต่อได้");
       const seatMode = asText(input.seat_mode, 30);
       if (!new Set(["reserved", "standing", "general_admission"]).has(seatMode)) throw new Error("กรุณาเลือกประเภทบัตร");
+      const seatGrouping = asText(input.seat_grouping, 30) || "adjacent";
+      if (seatMode === "reserved" && !new Set(["adjacent", "same_zone", "any"]).has(seatGrouping)) throw new Error("กรุณาเลือกว่าจะเอาที่นั่งติดกัน คละในโซน หรือใบไหนก็ได้");
       const paymentMethod = asText(input.payment_method, 30).toLowerCase();
       if (!new Set(["qr", "promptpay"]).has(paymentMethod)) throw new Error("รองรับวิธีชำระเงิน QR หรือ PromptPay ใน Full Loop นี้");
       const quantity = Math.min(10, Math.max(1, Math.floor(Number(input.quantity || 1))));
@@ -214,15 +234,21 @@ export async function POST(request: Request) {
           selected_event_name: selected.name,
           quantity,
           budget,
-          schedule: asText(input.schedule, 200) || selected.start_date || "ตามรอบที่เลือกในเว็บไซต์",
-          sale_open_at: asText(input.sale_open_at, 200) || selected.sale_open_at || new Date().toISOString(),
+          schedule: asText(input.schedule, 200)
+            || asText((Array.isArray(eventFacts.show_dates) ? (eventFacts.show_dates[0] as Record<string, unknown> | undefined)?.iso : ""), 200)
+            || asText((Array.isArray(eventFacts.show_dates) ? (eventFacts.show_dates[0] as Record<string, unknown> | undefined)?.raw : ""), 200),
+          sale_open_at: asText(eventFacts.sale_open_at, 200),
+          queue_open_at: asText(input.queue_open_at, 200),
           seat_mode: seatMode,
-          preferred_zones: Array.isArray(input.preferred_zones) ? input.preferred_zones.map((item) => asText(item, 120)).filter(Boolean).slice(0, 20) : [],
+          seat_grouping: seatGrouping,
+          preferred_zones: Array.isArray(input.preferred_zones) ? input.preferred_zones.map((item) => asText(item, 120).toUpperCase()).filter(Boolean).slice(0, 20) : [],
           customer_name: asText(input.customer_name, 200),
           shipping_address: address,
           payment_method: paymentMethod,
           selectors: safeSelectors(input.selectors),
           captured_api: safeApiEvidence(input.captured_api),
+          event_facts: eventFacts,
+          functional_preflight: functionalPreflight,
           project_name: asText(input.project_name, 80),
           page_state: "preferences",
           queue_state: "not_started",
@@ -233,23 +259,37 @@ export async function POST(request: Request) {
       const output = parseSkillOutput(skillResult);
       const createdFiles = Array.isArray(output.created_files) ? output.created_files.map((item) => asText(item, 200)).filter(Boolean) : [];
       const projectPath = asText(output.created_project_path, 2_000);
-      const expectedFiles = ["bot.py", "config.json", "requirements.txt", "start.command", "README.md"];
+      const expectedFiles = ["bot.py", "state_machine.py", "tests/test_state_machine.py", "config.json", "requirements.txt", "start.command", "README.md", "verification-report.json"];
       const structuralPass = Boolean(projectPath && expectedFiles.every((file) => createdFiles.includes(file)));
+      const fixtureVerification = output.fixture_verification && typeof output.fixture_verification === "object" && !Array.isArray(output.fixture_verification)
+        ? output.fixture_verification as Record<string, unknown>
+        : {};
+      const fixturePass = fixtureVerification.fixture_tests_passed === true && fixtureVerification.queue_fixture_verified === true;
+      const verified = structuralPass && fixturePass && output.status === "project_verified";
       return Response.json({
-        ok: structuralPass,
-        stage: structuralPass ? "project_ready" : "project_incomplete",
+        ok: verified,
+        stage: verified ? "project_fixture_verified" : structuralPass ? "project_unverified" : "project_incomplete",
         output,
         project_path: projectPath,
         created_files: createdFiles,
-        dry_run: {
-          passed: structuralPass,
+        verification: {
+          structure_passed: structuralPass,
+          fixture_tests_passed: fixturePass,
+          queue_fixture_verified: fixtureVerification.queue_fixture_verified === true,
+          live_public_page_verified: functionalPreflight.public_page_verified === true,
+          live_queue_observed: false,
+          live_checkout_verified: false,
+          workflow_state: asText(functionalPreflight.workflow_state, 80),
+          purchase_controls_ready: functionalPreflight.purchase_controls_ready === true,
           expected_files: expectedFiles,
           found_files: createdFiles,
           live_purchase_attempted: false,
           handoff_points: ["login", "captcha", "otp", "payment"],
         },
+        live_facts: eventFacts,
+        functional_preflight: functionalPreflight,
         artifacts: Array.isArray(skillResult.artifacts) ? skillResult.artifacts : [],
-      }, { status: structuralPass ? 200 : 422 });
+      }, { status: verified ? 200 : 422 });
     }
 
     return Response.json({ error: "ไม่รู้จัก action ของ Ticket Bot" }, { status: 400 });

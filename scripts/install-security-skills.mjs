@@ -194,7 +194,7 @@ output.joinpath("api-contract.md").write_text("# Web API contract discovery\n\n"
 print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 `;
 
-const concertTicketAssistant = String.raw`import json
+const concertTicketAssistantLegacy = String.raw`import json
 import os
 import pathlib
 import re
@@ -473,6 +473,22 @@ output.joinpath("ticket-assistant-plan.md").write_text(f"# Concert ticket assist
 print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 `;
 
+const concertTicketAssistant = await fs.readFile(resolve(appDir, "templates/concert-ticket-assistant.py"), "utf8");
+
+const verifiedTicketInput = {
+  event_facts: {
+    event_name: "Test Concert",
+    event_url: "https://tickets.test/e/1",
+    show_dates: [{ raw: "1 September 2026 19:00", iso: "2026-09-01T19:00:00+07:00" }],
+    sale_open_at: "2026-08-25T09:00:00+07:00",
+    sale_status: "open",
+    ticket_status: "available",
+    purchase_controls: [{ selector: "#buy", label: "Buy now", semantic_role: "purchase_action", selector_confidence: 0.99 }],
+    evidence: [{ field: "show_date", text: "1 September 2026" }, { field: "sale_open_at", text: "25 August 2026" }],
+  },
+  functional_preflight: { passed: true, public_page_verified: true, purchase_controls_ready: true, workflow_state: "sale_entry", unresolved: [], can_build: true },
+};
+
 const skills = [
   {
     objective: "วิเคราะห์ HAR หรือรายการ HTTP traffic จาก DevTools เพื่อทำ inventory ของ API สำหรับ Hacker Lab และการทดสอบระบบที่ผู้ใช้กำลังตรวจ",
@@ -582,14 +598,14 @@ const skills = [
       test_cases: [
         { name: "ask-concert", input: { event_url: "https://tickets.test", event_candidates: [{ id: "past", name: "Past Show", sale_status: "closed", start_date: "2025-01-01" }, { id: "next", name: "Next Show", sale_status: "upcoming", start_date: "2026-09-01", sale_open_at: "2026-08-25", url: "https://tickets.test/e/next" }] }, stdout_contains: "available_event_choices", expected_files: ["ticket-assistant-plan.json"] },
         { name: "ask-seat", input: { event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 2, seat_mode: "reserved" }, stdout_contains: "preferred_zones", expected_files: ["ticket-assistant-plan.json"] },
-        { name: "select-reserved", input: { event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 2, schedule: "2026-09-01 19:00", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "reserved", preferred_zones: ["A"], budget: 5000, customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", captured_api: [{ method: "GET", url: "/api/seats" }], available_tickets: [{ id: "B", zone: "B", price: 1000 }, { id: "A1", zone: "A", price: 2000 }] }, stdout_contains: "bot_project_created", expected_files: ["ticket-assistant-plan.json", "ticket-assistant-plan.md"] },
-        { name: "standing", input: { event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "evening", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "promptpay", available_tickets: [{ id: "GA", type: "standing", price: 1500 }] }, stdout_contains: "bot_project_created", expected_files: ["ticket-assistant-plan.json"] },
-        { name: "login-handoff", input: { event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "evening", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", page_state: "login" }, stdout_contains: "bot_project_created", expected_files: ["ticket-assistant-plan.json"] },
-        { name: "qr-ready", input: { event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "evening", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", page_state: "promptpay qr" }, stdout_contains: "bot_project_created", expected_files: ["ticket-assistant-plan.json"] },
-        { name: "wait-queue", input: { event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "evening", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", queue_state: "waiting", retry_after_seconds: 3 }, stdout_contains: "respect_retry_after_with_jitter_keep_session", expected_files: ["ticket-assistant-plan.json"] },
+        { name: "select-reserved", input: { ...verifiedTicketInput, event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 2, schedule: "2026-09-01 19:00", sale_open_at: "2026-08-25T09:00:00+07:00", queue_open_at: "2026-08-25T08:00:00+07:00", seat_mode: "reserved", preferred_zones: ["A"], budget: 5000, customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", captured_api: [{ method: "GET", url: "/api/seats" }] }, stdout_contains: "project_verified", expected_files: ["ticket-assistant-plan.json", "ticket-assistant-plan.md"] },
+        { name: "standing", input: { ...verifiedTicketInput, event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "2026-09-01 19:00", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "promptpay" }, stdout_contains: "project_verified", expected_files: ["ticket-assistant-plan.json"] },
+        { name: "login-handoff", input: { ...verifiedTicketInput, event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "2026-09-01 19:00", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", page_state: "login" }, stdout_contains: "project_verified", expected_files: ["ticket-assistant-plan.json"] },
+        { name: "qr-ready", input: { ...verifiedTicketInput, event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "2026-09-01 19:00", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", page_state: "promptpay qr" }, stdout_contains: "project_verified", expected_files: ["ticket-assistant-plan.json"] },
+        { name: "wait-queue", input: { ...verifiedTicketInput, event_url: "https://tickets.test/e/1", selected_event_id: "show-1", selected_event_name: "Test Concert", quantity: 1, schedule: "2026-09-01 19:00", sale_open_at: "2026-08-25T09:00:00+07:00", queue_open_at: "2026-08-25T08:00:00+07:00", seat_mode: "standing", customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", queue_state: "waiting", retry_after_seconds: 3 }, stdout_contains: "queue_fixture_verified\":true", expected_files: ["ticket-assistant-plan.json"] },
       ],
     },
-    hidden_test_cases: Array.from({ length: 20 }, (_, index) => ({ name: `hidden-ticket-${index + 1}`, input: { event_url: "https://tickets.test/event", selected_event_id: `show-${index + 1}`, selected_event_name: `Hidden Concert ${index + 1}`, quantity: 1, schedule: "2026-09-01", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: index % 2 ? "standing" : "reserved", preferred_zones: index % 2 ? [] : ["A"], customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", captured_api: [{ method: "GET", url: "/api/tickets" }], page_state: ["preferences", "login", "captcha", "promptpay qr"][index % 4] }, stdout_contains: "bot_project_created", expected_files: ["ticket-assistant-plan.json"] })),
+    hidden_test_cases: Array.from({ length: 20 }, (_, index) => ({ name: `hidden-ticket-${index + 1}`, input: { ...verifiedTicketInput, event_url: "https://tickets.test/event", selected_event_id: `show-${index + 1}`, selected_event_name: `Hidden Concert ${index + 1}`, quantity: 1, schedule: "2026-09-01T19:00:00+07:00", sale_open_at: "2026-08-25T09:00:00+07:00", seat_mode: index % 2 ? "standing" : "reserved", preferred_zones: index % 2 ? [] : ["A"], customer_name: "Test User", shipping_address: { city: "Bangkok" }, payment_method: "qr", captured_api: [{ method: "GET", url: "/api/tickets" }], page_state: ["preferences", "login", "captcha", "promptpay qr"][index % 4] }, stdout_contains: "project_verified", expected_files: ["ticket-assistant-plan.json"] })),
     source: concertTicketAssistant,
   },
 ];

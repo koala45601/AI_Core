@@ -387,17 +387,33 @@ export async function POST(request: Request) {
       if (selectedUrl) await executeTool("browser_action", { action: "open", url: selectedUrl }, settings);
       const form = await executeTool("browser_action", { action: "inspect_form" }, settings);
       const candidates = form.candidates && typeof form.candidates === "object" ? form.candidates as Record<string, Array<Record<string, unknown>>> : {};
+      const facts = form.facts && typeof form.facts === "object" ? form.facts as Record<string, unknown> : {};
+      const functionalPreflight = form.functional_preflight && typeof form.functional_preflight === "object" ? form.functional_preflight as Record<string, unknown> : {};
       const optionText = (role: string) => (candidates[role] || []).flatMap((item) => Array.isArray(item.options) ? item.options : [])
         .map((item) => String((item as Record<string, unknown>).text || "")).filter(Boolean).slice(0, 12);
-      const schedules = optionText("schedule");
+      const factSchedules = Array.isArray(facts.show_dates) ? facts.show_dates.flatMap((item) => item && typeof item === "object" ? [String((item as Record<string, unknown>).iso || (item as Record<string, unknown>).raw || "")] : []).filter(Boolean) : [];
+      const schedules = [...factSchedules, ...optionText("schedule")].slice(0, 12);
       const seats = optionText("seat_or_zone");
+      const workflowState = String(functionalPreflight.workflow_state || "unknown");
       const reply = [
         `เลือก “${String(selectedEvent.name || "คอนเสิร์ตนี้")}” แล้วครับ`,
+        `ตรวจหน้าจริง: ${functionalPreflight.public_page_verified === true ? "หลักฐานครบ" : `ยังขาด ${Array.isArray(functionalPreflight.unresolved) ? functionalPreflight.unresolved.join(", ") : "ข้อมูลวันแสดง/วันเปิดขาย"}`} · สถานะ ${workflowState}`,
         schedules.length ? `รอบที่ตรวจพบ: ${schedules.join(", ")}` : "รอบ: พี่ต้องการวันและเวลาไหน?",
         seats.length ? `โซน/ประเภทบัตรที่ตรวจพบ: ${seats.join(", ")}` : "ที่นั่ง: ต้องการแบบระบุที่นั่ง/โซน หรือบัตรยืนไม่มีเลขที่นั่ง?",
-        "บอกจำนวนบัตร โซน/งบ ชื่อผู้จอง ที่อยู่ และเลือก QR/PromptPay ได้เลย ข้อมูลใดที่หน้าเว็บไม่มีผมจะถามเฉพาะจุดนั้น",
+        "ถ้าเว็บเริ่มรับคิวก่อนเวลาเปิดขาย ให้บอกเวลาเริ่มคิวด้วย จากนั้นบอกจำนวนบัตร โซน/งบ ชื่อผู้จอง ที่อยู่ และ QR/PromptPay",
       ].join("\n\n");
-      const ticketBuild = { selected_event: selectedEvent, form_inspection: { url: form.url, title: form.title, candidates, ambiguous_roles: form.ambiguous_roles }, selected_event_id: selectedEvent.id, selected_event_name: selectedEvent.name, event_url: selectedUrl };
+      const ticketBuild = {
+        selected_event: selectedEvent,
+        event_candidates: pendingTicketEvents,
+        form_inspection: { url: form.url, title: form.title, candidates, ambiguous_roles: form.ambiguous_roles },
+        event_facts: facts,
+        functional_preflight: functionalPreflight,
+        selected_event_id: selectedEvent.id,
+        selected_event_name: selectedEvent.name,
+        event_url: selectedUrl,
+        schedule: factSchedules[0] || selectedEvent.start_date || "",
+        sale_open_at: String(facts.sale_open_at || selectedEvent.sale_open_at || ""),
+      };
       const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { pending_ticket_build: ticketBuild, inspected_url: selectedUrl, tool_events: browserEvents.map(({ type, payload }) => ({ type, ...payload })) } });
       return immediateStream([...baseEvents, { type: "status", payload: { stage: "ticket_preferences", label: "รอข้อมูลสำหรับสร้างบอท" } }, ...browserEvents, { type: "token", payload: { text: reply } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
     } catch (error) {

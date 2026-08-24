@@ -8,6 +8,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import net from "node:net";
 import { chromium } from "playwright-core";
 import { WebSocketServer } from "ws";
+import { evaluateTicketPreflight, extractTicketPageFacts } from "../lib/ticket-workflow.js";
 
 process.env.PATH = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", process.env.PATH || ""].join(":");
 
@@ -626,11 +627,13 @@ async function browserRisk(page) {
 
 function classifyFormControl(control) {
   const haystack = `${control.type || ""} ${control.name || ""} ${control.id || ""} ${control.autocomplete || ""} ${control.label || ""} ${control.placeholder || ""} ${control.aria_label || ""}`.toLowerCase();
+  const label = String(control.label || "").trim();
+  if (/order\s*history|purchase\s*history|ประวัติการสั่งซื้อ/.test(haystack)) return "unknown";
   if (String(control.type).toLowerCase() === "password" || /password|passcode|รหัสผ่าน/.test(haystack)) return "password";
   if (/one-time|otp|verification.code|รหัสยืนยัน/.test(haystack)) return "otp";
   if (/user(name)?|login|member|email|อีเมล|ผู้ใช้/.test(haystack)) return "username_or_email";
   if (/concert|event|show|performance|คอนเสิร์ต|การแสดง/.test(haystack)) return "event";
-  if (/date|day|schedule|round|session|รอบ|วันที่|เวลา/.test(haystack)) return "schedule";
+  if (/date|day|schedule|round|session|รอบ|วันที่|เวลา|เลือกรอบ/.test(haystack) || /^\s*\d{1,2}:\d{2}(?:\s*(?:ซื้อบัตร|จองบัตร))?\s*$/i.test(label)) return "schedule";
   if (/zone|section|seat|ที่นั่ง|โซน/.test(haystack)) return "seat_or_zone";
   if (/quantity|qty|amount|ticket.count|จำนวน/.test(haystack)) return "quantity";
   if (/address|district|province|postal|zip|ที่อยู่|จังหวัด|ไปรษณีย์/.test(haystack)) return "address";
@@ -641,7 +644,7 @@ function classifyFormControl(control) {
 }
 
 async function inspectBrowserForm(page) {
-  const controls = await page.locator("input, select, textarea, button, [role=button], [role=option]").evaluateAll((nodes) => nodes.slice(0, 300).map((node) => {
+  const controls = await page.locator("input, select, textarea, button, a[href], [role=button], [role=option]").evaluateAll((nodes) => nodes.slice(0, 500).map((node) => {
     const element = node;
     const id = element.getAttribute("id") || "";
     const name = element.getAttribute("name") || "";
@@ -650,6 +653,8 @@ async function inspectBrowserForm(page) {
     const selector = id ? `#${CSS.escape(id)}`
       : name ? `${element.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`
         : element.getAttribute("data-testid") ? `[data-testid="${CSS.escape(element.getAttribute("data-testid"))}"]`
+          : element.tagName === "A" && element.getAttribute("href") && !String(element.getAttribute("href")).startsWith("javascript:")
+            ? `a[href="${CSS.escape(element.getAttribute("href"))}"]`
           : "";
     const options = element.tagName === "SELECT"
       ? [...element.options].slice(0, 100).map((option) => ({ text: String(option.textContent || "").trim().slice(0, 160), value: String(option.value || "").slice(0, 160) }))
@@ -658,6 +663,7 @@ async function inspectBrowserForm(page) {
       tag: element.tagName.toLowerCase(), type: element.getAttribute("type") || "", id, name,
       autocomplete: element.getAttribute("autocomplete") || "", placeholder: element.getAttribute("placeholder") || "",
       aria_label: element.getAttribute("aria-label") || "", label: String(explicit || wrapping || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
+      context_text: String(element.closest("li, tr, article, section, .event, .round, .showtime, div")?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 300),
       selector, options, disabled: Boolean(element.disabled), required: Boolean(element.required),
     };
   }));
@@ -668,7 +674,48 @@ async function inspectBrowserForm(page) {
     (candidates[control.semantic_role] ||= []).push(control);
   }
   const ambiguous_roles = Object.entries(candidates).filter(([, items]) => items.length > 1).map(([role]) => role);
-  return { ok: true, url: page.url(), title: await page.title(), controls: mapped, candidates, ambiguous_roles, needs_user_clarification: ambiguous_roles.length > 0 };
+  const pageSnapshot = await page.evaluate(() => {
+    const structured_events = [];
+    const visit = (item) => {
+      if (!item || typeof item !== "object") return;
+      const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
+      if (types.some((type) => /event/i.test(String(type || "")))) {
+        const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers || {};
+        structured_events.push({
+          name: String(item.name || item.headline || ""),
+          start_date: String(item.startDate || ""),
+          sale_open_at: String(offers.validFrom || item.saleOpenAt || ""),
+        });
+      }
+      if (Array.isArray(item["@graph"])) item["@graph"].forEach(visit);
+      if (Array.isArray(item.itemListElement)) item.itemListElement.forEach((entry) => visit(entry?.item || entry));
+    };
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const parsed = JSON.parse(script.textContent || "null");
+        (Array.isArray(parsed) ? parsed : [parsed]).forEach(visit);
+      } catch { /* ignore invalid structured data */ }
+    }
+    return {
+      url: location.href,
+      title: document.title,
+      body_text: String(document.body?.innerText || "").slice(0, 60_000),
+      structured_events: structured_events.slice(0, 30),
+    };
+  });
+  const facts = extractTicketPageFacts({ ...pageSnapshot, controls: mapped });
+  const functional_preflight = evaluateTicketPreflight(facts);
+  return {
+    ok: true,
+    url: page.url(),
+    title: await page.title(),
+    controls: mapped,
+    candidates,
+    ambiguous_roles,
+    needs_user_clarification: ambiguous_roles.length > 0,
+    facts,
+    functional_preflight,
+  };
 }
 
 async function inspectBrowserEvents(page) {
