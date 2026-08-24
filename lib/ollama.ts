@@ -312,12 +312,110 @@ export interface SkillBuildResult {
   response_tokens: number;
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  try { return JSON.parse(value) as Record<string, unknown>; } catch {
-    const match = value.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("โมเดลไม่ได้ส่งแผนสกิลเป็น JSON");
-    return JSON.parse(match[0]) as Record<string, unknown>;
+const skillTestCaseSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    input: { type: "object" },
+    stdout_contains: { type: "string" },
+    expected_files: { type: "array", items: { type: "string" }, maxItems: 6 },
+  },
+  required: ["name", "input", "stdout_contains", "expected_files"],
+} as const;
+
+const skillDefinitionSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    description: { type: "string" },
+    runtime: { type: "string", enum: ["python", "node"] },
+    entrypoint: { type: "string" },
+    dependencies: { type: "array", items: { type: "string" }, maxItems: 6 },
+    trigger_examples: { type: "array", items: { type: "string" }, maxItems: 8 },
+    test_cases: { type: "array", items: skillTestCaseSchema, minItems: 2, maxItems: 4 },
+  },
+  required: ["id", "name", "description", "runtime", "entrypoint", "dependencies", "trigger_examples", "test_cases"],
+} as const;
+
+const skillPlanSchema = {
+  type: "object",
+  properties: {
+    status: { type: "string", enum: ["ready", "blocked"] },
+    reason: { type: "string" },
+    skill: skillDefinitionSchema,
+  },
+  required: ["status", "reason"],
+} as const;
+
+const hiddenTestsSchema = {
+  type: "object",
+  properties: { test_cases: { type: "array", items: skillTestCaseSchema, maxItems: 4 } },
+  required: ["test_cases"],
+} as const;
+
+const skillBuildSchema = {
+  type: "object",
+  properties: {
+    files: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { path: { type: "string" }, content: { type: "string" } },
+        required: ["path", "content"],
+      },
+    },
+    notes: { type: "string" },
+    blocked_reason: { type: "string" },
+  },
+  required: ["files", "notes", "blocked_reason"],
+} as const;
+
+function responseText(payload: { message?: { content?: string; thinking?: string } }): string {
+  return String(payload.message?.content || payload.message?.thinking || "").trim();
+}
+
+function balancedJsonCandidates(value: string): string[] {
+  const candidates: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (character === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) candidates.push(value.slice(start, index + 1));
+    }
   }
+  return candidates;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  const cleaned = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const candidates = [...new Set([cleaned, ...balancedJsonCandidates(cleaned)])].filter(Boolean);
+  for (const candidate of candidates) {
+    for (const normalized of [candidate, candidate.replace(/,\s*([}\]])/g, "$1")]) {
+      try {
+        const parsed = JSON.parse(normalized) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+      } catch { /* try the next complete object */ }
+    }
+  }
+  throw new Error("โมเดลไม่ได้ส่งข้อมูลสกิลเป็น JSON ที่สมบูรณ์");
 }
 
 function normalizePlannedSkill(value: unknown, testLimit: number): SkillDefinition | null {
@@ -394,22 +492,22 @@ trigger_examples ต้องเป็น array ของข้อความ�
         model: settings.model,
         stream: false,
         think: false,
-        format: "json",
+        format: skillPlanSchema,
         keep_alive: "5m",
-        options: { num_ctx: settings.max_context_tokens, num_predict: Math.min(2600, settings.max_output_tokens + 1000), temperature: planAttempt === 1 ? 0.15 : 0 },
+        options: { num_ctx: Math.min(settings.max_context_tokens, 4096), num_predict: Math.min(1200, settings.max_output_tokens), temperature: planAttempt === 1 ? 0.1 : 0 },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `เป้าหมาย:\n${objective}\n\nเกณฑ์สำเร็จ:\n${successCriteria || "ทำตามเป้าหมายได้จริงและผลทดสอบตรวจซ้ำได้"}\n\nข้อมูลจากเว็บ (อาจไม่มี):\n${sourceText || "ไม่มี"}${repair}` },
         ],
       }),
-      signal: timedSignal(180_000, signal),
+      signal: timedSignal(240_000, signal),
     });
     if (!response.ok) throw new Error(`ออกแบบสกิลไม่สำเร็จ (${response.status})`);
-    const payload = await response.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
+    const payload = await response.json() as { message?: { content?: string; thinking?: string }; prompt_eval_count?: number; eval_count?: number };
     promptTokens += payload.prompt_eval_count ?? 0;
     responseTokens += payload.eval_count ?? 0;
     let parsed: Record<string, unknown>;
-    try { parsed = parseJsonObject(payload.message?.content ?? "{}"); } catch {
+    try { parsed = parseJsonObject(responseText(payload)); } catch {
       repair = "\n\nคำตอบก่อนหน้าไม่ใช่ JSON ที่ parse ได้ กรุณาส่ง JSON ใหม่ทั้งก้อนตาม schema เท่านั้น";
       continue;
     }
@@ -429,39 +527,46 @@ export async function designHiddenSkillTests(
   signal?: AbortSignal,
 ): Promise<{ tests: SkillTestCase[]; prompt_tokens: number; response_tokens: number }> {
   const requested = settings.skill_hidden_test_runs;
-  const response = await ollamaFetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: settings.model,
-      stream: false,
-      think: false,
-      format: "json",
-      keep_alive: "5m",
-      options: { num_ctx: settings.max_context_tokens, num_predict: Math.min(3000, Math.max(1200, settings.max_output_tokens * 2)), temperature: 0.35 },
-      messages: [
-        {
-          role: "system",
-          content: `คุณเป็นผู้ตรวจอิสระ สร้าง hidden validation tests สำหรับสกิล โดยผู้เขียนโค้ดจะไม่เห็น test เหล่านี้
+  let promptTokens = 0;
+  let responseTokens = 0;
+  let repair = "";
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const response = await ollamaFetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: settings.model,
+        stream: false,
+        think: false,
+        format: hiddenTestsSchema,
+        keep_alive: "5m",
+        options: { num_ctx: Math.min(settings.max_context_tokens, 4096), num_predict: Math.min(1000, settings.max_output_tokens), temperature: attempt === 1 ? 0.15 : 0 },
+        messages: [
+          {
+            role: "system",
+            content: `คุณเป็นผู้ตรวจอิสระ สร้าง hidden validation tests สำหรับสกิล โดยผู้เขียนโค้ดจะไม่เห็น test เหล่านี้
 เน้น boundary, malformed-but-valid input, Unicode/ภาษาไทย, empty values, large values และ property-like cases ที่ตรวจผลได้แน่นอน
 ห้ามเปลี่ยน runtime/dependency และห้ามสร้างเกณฑ์ที่คาดเดาผลไม่ได้
 ${requested > 0 ? `สร้างไม่เกิน ${requested} รายการ` : "สร้างจำนวนที่จำเป็นต่อการครอบคลุม โดยไม่มีเพดานตายตัวใน Settings"}
 ตอบ JSON เท่านั้น: {"test_cases":[{"name":"...","input":{},"stdout_contains":"...","expected_files":[]}]}`,
-        },
-        { role: "user", content: `เป้าหมาย: ${objective}\nเกณฑ์สำเร็จ: ${successCriteria}\nสเปกสกิล (ยังไม่มี source code):\n${JSON.stringify(skill)}` },
-      ],
-    }),
-    signal: timedSignal(180_000, signal),
-  });
-  if (!response.ok) throw new Error(`สร้าง hidden tests ไม่สำเร็จ (${response.status})`);
-  const payload = await response.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
-  const parsed = parseJsonObject(payload.message?.content ?? "{}");
-  const normalized = normalizePlannedSkill({ ...skill, test_cases: parsed.test_cases }, requested);
-  return {
-    tests: normalized?.test_cases ?? [],
-    prompt_tokens: payload.prompt_eval_count ?? 0,
-    response_tokens: payload.eval_count ?? 0,
-  };
+          },
+          { role: "user", content: `เป้าหมาย: ${objective}\nเกณฑ์สำเร็จ: ${successCriteria}\nสเปกสกิล (ยังไม่มี source code):\n${JSON.stringify(skill)}${repair}` },
+        ],
+      }),
+      signal: timedSignal(180_000, signal),
+    });
+    if (!response.ok) throw new Error(`สร้าง hidden tests ไม่สำเร็จ (${response.status})`);
+    const payload = await response.json() as { message?: { content?: string; thinking?: string }; prompt_eval_count?: number; eval_count?: number };
+    promptTokens += payload.prompt_eval_count ?? 0;
+    responseTokens += payload.eval_count ?? 0;
+    try {
+      const parsed = parseJsonObject(responseText(payload));
+      const normalized = normalizePlannedSkill({ ...skill, test_cases: parsed.test_cases }, requested);
+      if (normalized?.test_cases.length) return { tests: normalized.test_cases, prompt_tokens: promptTokens, response_tokens: responseTokens };
+    } catch { /* repair once in the same stage */ }
+    repair = "\n\nคำตอบก่อนหน้าไม่ใช่ JSON ตาม schema กรุณาส่ง object test_cases ใหม่ทั้งก้อนเท่านั้น";
+  }
+  return { tests: [], prompt_tokens: promptTokens, response_tokens: responseTokens };
 }
 
 export async function buildSkillAttempt(
@@ -473,48 +578,80 @@ export async function buildSkillAttempt(
   settings: AppSettings,
   signal?: AbortSignal,
 ): Promise<SkillBuildResult> {
-  const previousSource = JSON.stringify(previousFiles || []).slice(0, 24_000);
-  const response = await ollamaFetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: settings.model,
-      stream: false,
-      think: false,
-      format: "json",
-      keep_alive: "5m",
-      options: { num_ctx: settings.max_context_tokens, num_predict: Math.min(4200, Math.max(2400, settings.max_output_tokens * 2)), temperature: 0.2 },
-      messages: [
-        {
-          role: "system",
-          content: `คุณเป็นนักพัฒนาของ Alpha Skill Lab เขียนสกิลให้ตรงกับสเปกและ test_cases ที่ล็อกไว้
+  const sourceBudget = 16_000;
+  const perFileBudget = Math.max(1_500, Math.floor(sourceBudget / Math.max(1, previousFiles.length)));
+  const promptFiles = previousFiles.map((file) => {
+    if (file.content.length <= perFileBudget) return file;
+    const headLength = Math.floor(perFileBudget * 0.55);
+    const tailLength = perFileBudget - headLength;
+    return {
+      ...file,
+      content: `${file.content.slice(0, headLength)}\n# ... source middle omitted from repair prompt ...\n${file.content.slice(-tailLength)}`,
+    };
+  });
+  const previousSource = JSON.stringify(promptFiles);
+  let promptTokens = 0;
+  let responseTokens = 0;
+  let repair = "";
+  for (let responseAttempt = 1; responseAttempt <= 3; responseAttempt += 1) {
+    const response = await ollamaFetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: settings.model,
+        stream: false,
+        think: false,
+        format: skillBuildSchema,
+        keep_alive: "5m",
+        options: { num_ctx: settings.max_context_tokens, num_predict: Math.min(3600, Math.max(2200, settings.max_output_tokens * 2)), temperature: responseAttempt === 1 ? 0.15 : 0 },
+        messages: [
+          {
+            role: "system",
+            content: `คุณเป็นนักพัฒนาของ Alpha Skill Lab เขียนสกิลให้ตรงกับสเปกและ test_cases ที่ล็อกไว้
 ข้อกำหนดบังคับ:
 - ส่งไฟล์สมบูรณ์ไม่เกิน 12 ไฟล์ รวมไม่เกินประมาณ 80KB
 - entrypoint รับ JSON จาก argv[1] และเขียนไฟล์ลง path จาก ALPHA_OUTPUT_DIR เท่านั้น
+- argv[1] คือ JSON serialization ของ test.input ทั้ง object: ต้อง json.loads/process JSON เพียงครั้งเดียวแล้วอ่าน field จาก object นั้น เช่น payload["json_content"] และ payload["required_keys"] ห้ามส่ง argv[1] ทั้งก้อนไปเป็นค่า field เดียว
+- Python entrypoint ต้องเรียก main ด้วย if __name__ == "__main__": เท่านั้น; ห้ามใช้ "main" ที่ไม่มี underscore เพราะโปรแกรมจะจบโดยไม่ทำงานและ stdout จะว่าง
+- source ต้องกระชับ เน้น implementation ห้ามใส่บทวิเคราะห์หรือ docstring ยาวจนบดบังโค้ดและ entrypoint
 - ใช้ได้เฉพาะ standard library และ dependency ids ในสเปก ห้ามเรียก network, shell, package manager หรืออ่านไฟล์ host
 - ห้ามแก้เกณฑ์ทดสอบ ห้าม hard-code เฉพาะ test input; ต้องทำงานกับ input ทั่วไปตามเป้าหมาย
 - อ่าน failure_kind และผล test ของ attempt ก่อนแล้วแก้ต้นเหตุ: candidate_syntax ให้ซ่อม parser/compiler error, candidate_behavior ให้เทียบ stdout/ไฟล์ที่คาดกับผลจริง, candidate_timeout ให้ลดความซับซ้อนและรับประกันว่าโปรแกรมจบ, capability_gap ให้ใช้ dependency ในสเปกหรือ standard library ที่เทียบเท่า
-- แก้ต่อจาก source code เดิมเป็นหลัก รักษาส่วนที่ test ผ่านแล้ว และเปลี่ยนเฉพาะส่วนที่เกี่ยวข้องกับ failure ห้ามเขียนใหม่สุ่ม ๆ ทุก attempt
+- แก้ต่อจาก source code เดิมเป็นหลัก รักษาส่วนที่ test ผ่านแล้ว และเปลี่ยนเฉพาะส่วนที่เกี่ยวข้องกับ failure โดยเทียบ expected substring กับ actual stdout ที่แนบมา ห้ามเขียนใหม่สุ่ม ๆ ทุก attempt
 - ถ้าทำไม่ได้จริงให้ใส่ blocked_reason พร้อมเหตุผล ห้ามอ้างว่าสำเร็จ
 ตอบ JSON เท่านั้น: {"files":[{"path":"main.py","content":"..."}],"notes":"...","blocked_reason":""}`,
-        },
-        { role: "user", content: `เป้าหมาย: ${objective}\nเกณฑ์สำเร็จ: ${successCriteria}\n\nสเปกที่ล็อกไว้:\n${JSON.stringify(skill)}\n\nผลล้มเหลวจาก attempt ก่อน (ให้แก้ต้นเหตุ):\n${previousFailure || "ยังไม่มี นี่คือ attempt แรก"}\n\nsource code จาก attempt ก่อน (แก้ต่อจากนี้และส่งไฟล์ฉบับเต็มกลับมา ห้ามเริ่มใหม่โดยไม่จำเป็น):\n${previousSource || "ยังไม่มี source code ก่อนหน้า"}` },
-      ],
-    }),
-    signal: timedSignal(240_000, signal),
-  });
-  if (!response.ok) throw new Error(`สร้างสกิลไม่สำเร็จ (${response.status})`);
-  const payload = await response.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
-  const parsed = parseJsonObject(payload.message?.content ?? "{}");
-  const files = Array.isArray(parsed.files) ? parsed.files.filter((item): item is { path: string; content: string } => (
-    Boolean(item) && typeof item === "object" && typeof (item as Record<string, unknown>).path === "string" && typeof (item as Record<string, unknown>).content === "string"
-  )).slice(0, 12) : [];
+          },
+          { role: "user", content: `เป้าหมาย: ${objective}\nเกณฑ์สำเร็จ: ${successCriteria}\n\nสเปกที่ล็อกไว้:\n${JSON.stringify(skill)}\n\nผลล้มเหลวจาก attempt ก่อน (ให้แก้ต้นเหตุ):\n${previousFailure || "ยังไม่มี นี่คือ attempt แรก"}\n\nsource code จาก attempt ก่อน (แก้ต่อจากนี้และส่งไฟล์ฉบับเต็มกลับมา ห้ามเริ่มใหม่โดยไม่จำเป็น):\n${previousSource || "ยังไม่มี source code ก่อนหน้า"}${repair}` },
+        ],
+      }),
+      signal: timedSignal(240_000, signal),
+    });
+    if (!response.ok) throw new Error(`สร้างสกิลไม่สำเร็จ (${response.status})`);
+    const payload = await response.json() as { message?: { content?: string; thinking?: string }; prompt_eval_count?: number; eval_count?: number };
+    promptTokens += payload.prompt_eval_count ?? 0;
+    responseTokens += payload.eval_count ?? 0;
+    try {
+      const parsed = parseJsonObject(responseText(payload));
+      const files = Array.isArray(parsed.files) ? parsed.files.filter((item): item is { path: string; content: string } => (
+        Boolean(item) && typeof item === "object" && typeof (item as Record<string, unknown>).path === "string" && typeof (item as Record<string, unknown>).content === "string"
+      )).slice(0, 12) : [];
+      const blockedReason = String(parsed.blocked_reason || "").slice(0, 3000);
+      if (files.length || blockedReason) return {
+        files,
+        notes: String(parsed.notes || "").slice(0, 3000),
+        blocked_reason: blockedReason,
+        prompt_tokens: promptTokens,
+        response_tokens: responseTokens,
+      };
+    } catch { /* repair without restarting the whole training pipeline */ }
+    repair = "\n\nคำตอบก่อนหน้าใช้ไม่ได้เพราะไม่ใช่ JSON ตาม schema กรุณาส่ง files/notes/blocked_reason ใหม่ทั้ง object และห้ามใส่คำอธิบายนอก JSON";
+  }
   return {
-    files,
-    notes: String(parsed.notes || "").slice(0, 3000),
-    blocked_reason: String(parsed.blocked_reason || "").slice(0, 3000),
-    prompt_tokens: payload.prompt_eval_count ?? 0,
-    response_tokens: payload.eval_count ?? 0,
+    files: [],
+    notes: "structured output repair exhausted",
+    blocked_reason: "โมเดลส่ง source code ไม่เป็น JSON ที่สมบูรณ์หลังซ่อมภายใน 3 รอบ",
+    prompt_tokens: promptTokens,
+    response_tokens: responseTokens,
   };
 }
 

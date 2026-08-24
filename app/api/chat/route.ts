@@ -147,7 +147,11 @@ function directLearnedSkillInput(
     if (!encoded) return null;
     return { png_base64: encoded, filename: message.match(/[\w\u0E00-\u0E7F.-]+\.png/i)?.[0] || "image.png" };
   }
-  return null;
+  // Every newly installed skill can be used immediately without adding another
+  // hard-coded router branch. Explicit JSON in the request is passed to the
+  // verified sandbox entrypoint; otherwise the model tool loop can collect the
+  // required host/browser evidence and construct the structured input.
+  return parseEmbeddedJson(message);
 }
 
 function learnedSkillReply(skillId: string, result: Record<string, unknown>): string {
@@ -326,6 +330,13 @@ export async function POST(request: Request) {
   }
 
   const recentStored = await listRecentChatMessages(chat.id, 12);
+  const latestTicketWorkflow = [...recentStored].reverse().find((item) => item.role === "assistant"
+    && (Array.isArray(item.metadata.pending_ticket_events) || Boolean(item.metadata.pending_ticket_build)));
+  const pendingTicketEvents = latestTicketWorkflow && !latestTicketWorkflow.metadata.pending_ticket_build
+    && Array.isArray(latestTicketWorkflow.metadata.pending_ticket_events)
+    ? latestTicketWorkflow.metadata.pending_ticket_events
+    : [];
+  const pendingTicketBuild = latestTicketWorkflow?.metadata.pending_ticket_build ?? null;
   const recentMessagesAll = body.chat_id ? recentStored.map(({ role, content }) => ({ role, content })) : (legacyMessages.length ? legacyMessages : recentStored.map(({ role, content }) => ({ role, content })));
   const recentMessages = recentMessagesAll;
   const modelRecentMessages = recentMessages.map((item) => ({ ...item, content: redactCredentials(item.content) }));
@@ -357,6 +368,89 @@ export async function POST(request: Request) {
   }
 
   const urls = extractUrls(message);
+  if (pendingTicketEvents.length) {
+    const numericChoice = Number(message.match(/^\s*(\d{1,3})\b/)?.[1] || 0);
+    const normalizedChoice = message.normalize("NFKC").toLowerCase().trim();
+    const matchingByName = pendingTicketEvents.filter((event) => normalizedChoice.length >= 2
+      && String(event.name || "").normalize("NFKC").toLowerCase().includes(normalizedChoice));
+    const selectedEvent = numericChoice > 0 && numericChoice <= pendingTicketEvents.length
+      ? pendingTicketEvents[numericChoice - 1]
+      : matchingByName.length === 1 ? matchingByName[0] : null;
+    if (!selectedEvent) {
+      const reply = `ยังจับคู่คอนที่พี่เลือกไม่ได้ครับ ตอบเป็นหมายเลข 1-${pendingTicketEvents.length} หรือพิมพ์ชื่อคอนตามรายการ`;
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { pending_ticket_events: pendingTicketEvents, inspected_url: latestTicketWorkflow?.metadata.inspected_url } });
+      return immediateStream([...baseEvents, { type: "status", payload: { stage: "ticket_event_selection", label: "รอเลือกคอนเสิร์ต" } }, { type: "token", payload: { text: reply } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+    const selectedUrl = String(selectedEvent.url || latestTicketWorkflow?.metadata.inspected_url || "");
+    const browserEvents: ToolEvent[] = [{ type: "tool_status", payload: { tool: "browser_action", label: "กำลังตรวจรอบ โซน ที่นั่ง และฟอร์มของคอนที่เลือก" } }];
+    try {
+      if (selectedUrl) await executeTool("browser_action", { action: "open", url: selectedUrl }, settings);
+      const form = await executeTool("browser_action", { action: "inspect_form" }, settings);
+      const candidates = form.candidates && typeof form.candidates === "object" ? form.candidates as Record<string, Array<Record<string, unknown>>> : {};
+      const optionText = (role: string) => (candidates[role] || []).flatMap((item) => Array.isArray(item.options) ? item.options : [])
+        .map((item) => String((item as Record<string, unknown>).text || "")).filter(Boolean).slice(0, 12);
+      const schedules = optionText("schedule");
+      const seats = optionText("seat_or_zone");
+      const reply = [
+        `เลือก “${String(selectedEvent.name || "คอนเสิร์ตนี้")}” แล้วครับ`,
+        schedules.length ? `รอบที่ตรวจพบ: ${schedules.join(", ")}` : "รอบ: พี่ต้องการวันและเวลาไหน?",
+        seats.length ? `โซน/ประเภทบัตรที่ตรวจพบ: ${seats.join(", ")}` : "ที่นั่ง: ต้องการแบบระบุที่นั่ง/โซน หรือบัตรยืนไม่มีเลขที่นั่ง?",
+        "บอกจำนวนบัตร โซน/งบ ชื่อผู้จอง ที่อยู่ และเลือก QR/PromptPay ได้เลย ข้อมูลใดที่หน้าเว็บไม่มีผมจะถามเฉพาะจุดนั้น",
+      ].join("\n\n");
+      const ticketBuild = { selected_event: selectedEvent, form_inspection: { url: form.url, title: form.title, candidates, ambiguous_roles: form.ambiguous_roles }, selected_event_id: selectedEvent.id, selected_event_name: selectedEvent.name, event_url: selectedUrl };
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { pending_ticket_build: ticketBuild, inspected_url: selectedUrl, tool_events: browserEvents.map(({ type, payload }) => ({ type, ...payload })) } });
+      return immediateStream([...baseEvents, { type: "status", payload: { stage: "ticket_preferences", label: "รอข้อมูลสำหรับสร้างบอท" } }, ...browserEvents, { type: "token", payload: { text: reply } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    } catch (error) {
+      const failure = `ตรวจฟอร์มคอนที่เลือกไม่สำเร็จ: ${error instanceof Error ? error.message : "Browser Tool ไม่พร้อม"}`;
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: failure, metadata: { error: true, pending_ticket_events: pendingTicketEvents, inspected_url: selectedUrl } });
+      return immediateStream([...baseEvents, ...browserEvents, { type: "tool_error", payload: { tool: "browser_action", message: failure } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+  }
+  const ticketBuilderIntent = Boolean(pendingTicketBuild) || matchedLearnedSkill?.id === "concert-ticket-purchase-assistant"
+    || /(?:สร้าง|ทำ|เขียน).{0,30}(?:บอท|bot).{0,40}(?:บัตร|ticket|คอนเสิร์ต|concert)|(?:บอท|bot).{0,30}(?:กด|ซื้อ|จอง).{0,20}(?:บัตร|ticket)/i.test(message);
+  if (ticketBuilderIntent && urls.length) {
+    const url = urls[0];
+    if (!settings.web_search_enabled) {
+      const failure = "สวิตช์อินเทอร์เน็ตปิดอยู่ จึงยังตรวจรายการคอนเสิร์ตจาก URL ไม่ได้";
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: failure, metadata: { error: true } });
+      return immediateStream([...baseEvents, { type: "blocked", payload: { code: "internet_disabled", message: failure } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+    if (!domainAllowed(url, settings)) {
+      const failure = "URL นี้ไม่ผ่านกฎเว็บไซต์ที่อนุญาต จึงยังตรวจรายการคอนเสิร์ตไม่ได้";
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: failure, metadata: { error: true } });
+      return immediateStream([...baseEvents, { type: "blocked", payload: { code: "domain_blocked", message: failure } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+    const browserEvents: ToolEvent[] = [
+      { type: "tool_status", payload: { tool: "browser_action", label: "กำลังตรวจคอนเสิร์ตที่เปิดขายและกำลังจะเปิด" } },
+    ];
+    try {
+      const opened = await executeTool("browser_action", { action: "open", url, new_tab: true }, settings);
+      browserEvents.push({ type: "browser_state", payload: { url: opened.url ?? url, title: opened.title ?? "", handoff_required: opened.handoff_required ?? false, reason: opened.reason ?? "" } });
+      const inspected = await executeTool("browser_action", { action: "inspect_events" }, settings);
+      const events = (Array.isArray(inspected.events) ? inspected.events : []).filter((item): item is Record<string, unknown> => {
+        if (!item || typeof item !== "object") return false;
+        return ["open", "upcoming"].includes(String((item as Record<string, unknown>).sale_status || ""));
+      });
+      if (!events.length) {
+        const failure = "ตรวจหน้าเว็บแล้ว แต่ยังไม่พบคอนเสิร์ตที่เปิดขายหรือกำลังจะเปิด จึงยังไม่สร้างบอทจากงานที่หมดอายุหรือปิดขาย";
+        const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: failure, metadata: { error: true, inspected_url: url } });
+        return immediateStream([...baseEvents, ...browserEvents, { type: "tool_error", payload: { tool: "browser_action", message: failure } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+      }
+      const choices = events.slice(0, 20).map((event, index) => {
+        const name = String(event.name || `คอนเสิร์ต ${index + 1}`);
+        const showDate = String(event.start_date || "ยังไม่ระบุวันแสดง");
+        const saleDate = String(event.sale_open_at || (event.sale_status === "open" ? "เปิดขายอยู่" : "ยังไม่ระบุวันเปิดขาย"));
+        return `${index + 1}. ${name}\n   วันแสดง: ${showDate}\n   เปิดขาย: ${saleDate}\n   รหัส: ${String(event.id || index + 1)}`;
+      }).join("\n\n");
+      const reply = `ผมตรวจเว็บแล้วและตัดงานที่หมดอายุ ปิดขาย ยกเลิก หรือขายหมดออกแล้ว พี่ต้องการสร้างบอทสำหรับคอนไหน?\n\n${choices}\n\nตอบหมายเลขหรือชื่อคอนก่อนครับ แล้วผมจะตรวจรอบ โซน ที่นั่ง และข้อมูลที่ต้องใช้ต่อ`;
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { pending_ticket_events: events.slice(0, 20), inspected_url: url, tool_events: browserEvents.map(({ type, payload }) => ({ type, ...payload })) } });
+      return immediateStream([...baseEvents, { type: "status", payload: { stage: "ticket_event_selection", label: "รอเลือกคอนเสิร์ตก่อนสร้างบอท" } }, ...browserEvents, { type: "token", payload: { text: reply } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    } catch (error) {
+      const failure = `ตรวจรายการคอนเสิร์ตไม่สำเร็จ: ${error instanceof Error ? error.message : "Browser Tool ไม่พร้อม"}`;
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: failure, metadata: { error: true } });
+      return immediateStream([...baseEvents, ...browserEvents, { type: "tool_error", payload: { tool: "browser_action", message: failure } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+  }
   const directRead = wantsDirectRead(message, urls);
   let wantsSearch = Boolean(body.force_search);
   if (!fastPath && !directRead && !wantsBrowser(message) && !wantsSearch && settings.web_search_enabled) {
@@ -458,7 +552,14 @@ export async function POST(request: Request) {
     }] : []),
   ];
 
-  if (shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {
+  if (pendingTicketBuild) {
+    conversation.push({
+      role: "system",
+      content: `กำลังทำ workflow สร้างบอทบัตรคอนต่อเนื่อง ข้อมูลที่ตรวจแล้ว: ${JSON.stringify(pendingTicketBuild)}\nแปลงคำตอบล่าสุดของผู้ใช้เป็น input object รวมกับข้อมูลนี้ จากนั้นเรียก run_learned_skill โดยใช้ skill_id=concert-ticket-purchase-assistant และ execution_target=macos_host ถ้าข้อมูลยังขาดก็ยังต้องเรียกสกิลเพื่อให้มันคืน missing_preferences ห้ามเปลี่ยนหัวข้อ`,
+    });
+  }
+
+  if (pendingTicketBuild || shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {
     for (let iteration = 0; iteration < 8; iteration += 1) {
       let planned: OllamaConversationMessage;
       try {
@@ -472,8 +573,10 @@ export async function POST(request: Request) {
         break;
       }
       const calls = planned.tool_calls ?? [];
-      if (!calls.length && iteration === 0 && matchedLearnedSkill) {
-        conversation.push({ role: "system", content: `Intent Router จับคู่คำขอนี้กับสกิลที่ติดตั้งและเปิดใช้งานแล้ว: id=${matchedLearnedSkill.id}, name=${matchedLearnedSkill.name}. ต้องเรียก run_learned_skill โดยแปลงรายละเอียดจากคำขอเป็น input object ที่เหมาะสม ห้ามตอบว่าทำไม่ได้ก่อนลองสกิลนี้` });
+      if (!calls.length && iteration === 0 && (matchedLearnedSkill || pendingTicketBuild)) {
+        const routedSkillId = pendingTicketBuild ? "concert-ticket-purchase-assistant" : matchedLearnedSkill?.id;
+        const routedSkillName = pendingTicketBuild ? "Python Bot Builder — Concert Ticket" : matchedLearnedSkill?.name;
+        conversation.push({ role: "system", content: `Intent Router จับคู่คำขอนี้กับสกิลที่ติดตั้งและเปิดใช้งานแล้ว: id=${routedSkillId}, name=${routedSkillName}. ต้องเรียก run_learned_skill โดยแปลงรายละเอียดจากคำขอเป็น input object ที่เหมาะสม ห้ามตอบว่าทำไม่ได้ก่อนลองสกิลนี้` });
         continue;
       }
       if (!calls.length) break;

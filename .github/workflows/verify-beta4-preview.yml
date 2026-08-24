@@ -1,4 +1,4 @@
-name: Verify Alpha Beta13 Preview
+name: Verify Alpha Beta14 Preview
 
 on:
   push:
@@ -16,6 +16,9 @@ on:
       - 'scripts/apply-beta11-*.mjs'
       - 'scripts/apply-beta12-*.mjs'
       - 'scripts/apply-beta13-*.mjs'
+      - 'scripts/apply-beta14-*.mjs'
+      - 'scripts/install-security-skills.mjs'
+      - 'app/api/train/route.ts'
       - 'app/api/chat/route.ts'
       - 'app/api/chats/**/postprocess/**'
       - 'app/page.tsx'
@@ -23,6 +26,9 @@ on:
       - 'lib/ollama.ts'
       - 'lib/conversation-router.js'
       - 'lib/agent-run-store.ts'
+      - 'lib/agent-tools.ts'
+      - 'lib/types.ts'
+      - 'tool-service/server.mjs'
       - 'app/api/tasks/**'
       - 'start-alpha-v11.command'
       - 'package.json'
@@ -36,6 +42,7 @@ on:
       - 'tests/beta11-full-host-permission.test.mjs'
       - 'tests/beta12-host-access-routing.test.mjs'
       - 'tests/beta13-nonblocking-post-response.test.mjs'
+      - 'tests/beta14-auto-learn-recovery.test.mjs'
       - '.github/workflows/verify-beta4-preview.yml'
   pull_request:
     branches:
@@ -86,6 +93,10 @@ jobs:
         run: node scripts/apply-beta12-host-access-routing.mjs .
       - name: Apply beta13 non-blocking post-response runtime
         run: node scripts/apply-beta13-nonblocking-post-response.mjs .
+      - name: Apply beta14 Auto Learn recovery
+        run: node scripts/apply-beta14-auto-learn-recovery.mjs .
+      - name: Apply beta14 ticket workflow
+        run: node scripts/apply-beta14-ticket-workflow.mjs .
       - name: Syntax check host services and patchers
         run: |
           node --check tool-service/server.mjs
@@ -104,7 +115,10 @@ jobs:
           node --check scripts/apply-beta11-full-host-permission.mjs
           node --check scripts/apply-beta12-host-access-routing.mjs
           node --check scripts/apply-beta13-nonblocking-post-response.mjs
+          node --check scripts/apply-beta14-auto-learn-recovery.mjs
+          node --check scripts/apply-beta14-ticket-workflow.mjs
+          node --check scripts/install-security-skills.mjs
       - name: Focused tests
-        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs tests/beta13-nonblocking-post-response.test.mjs
+        run: node --test tests/security-scope.test.mjs tests/context-routing.test.mjs tests/beta3-agent-runtime.test.mjs tests/beta5-reasoning-runtime.test.mjs tests/beta6-host-fs-runtime.test.mjs tests/beta7-file-workflow-recovery.test.mjs tests/beta9-auto-grow-composer.test.mjs tests/beta10-persistent-search.test.mjs tests/beta10-host-execution.test.mjs tests/beta11-full-host-permission.test.mjs tests/beta12-host-access-routing.test.mjs tests/beta13-nonblocking-post-response.test.mjs tests/beta14-auto-learn-recovery.test.mjs
       - name: Build
         run: npm run build

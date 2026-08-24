@@ -17,6 +17,7 @@ const varsFile = await fs.readFile(resolve(appDir, ".dev.vars"), "utf8").catch((
 const token = String(process.env.ALPHA_TOOL_TOKEN || varsFile.match(/^ALPHA_TOOL_TOKEN=(.+)$/m)?.[1] || "").trim();
 const port = Number(process.env.ALPHA_TOOL_PORT || 4317);
 const outputsDir = resolve(appDir, "outputs", "Alpha Outputs");
+const programCreateDir = resolve(appDir, "Program_Create");
 const workDir = resolve(appDir, "work");
 const skillLabDir = resolve(workDir, "skill-lab");
 const learnedSkillsDir = resolve(outputsDir, "Learned Skills");
@@ -50,6 +51,7 @@ if (token.length < 32) {
 }
 
 await fs.mkdir(outputsDir, { recursive: true });
+await fs.mkdir(programCreateDir, { recursive: true });
 await fs.mkdir(workDir, { recursive: true });
 await fs.mkdir(skillLabDir, { recursive: true });
 await fs.mkdir(learnedSkillsDir, { recursive: true });
@@ -201,7 +203,7 @@ function assertNotBlocked(target) {
 function allowedTarget(destination, settings, approved = false) {
   const mode = settings.file_access_mode || "ask";
   const target = assertNotBlocked(destination);
-  if (pathInside(target, outputsDir)) return target;
+  if (pathInside(target, outputsDir) || pathInside(target, programCreateDir)) return target;
   if (mode === "ask" && approved && (pathInside(target, homedir()) || pathInside(target, "/Volumes"))) return target;
   if (mode === "full_user_files") {
     if (pathInside(target, homedir()) || pathInside(target, "/Volumes")) return target;
@@ -262,9 +264,17 @@ async function createFiles(args, settings, approved = false) {
   const totalBytes = files.reduce((sum, item) => sum + Buffer.byteLength(item.content), 0);
   if (totalBytes > 20 * 1024 * 1024) throw new Error("ขนาดไฟล์รวมเกิน 20MB");
   const project = sanitizeName(args.project_name || (files.length === 1 ? files[0].path.replace(extname(files[0].path), "") : "alpha-project"));
-  const requestedDestination = args.destination && isAbsolute(args.destination)
-    ? resolve(args.destination)
-    : join(outputsDir, project);
+  let requestedDestination;
+  if (args.destination && isAbsolute(args.destination)) {
+    requestedDestination = resolve(args.destination);
+  } else {
+    requestedDestination = join(programCreateDir, project);
+    let suffix = 2;
+    while (await fs.access(requestedDestination).then(() => true).catch(() => false)) {
+      requestedDestination = join(programCreateDir, `${project}-${suffix}`);
+      suffix += 1;
+    }
+  }
   const destination = allowedTarget(requestedDestination, settings, approved);
   await assertNoSymlinkEscape(destination);
   const staging = join(outputsDir, `.staging-${randomUUID()}`);
@@ -300,7 +310,7 @@ async function createFiles(args, settings, approved = false) {
     const created = [];
     for (const item of files) created.push(await hydrateArtifact(registerArtifact(join(destination, item.path), project)));
     if (files.length > 1 || args.zip === true) {
-      const archivePath = join(outputsDir, `${project}.zip`);
+      const archivePath = `${destination}.zip`;
       await fs.rm(archivePath, { force: true });
       await run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", destination, archivePath], { timeout: 30_000 });
       created.push(await hydrateArtifact(registerArtifact(archivePath, project, "archive")));
@@ -614,6 +624,168 @@ async function browserRisk(page) {
   return "";
 }
 
+function classifyFormControl(control) {
+  const haystack = `${control.type || ""} ${control.name || ""} ${control.id || ""} ${control.autocomplete || ""} ${control.label || ""} ${control.placeholder || ""} ${control.aria_label || ""}`.toLowerCase();
+  if (String(control.type).toLowerCase() === "password" || /password|passcode|รหัสผ่าน/.test(haystack)) return "password";
+  if (/one-time|otp|verification.code|รหัสยืนยัน/.test(haystack)) return "otp";
+  if (/user(name)?|login|member|email|อีเมล|ผู้ใช้/.test(haystack)) return "username_or_email";
+  if (/concert|event|show|performance|คอนเสิร์ต|การแสดง/.test(haystack)) return "event";
+  if (/date|day|schedule|round|session|รอบ|วันที่|เวลา/.test(haystack)) return "schedule";
+  if (/zone|section|seat|ที่นั่ง|โซน/.test(haystack)) return "seat_or_zone";
+  if (/quantity|qty|amount|ticket.count|จำนวน/.test(haystack)) return "quantity";
+  if (/address|district|province|postal|zip|ที่อยู่|จังหวัด|ไปรษณีย์/.test(haystack)) return "address";
+  if (/name|ชื่อ/.test(haystack)) return "customer_name";
+  if (/qr|promptpay|payment|ชำระ|พร้อมเพย์/.test(haystack)) return "payment_method";
+  if (/buy|purchase|reserve|book|checkout|ซื้อ|จอง|ดำเนินการต่อ/.test(haystack)) return "purchase_action";
+  return "unknown";
+}
+
+async function inspectBrowserForm(page) {
+  const controls = await page.locator("input, select, textarea, button, [role=button], [role=option]").evaluateAll((nodes) => nodes.slice(0, 300).map((node) => {
+    const element = node;
+    const id = element.getAttribute("id") || "";
+    const name = element.getAttribute("name") || "";
+    const explicit = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent || "" : "";
+    const wrapping = element.closest("label")?.textContent || "";
+    const selector = id ? `#${CSS.escape(id)}`
+      : name ? `${element.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`
+        : element.getAttribute("data-testid") ? `[data-testid="${CSS.escape(element.getAttribute("data-testid"))}"]`
+          : "";
+    const options = element.tagName === "SELECT"
+      ? [...element.options].slice(0, 100).map((option) => ({ text: String(option.textContent || "").trim().slice(0, 160), value: String(option.value || "").slice(0, 160) }))
+      : [];
+    return {
+      tag: element.tagName.toLowerCase(), type: element.getAttribute("type") || "", id, name,
+      autocomplete: element.getAttribute("autocomplete") || "", placeholder: element.getAttribute("placeholder") || "",
+      aria_label: element.getAttribute("aria-label") || "", label: String(explicit || wrapping || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
+      selector, options, disabled: Boolean(element.disabled), required: Boolean(element.required),
+    };
+  }));
+  const mapped = controls.map((control) => ({ ...control, semantic_role: classifyFormControl(control), selector_confidence: control.selector ? (control.id ? 0.98 : 0.9) : 0.35 }));
+  const candidates = {};
+  for (const control of mapped) {
+    if (control.semantic_role === "unknown") continue;
+    (candidates[control.semantic_role] ||= []).push(control);
+  }
+  const ambiguous_roles = Object.entries(candidates).filter(([, items]) => items.length > 1).map(([role]) => role);
+  return { ok: true, url: page.url(), title: await page.title(), controls: mapped, candidates, ambiguous_roles, needs_user_clarification: ambiguous_roles.length > 0 };
+}
+
+async function inspectBrowserEvents(page) {
+  const rawEvents = await page.evaluate(() => {
+    const records = [];
+    const pushRecord = (item) => {
+      if (!item || typeof item !== "object") return;
+      const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers || {};
+      const name = String(item.name || item.headline || "").trim();
+      if (!name) return;
+      records.push({
+        source: "structured_data",
+        id: String(item.identifier?.value || item.identifier || item["@id"] || item.url || name).slice(0, 300),
+        name: name.slice(0, 240),
+        start_date: String(item.startDate || ""),
+        end_date: String(item.endDate || ""),
+        sale_open_at: String(offers.validFrom || item.saleOpenAt || ""),
+        availability: String(offers.availability || ""),
+        event_status: String(item.eventStatus || ""),
+        url: String(item.url || offers.url || location.href),
+        text: "",
+      });
+    };
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const parsed = JSON.parse(script.textContent || "null");
+        const queue = Array.isArray(parsed) ? [...parsed] : [parsed];
+        while (queue.length) {
+          const item = queue.shift();
+          if (!item || typeof item !== "object") continue;
+          const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
+          if (types.some((type) => /event/i.test(String(type || "")))) pushRecord(item);
+          if (Array.isArray(item["@graph"])) queue.push(...item["@graph"]);
+          if (Array.isArray(item.itemListElement)) queue.push(...item.itemListElement.map((entry) => entry?.item || entry));
+        }
+      } catch { /* invalid JSON-LD */ }
+    }
+    const selectors = [
+      "article", "[data-event-id]", "[data-event]", "[class*='event-card']", "[class*='eventCard']",
+      "[class*='concert-card']", "[class*='concertCard']", "a[href*='/event']", "a[href*='/concert']",
+    ].join(",");
+    for (const element of [...document.querySelectorAll(selectors)].slice(0, 500)) {
+      const text = String(element.innerText || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 900);
+      if (text.length < 3) continue;
+      const heading = element.querySelector("h1,h2,h3,h4,[role=heading]");
+      const link = element.matches("a[href]") ? element : element.querySelector("a[href]");
+      const times = [...element.querySelectorAll("time")];
+      const name = String(heading?.textContent || element.getAttribute("aria-label") || text.split(/\s[|·•-]\s/)[0] || text).trim().replace(/\s+/g, " ").slice(0, 240);
+      const url = link ? new URL(link.getAttribute("href"), location.href).toString() : location.href;
+      records.push({
+        source: "page_card",
+        id: String(element.getAttribute("data-event-id") || url || name).slice(0, 300),
+        name,
+        start_date: String(times[0]?.getAttribute("datetime") || ""),
+        end_date: String(times[1]?.getAttribute("datetime") || ""),
+        sale_open_at: String(element.getAttribute("data-sale-open-at") || ""),
+        availability: "",
+        event_status: "",
+        url,
+        text,
+      });
+    }
+    return records;
+  });
+  const now = Date.now();
+  const closedPattern = /sold.?out|sale.?ended|closed|cancelled|canceled|past.?event|หมดเขต|ปิดขาย|ยกเลิก|สิ้นสุดแล้ว|ขายหมด/;
+  const openPattern = /on.?sale|buy.?now|book.?now|available|จำหน่ายแล้ว|เปิดขาย|ซื้อบัตร|จองบัตร/;
+  const upcomingPattern = /coming.?soon|sale.?starts|on.?sale.?soon|เร็ว.?ๆ.?นี้|เตรียมเปิดขาย|เปิดขายวันที่|เริ่มจำหน่าย/;
+  const seen = new Set();
+  const eligible = [];
+  const excluded = [];
+  for (const candidate of rawEvents) {
+    const key = `${String(candidate.url || "").replace(/[?#].*$/, "")}\n${String(candidate.name || "").toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const combined = `${candidate.availability || ""} ${candidate.event_status || ""} ${candidate.text || ""}`.toLowerCase();
+    const startAt = Date.parse(candidate.start_date || "");
+    const endAt = Date.parse(candidate.end_date || "");
+    const saleAt = Date.parse(candidate.sale_open_at || "");
+    const dateExpired = Number.isFinite(endAt) ? endAt < now : Number.isFinite(startAt) ? startAt < now - 24 * 60 * 60 * 1000 : false;
+    const isClosed = dateExpired || closedPattern.test(combined);
+    let sale_status = "open";
+    if (Number.isFinite(saleAt) && saleAt > now) sale_status = "upcoming";
+    else if (upcomingPattern.test(combined) || (Number.isFinite(startAt) && startAt > now && !openPattern.test(combined))) sale_status = "upcoming";
+    if (isClosed) {
+      excluded.push({ ...candidate, exclusion_reason: dateExpired ? "event_ended" : "sale_closed" });
+      continue;
+    }
+    eligible.push({
+      id: candidate.id || candidate.url,
+      name: candidate.name,
+      url: candidate.url,
+      start_date: candidate.start_date,
+      end_date: candidate.end_date,
+      sale_open_at: candidate.sale_open_at,
+      sale_status,
+      source: candidate.source,
+    });
+  }
+  eligible.sort((a, b) => {
+    const aTime = Date.parse(a.start_date || a.sale_open_at || "") || Number.MAX_SAFE_INTEGER;
+    const bTime = Date.parse(b.start_date || b.sale_open_at || "") || Number.MAX_SAFE_INTEGER;
+    return aTime - bTime || a.name.localeCompare(b.name, "th");
+  });
+  return {
+    ok: true,
+    url: page.url(),
+    title: await page.title(),
+    events: eligible.slice(0, 100),
+    excluded_count: excluded.length,
+    needs_user_choice: eligible.length > 0,
+    selection_instruction: eligible.length
+      ? "แสดงชื่อคอนเสิร์ต วันที่แสดง และวันเปิดขายทั้งหมดนี้ให้ผู้ใช้เลือกก่อนสร้างโปรแกรม"
+      : "ไม่พบคอนเสิร์ตที่เปิดขายหรือกำลังจะเปิดจากหน้าปัจจุบัน",
+  };
+}
+
 async function alphaBrowserAction(action, args) {
   const context = await ensureAlphaBrowser();
   let pages = context.pages();
@@ -626,6 +798,10 @@ async function alphaBrowserAction(action, args) {
   if (action === "open") {
     const url = (await assertPublicUrl(args.url)).toString();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  } else if (action === "inspect_form") {
+    return inspectBrowserForm(page);
+  } else if (action === "inspect_events") {
+    return inspectBrowserEvents(page);
   } else if (action === "scroll") {
     await page.mouse.wheel(0, Number(args.y || 700));
   } else if (action === "click") {
@@ -857,6 +1033,9 @@ function validateSkillDefinition(raw, testLimit = 0) {
     return { name: String(item?.name || `test-${index + 1}`).slice(0, 100), input, stdout_contains: stdoutContains, expected_files: expectedFiles };
   });
   if (!tests.length) throw new Error("Skill Lab ต้องมี test case อย่างน้อย 1 รายการ");
+  const executionTargets = [...new Set((Array.isArray(raw?.execution_targets) ? raw.execution_targets : ["sandbox"])
+    .map(String).filter((target) => ["sandbox", "macos_host"].includes(target)))];
+  if (!executionTargets.length) executionTargets.push("sandbox");
   return {
     id: skillId(raw?.id),
     name: String(raw?.name || raw?.id || "Alpha Skill").slice(0, 100),
@@ -866,6 +1045,7 @@ function validateSkillDefinition(raw, testLimit = 0) {
     dependencies,
     trigger_examples: (Array.isArray(raw?.trigger_examples) ? raw.trigger_examples : []).map(String).slice(0, 8),
     test_cases: tests,
+    execution_targets: executionTargets,
   };
 }
 
@@ -884,6 +1064,7 @@ function environmentFingerprint(skill) {
     runtime: skill.runtime,
     entrypoint: skill.entrypoint,
     dependencies: skill.dependencies,
+    execution_targets: skill.execution_targets,
     images: { python: "python:3.13-slim", node: "node:22-alpine" },
     trusted_catalog_version: 2,
   })).digest("hex").slice(0, 16);
@@ -1029,12 +1210,37 @@ async function runSkillSandbox(skill, directory, input, outputDirectory, timeout
   }
 }
 
-async function listFilesRecursive(directory, prefix = "") {
+async function findHostSkillRuntime(runtime) {
+  if (runtime === "node") return process.execPath;
+  for (const candidate of ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]) {
+    if (await fs.access(candidate).then(() => true).catch(() => false)) return candidate;
+  }
+  throw new Error("ไม่พบ Python 3 บน macOS host สำหรับสกิลนี้");
+}
+
+async function runSkillHost(skill, directory, input, outputDirectory, timeout = 90_000, signal) {
+  const runtime = await findHostSkillRuntime(skill.runtime);
+  await fs.mkdir(outputDirectory, { recursive: true });
+  const result = await run(runtime, [skill.entrypoint, JSON.stringify(input)], {
+    cwd: directory,
+    env: { ALPHA_OUTPUT_DIR: outputDirectory, ALPHA_PROGRAM_CREATE_DIR: programCreateDir, ALPHA_EXECUTION_TARGET: "macos_host" },
+    timeout,
+    allowFailure: true,
+    signal,
+  });
+  return { ...result, imageSpec: null };
+}
+
+async function listFilesRecursive(directory, prefix = "", skipTestOutput = false) {
   const found = [];
   for (const entry of await fs.readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    // External APFS/HFS volumes can expose AppleDouble sidecar files (._*).
+    // They are filesystem metadata, never skill source or test output.
+    if (entry.name.startsWith("._") || entry.name === ".DS_Store") continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (skipTestOutput && relativePath === ".test-output") continue;
     const absolute = join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...await listFilesRecursive(absolute, relativePath));
+    if (entry.isDirectory()) found.push(...await listFilesRecursive(absolute, relativePath, skipTestOutput));
     else if (entry.isFile()) found.push({ path: relativePath, absolute });
     if (found.length >= 100) break;
   }
@@ -1049,7 +1255,7 @@ async function installLearnedSkill(skill, candidateDirectory, report, origin = "
   let committed = false;
   try {
     await fs.mkdir(staging, { recursive: true });
-    const files = await listFilesRecursive(candidateDirectory);
+    const files = await listFilesRecursive(candidateDirectory, "", true);
     for (const item of files.filter((item) => !item.path.startsWith(".alpha-skill.") && !item.path.startsWith(".test-output/"))) {
       const target = join(staging, item.path);
       await fs.mkdir(dirname(target), { recursive: true });
@@ -1099,6 +1305,7 @@ async function installLearnedSkill(skill, candidateDirectory, report, origin = "
     } catch { /* first install */ }
     await fs.rename(staging, destination);
     committed = true;
+    await fs.access(join(destination, skill.entrypoint));
 
     const archivePath = join(outputsDir, `${skill.id}.alpha-skill.zip`);
     await fs.rm(archivePath, { force: true });
@@ -1274,7 +1481,7 @@ async function skillAction(idValue, action) {
   throw new Error(`ไม่รองรับ action ${action}`);
 }
 
-async function runLearnedSkill(args, signal) {
+async function runLearnedSkill(args, signal, settings = {}) {
   lastHeavyUse = Date.now();
   const id = skillId(args.skill_id);
   const directory = join(learnedSkillsDir, id);
@@ -1282,12 +1489,21 @@ async function runLearnedSkill(args, signal) {
   const savedManifest = JSON.parse(await fs.readFile(join(directory, "alpha-skill.json"), "utf8"));
   if (savedManifest.enabled === false) throw new Error("สกิลนี้ถูกปิดใช้งานอยู่");
   const skill = validateSkillDefinition(savedManifest);
+  const targets = Array.isArray(savedManifest.execution_targets) ? savedManifest.execution_targets.map(String) : ["sandbox"];
+  const requestedTarget = ["auto", "sandbox", "macos_host"].includes(String(args.execution_target)) ? String(args.execution_target) : "auto";
+  const hostAllowed = targets.includes("macos_host") && settings.file_access_mode === "full_user_files";
+  if (requestedTarget !== "auto" && !targets.includes(requestedTarget)) throw new Error(`สกิลนี้ไม่ได้รับรองการรันบน ${requestedTarget}`);
+  if (requestedTarget === "macos_host" && !hostAllowed) throw new Error("ต้องเปิด Full local access ก่อนรันสกิลบน macOS host");
+  if (requestedTarget === "auto" && !hostAllowed && !targets.includes("sandbox")) throw new Error("สกิลนี้รันบน macOS host เท่านั้น ต้องเปิด Full local access ก่อนใช้งาน");
+  const executionTarget = requestedTarget === "sandbox" ? "sandbox" : hostAllowed ? "macos_host" : "sandbox";
   const input = args.input && typeof args.input === "object" ? args.input : { prompt: String(args.input || "") };
   if (Buffer.byteLength(JSON.stringify(input)) > 32_000) throw new Error("input ของสกิลใหญ่เกิน 32KB");
   const outputDirectory = join(learnedResultsDir, `${id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
   let execution;
   try {
-    execution = await runSkillSandbox(skill, directory, input, outputDirectory, 90_000, signal);
+    execution = executionTarget === "macos_host"
+      ? await runSkillHost(skill, directory, input, outputDirectory, 90_000, signal)
+      : await runSkillSandbox(skill, directory, input, outputDirectory, 90_000, signal);
     const artifactsCreated = [];
     for (const item of await listFilesRecursive(outputDirectory)) artifactsCreated.push(await hydrateArtifact(registerArtifact(item.absolute, id, "skill-output")));
     if (!artifactsCreated.length) await fs.rm(outputDirectory, { recursive: true, force: true });
@@ -1307,13 +1523,14 @@ async function runLearnedSkill(args, signal) {
       usage_count: usageCount,
       success_count: successCount,
       last_run_at: new Date().toISOString(),
+      last_execution_target: executionTarget,
       last_error: succeeded ? "" : execution.stderr.slice(0, 2000),
       generalization_confidence: Number(Math.min(99.9, productionConfidence).toFixed(2)),
       confidence_sample_size: confidenceSamples,
     };
     await fs.writeFile(join(directory, "alpha-skill.json"), JSON.stringify(manifest, null, 2), "utf8");
     await upsertSkillIndex(manifest);
-    return { ok: succeeded, skill: { id: skill.id, name: skill.name }, exit_code: execution.code, stdout: execution.stdout.slice(0, 20_000), stderr: execution.stderr.slice(0, 20_000), artifacts: artifactsCreated };
+    return { ok: succeeded, execution_target: executionTarget, skill: { id: skill.id, name: skill.name }, exit_code: execution.code, stdout: execution.stdout.slice(0, 20_000), stderr: execution.stderr.slice(0, 20_000), artifacts: artifactsCreated };
   } finally {
     await removeSkillImage(execution?.imageSpec);
   }
@@ -1429,14 +1646,19 @@ function topicSimilarity(left, right) {
   return overlap / Math.max(a.size, b.size);
 }
 
-function fallbackAutoLearnTopic(focusContext, history, cycle) {
+function fallbackAutoLearnTopic(focusContext, history, cycle, skillFrequency = 3) {
   const focus = String(focusContext || "ทักษะพื้นฐานของผู้ช่วย AI").replace(/\s+/g, " ").slice(0, 700);
   const closest = history.at(-1);
+  const shouldBuildSkill = skillFrequency > 0 && cycle % skillFrequency === 0;
   return {
-    mode: "research",
-    title: `วิเคราะห์และต่อยอดจากงานล่าสุด — รอบ ${cycle}`,
-    objective: `ศึกษาจุดอ่อน เทคนิคใหม่ และแนวทางที่ตรวจสอบได้จากบริบทงานล่าสุดนี้ โดยเลือกประเด็นที่สร้างพัฒนาการจากรอบก่อนเอง:\n${focus}`,
-    success_criteria: "ได้ความรู้ใหม่ที่อ้างอิงได้ ระบุสิ่งที่ดีขึ้นจากรอบก่อน และมีแนวทางนำไปใช้จริง",
+    mode: shouldBuildSkill ? "skill" : "research",
+    title: shouldBuildSkill ? `สร้างเครื่องมือจากงานล่าสุด — รอบ ${cycle}` : `วิเคราะห์และต่อยอดจากงานล่าสุด — รอบ ${cycle}`,
+    objective: shouldBuildSkill
+      ? `สร้าง learned skill ที่ใช้งานซ้ำได้จริงจากงานล่าสุดนี้ โดยเลือกความสามารถย่อยที่ตรวจผลแบบ deterministic ได้ ใช้ standard library ก่อน และติดตั้งเมื่อผ่าน test เท่านั้น:\n${focus}`
+      : `ศึกษาจุดอ่อน เทคนิคใหม่ และแนวทางที่ตรวจสอบได้จากบริบทงานล่าสุดนี้ โดยเลือกประเด็นที่สร้างพัฒนาการจากรอบก่อนเอง:\n${focus}`,
+    success_criteria: shouldBuildSkill
+      ? "มี entrypoint รับ JSON ผ่าน visible และ hidden tests ติดตั้งใน Skill Registry และเรียกซ้ำได้จริง"
+      : "ได้ความรู้ใหม่ที่อ้างอิงได้ ระบุสิ่งที่ดีขึ้นจากรอบก่อน และมีแนวทางนำไปใช้จริง",
     why_new: "แผนสำรองสร้างจากบริบทงานล่าสุดโดยตรง ไม่ใช้รายการหัวข้อที่เขียนตายตัว",
     progression_from: String(closest?.title || ""),
   };
@@ -1575,7 +1797,10 @@ async function finalizeAutoLearn(reason) {
   const installedSkillFindings = skillFindings.filter((item) => item.success && item.skill);
   const recalledSkillFindings = skillFindings.filter((item) => item.recalled);
   job.report = {
-    summary: `อัลฟ่าเรียน ${job.findings.length} รอบ สำเร็จ ${successful.length} รอบ และสร้างทักษะที่ผ่านการทดสอบ ${skills.length} รายการ`,
+    outcome: installedSkillFindings.length > 0 ? "success" : "no_skill_installed",
+    summary: installedSkillFindings.length > 0
+      ? `อัลฟ่าเรียน ${job.findings.length} รอบ สำเร็จ ${successful.length} รอบ และสร้างทักษะที่ผ่านการทดสอบ ${skills.length} รายการ`
+      : `Auto Learn จบรอบโดยยังไม่มีสกิลติดตั้งสำเร็จ — ไม่นับ session นี้ว่าสำเร็จ (ทำ ${job.findings.length} รอบ)`,
     topics: job.findings.map((item) => ({ title: item.title, mode: item.mode, success: item.success, recalled: Boolean(item.recalled), attempts: Number(item.rounds || 0), why_new: item.why_new, progression_from: item.progression_from, summary: item.summary, failure_reason: item.reason || "", checkpoint: item.checkpoint || null })),
     skills,
     skill_summary: {
@@ -1639,6 +1864,7 @@ async function restoreLastAutoLearn() {
   } catch { /* no completed Auto Learn session yet */ }
 }
 
+// alpha-beta14-auto-learn-recovery-v1
 async function runAutoLearnLoop() {
   if (!autoLearnJob) return;
   const job = autoLearnJob;
@@ -1655,18 +1881,30 @@ async function runAutoLearnLoop() {
       autoLearnAbort = new AbortController();
       let plan;
       const skillBacklog = await readAutoLearnSkillBacklog();
-      const readyBacklogItem = skillBacklog.find((item) => !Number(item.deferred_until || 0) || Number(item.deferred_until) <= Date.now());
+      const readyBacklog = skillBacklog
+        .filter((item) => !Number(item.deferred_until || 0) || Number(item.deferred_until) <= Date.now())
+        .map((item) => ({
+          item,
+          relevance: topicSimilarity(`${item.title || ""} ${item.objective || ""}`, job.focus_context),
+        }))
+        .sort((left, right) => right.relevance - left.relevance || Number(left.item.failure_count || 0) - Number(right.item.failure_count || 0));
+      const readyBacklogItem = !job.focus_context || readyBacklog[0]?.relevance >= 0.08 ? readyBacklog[0]?.item : null;
       if (readyBacklogItem) {
         plan = readyBacklogItem;
         job.skill_backlog_count = skillBacklog.length;
         await recordAutoLearnEvent("skill_backlog", `หยิบสกิลค้างมาทำต่อ: ${plan.title}`, plan.resume_checkpoint ? "โหลด source และผล test จาก checkpoint" : "แปลงความรู้ที่สำเร็จให้เป็นเครื่องมือที่ทดสอบและเรียกใช้ได้", { round: cycle, current_tool: "Training" });
       } else {
         job.skill_backlog_count = 0;
+        const installedInThisRun = job.findings.some((item) => item.mode === "skill" && item.success && item.skill);
+        const effectiveSkillFrequency = installedInThisRun ? job.skill_frequency : 1;
         try {
-          plan = await chooseAutoLearnTopic(job.model, job.focus_context, [...history, ...job.findings], cycle, autoLearnAbort.signal, job.skill_frequency);
+          if (!installedInThisRun && cycle === 1) {
+            await recordAutoLearnEvent("skill_required", "บังคับสร้างสกิลที่ใช้งานได้เป็นเป้าหมายแรก", "Auto Learn จะยังไม่ถือว่าสำเร็จจนกว่าจะมีสกิลที่ผ่าน test และติดตั้งจริง", { round: cycle, current_tool: "Training" });
+          }
+          plan = await chooseAutoLearnTopic(job.model, job.focus_context, [...history, ...job.findings], cycle, autoLearnAbort.signal, effectiveSkillFrequency);
         } catch (error) {
           if (job.stop_requested) break;
-          plan = fallbackAutoLearnTopic(job.focus_context, [...history, ...job.findings], cycle);
+          plan = fallbackAutoLearnTopic(job.focus_context, [...history, ...job.findings], cycle, effectiveSkillFrequency);
           await recordAutoLearnEvent("fallback", "ใช้แผนสำรองจากบริบทจริง", error instanceof Error ? error.message : "โมเดลเลือกหัวข้อไม่ทันเวลา", { round: cycle });
         }
       }
@@ -1682,7 +1920,7 @@ async function runAutoLearnLoop() {
       await recordAutoLearnEvent("topic", `รอบ ${cycle}: ${plan.title}`, plan.why_new, { round: cycle, stage: job.stage });
       let outcome = null;
       let retry = 0;
-      const retryLimit = job.retry_limit === 0 ? Infinity : job.retry_limit;
+      const retryFailures = new Map();
       while (!job.stop_requested && (!job.deadline || Date.now() < job.deadline) && !outcome) {
         job.retry_requested = false;
         job.skip_requested = false;
@@ -1701,11 +1939,30 @@ async function runAutoLearnLoop() {
           }
           retry += 1;
           const reason = error instanceof Error ? error.message : "รอบการเรียนไม่สำเร็จ";
-          if (job.retry_requested || retry <= retryLimit) {
+          const retrySignature = reason.replace(/\b\d+\b/g, "#").slice(0, 1000);
+          const sameFailureCount = (retryFailures.get(retrySignature) || 0) + 1;
+          retryFailures.set(retrySignature, sameFailureCount);
+          // runTrainingRequest already performs bounded repair attempts. Restarting the
+          // entire pipeline here repeats topic selection, planning and model work and
+          // was the source of hour-long Auto Learn loops. Only an explicit user Retry
+          // is allowed to restart the pipeline.
+          if (job.retry_requested) {
             await recordAutoLearnEvent("retry", `Retry ${retry}: ${plan.title}`, reason, { round: cycle, attempt: retry });
             continue;
           }
-          outcome = { success: false, summary: reason, confidence: 0, rounds: retry, skill: null, sources: [], cleanup: "ยกเลิก request/process ที่ค้างและล้าง environment แล้ว" };
+          const repeated = sameFailureCount > 1;
+          outcome = {
+            success: false,
+            summary: repeated ? `หยุด retry เพราะ pipeline ผิดแบบเดิมซ้ำ ${sameFailureCount} ครั้ง: ${reason}` : reason,
+            reason,
+            confidence: 0,
+            rounds: retry,
+            skill: null,
+            sources: [],
+            checkpoint: null,
+            repeated_pipeline_failure: repeated,
+            cleanup: "ยกเลิก request/process ที่ค้างและล้าง environment แล้ว",
+          };
         }
       }
       if (job.stop_requested) {
@@ -1735,6 +1992,24 @@ async function runAutoLearnLoop() {
           const stalled = outcome.checkpoint?.stalled === true;
           await upsertAutoLearnSkillBacklog({ ...plan, resume_checkpoint: outcome.checkpoint, backlog_id: plan.backlog_id || outcome.checkpoint?.skill?.id, deferred_until: stalled ? Date.now() + 10 * 60_000 : 0, why_new: `${plan.why_new || ""} · แก้ต่อจากผล test จริงจนกว่าจะผ่าน` });
           await recordAutoLearnEvent(stalled ? "skill_deferred" : "skill_requeued", stalled ? `พักสกิลที่วนซ้ำไว้ 10 นาที: ${plan.title}` : `เก็บสกิลไว้แก้ต่อรอบหน้า: ${plan.title}`, stalled ? "ลองหลายกลยุทธ์แล้วยังได้ failure เดิม จึงไปพัฒนางานอื่นก่อนและเก็บ checkpoint ไว้" : `ผ่านไปแล้ว ${Number(outcome.rounds || 0)} attempts และยังไม่ติดตั้ง`, { round: cycle, current_tool: "Training" });
+        } else {
+          const failureCount = Math.max(1, Number(plan.failure_count || 0) + 1);
+          const deferMinutes = Math.min(360, 5 * (2 ** Math.min(6, failureCount - 1)));
+          const lastError = String(outcome.reason || outcome.summary || "pipeline error").slice(0, 2000);
+          await upsertAutoLearnSkillBacklog({
+            ...plan,
+            backlog_id: plan.backlog_id,
+            failure_count: failureCount,
+            last_error: lastError,
+            deferred_until: Date.now() + deferMinutes * 60_000,
+            why_new: `${plan.why_new || ""} · พักหลัง pipeline ล้มก่อนสร้าง checkpoint เพื่อไม่วนงานเดิม`,
+          });
+          await recordAutoLearnEvent(
+            "skill_pipeline_deferred",
+            `พักงานที่ pipeline ล้ม ${deferMinutes} นาที แล้วไปเรียนหัวข้ออื่น: ${plan.title}`,
+            lastError,
+            { round: cycle, current_tool: "Training", failure_count: failureCount },
+          );
         }
       } else if (outcome.success) {
         const conversion = await upsertAutoLearnSkillBacklog({
@@ -1852,7 +2127,7 @@ async function executeTool(name, args, settings, approved = false, signal) {
   if (name === "skill_lab_test") return skillLabTest(args, signal);
   if (name === "skill_lab_cleanup") return cleanupSkillLabRun(String(args.run_id || ""));
   if (name === "list_learned_skills") return listLearnedSkills({ status: "enabled", limit: 100 });
-  if (name === "run_learned_skill") return runLearnedSkill(args, signal);
+  if (name === "run_learned_skill") return runLearnedSkill(args, signal, settings);
   throw new Error(`ไม่รู้จักเครื่องมือ ${name}`);
 }
 
@@ -1981,7 +2256,7 @@ const server = http.createServer(async (request, response) => {
     if (skillMatch && request.method === "GET" && !skillMatch[2]) return json(response, 200, { ok: true, skill: await readSkill(decodeURIComponent(skillMatch[1])) });
     if (skillMatch && request.method === "PATCH" && !skillMatch[2]) return json(response, 200, await patchLearnedSkill(decodeURIComponent(skillMatch[1]), await readJson(request, 64 * 1024)));
     if (skillMatch && request.method === "DELETE" && !skillMatch[2]) return json(response, 200, await deleteLearnedSkill(decodeURIComponent(skillMatch[1])));
-    if (skillMatch && request.method === "POST" && skillMatch[2] === "run") return json(response, 200, await runLearnedSkill({ skill_id: decodeURIComponent(skillMatch[1]), ...(await readJson(request, 64 * 1024)) }, requestAbort.signal));
+    if (skillMatch && request.method === "POST" && skillMatch[2] === "run") return json(response, 200, await runLearnedSkill({ skill_id: decodeURIComponent(skillMatch[1]), ...(await readJson(request, 64 * 1024)) }, requestAbort.signal, {}));
     if (skillMatch && request.method === "POST" && ["test", "reverify", "export", "open"].includes(skillMatch[2])) return json(response, 200, await skillAction(decodeURIComponent(skillMatch[1]), skillMatch[2]));
     if (skillMatch && request.method === "POST" && skillMatch[2] === "retrain") {
       const skill = await readSkill(decodeURIComponent(skillMatch[1]));

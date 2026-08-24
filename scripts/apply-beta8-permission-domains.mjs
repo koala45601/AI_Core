@@ -14,11 +14,14 @@ async function patchToolService() {
   let source = await fs.readFile(path, "utf8");
   if (source.includes(marker)) return;
 
+  const outputAuthority = source.includes("pathInside(target, outputsDir) || pathInside(target, programCreateDir)")
+    ? "  if (pathInside(target, outputsDir) || pathInside(target, programCreateDir)) return target;"
+    : "  if (pathInside(target, outputsDir)) return target;";
   const allowedNeedle = [
     "function allowedTarget(destination, settings, approved = false) {",
     "  const mode = settings.file_access_mode || \"ask\";",
     "  const target = assertNotBlocked(destination);",
-    "  if (pathInside(target, outputsDir)) return target;",
+    outputAuthority,
   ].join("\n");
 
   const allowedReplacement = [
@@ -36,7 +39,7 @@ async function patchToolService() {
     "function allowedTarget(destination, settings, approved = false) {",
     "  const mode = settings.file_access_mode || \"ask\";",
     "  const target = assertNotBlocked(destination);",
-    "  if (pathInside(target, outputsDir)) return target;",
+    outputAuthority,
     "  if (pathInside(target, appDir)) {",
     "    if (workspacePathSensitive(target)) throw new Error(\"ตำแหน่งนี้เป็นไฟล์ลับหรือ metadata ภายใน workspace ของ Alpha\");",
     "    return target;",

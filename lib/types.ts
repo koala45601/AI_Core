@@ -77,6 +77,7 @@ export interface SkillSummary {
   enabled: boolean;
   origin: SkillOrigin;
   runtime: "python" | "node";
+  execution_targets?: Array<"sandbox" | "macos_host">;
   dependencies: string[];
   trigger_examples: string[];
   installed_at: string;
@@ -92,6 +93,7 @@ export interface SkillSummary {
   usage_count: number;
   success_count: number;
   last_run_at: string;
+  last_execution_target?: "sandbox" | "macos_host";
   last_error: string;
 }
 

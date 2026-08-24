@@ -104,10 +104,11 @@ replaceOnce(
   "instant run state",
 );
 
-const recentOld = '  const recentStored = await listRecentChatMessages(chat.id, 12);\n'
-  + '  const recentMessagesAll = body.chat_id ? recentStored.map(({ role, content }) => ({ role, content })) : (legacyMessages.length ? legacyMessages : recentStored.map(({ role, content }) => ({ role, content })));';
+const beta14TicketStatePresent = source.includes("const latestTicketWorkflow =");
+const recentMessagesLine = '  const recentMessagesAll = body.chat_id ? recentStored.map(({ role, content }) => ({ role, content })) : (legacyMessages.length ? legacyMessages : recentStored.map(({ role, content }) => ({ role, content })));';
+const recentOld = beta14TicketStatePresent ? recentMessagesLine : '  const recentStored = await listRecentChatMessages(chat.id, 12);\n' + recentMessagesLine;
 const recentNew = [
-  '  const recentStored = await listRecentChatMessages(chat.id, 12);',
+  ...(beta14TicketStatePresent ? [] : ['  const recentStored = await listRecentChatMessages(chat.id, 12);']),
   '  if (artifactLocationQuestion(message)) {',
   '    const recentArtifacts = [...recentStored].reverse().flatMap((item) => item.role === "assistant" ? (item.metadata.artifacts ?? []) : []);',
   '    if (recentArtifacts.length) {',
@@ -164,10 +165,16 @@ replaceOnce(
   "initial local prompt",
 );
 
+const beta14TicketPlanner = source.includes("if (pendingTicketBuild || shouldPlanTools");
 replaceOnce(
-  '  if (shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {',
-  '  if (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {\n'
-    + '    await updateAgentRun(runId, { status: "running", stage: "planning", label: "กำลังวางแผน workflow ให้จบทั้งงาน" });',
+  beta14TicketPlanner
+    ? '  if (pendingTicketBuild || shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {'
+    : '  if (shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {',
+  beta14TicketPlanner
+    ? '  if (pendingTicketBuild || (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills))) {\n'
+      + '    await updateAgentRun(runId, { status: "running", stage: "planning", label: "กำลังวางแผน workflow ให้จบทั้งงาน" });'
+    : '  if (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {\n'
+      + '    await updateAgentRun(runId, { status: "running", stage: "planning", label: "กำลังวางแผน workflow ให้จบทั้งงาน" });',
   "tool planner state",
 );
 

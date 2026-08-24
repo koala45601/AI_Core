@@ -17,13 +17,19 @@ function replaceOnce(needle, replacement, label) {
   source = source.replace(needle, replacement);
 }
 
+const beta14TicketPlanner = source.includes("if (pendingTicketBuild || (!localPath && shouldPlanTools");
+const plannerState = (beta14TicketPlanner
+  ? '  if (pendingTicketBuild || (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills))) {'
+  : '  if (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {')
+  + '\n    await updateAgentRun(runId, { status: "running", stage: "planning", label: "กำลังวางแผน workflow ให้จบทั้งงาน" });';
 replaceOnce(
-  '  if (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {\n'
-    + '    await updateAgentRun(runId, { status: "running", stage: "planning", label: "กำลังวางแผน workflow ให้จบทั้งงาน" });',
+  plannerState,
   '  // ' + marker + '\n'
     + '  const workflowRequiresArtifact = /(สร้าง|ทำ|เขียน|บันทึก|save|create|build).{0,45}(ไฟล์|โปรแกรม|โค้ด|project|script|\\\\.py|\\\\.js|\\\\.mjs|\\\\.sh|\\\\.html|\\\\.json)/i.test(message);\n'
     + '  let workflowCreatedArtifact = false;\n\n'
-    + '  if (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {\n'
+    + (beta14TicketPlanner
+      ? '  if (pendingTicketBuild || (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills))) {\n'
+      : '  if (!localPath && shouldPlanTools(message, directRead, browserHandled, learnedSkills)) {\n')
     + '    await updateAgentRun(runId, { status: "running", stage: "planning", label: "กำลังวางแผน workflow ให้จบทั้งงาน" });',
   "workflow requirement state",
 );

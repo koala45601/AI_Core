@@ -24,6 +24,9 @@ export interface MessageMetadata {
   tool_events?: Array<Record<string, unknown>>;
   learned_skill_id?: string;
   error?: boolean;
+  inspected_url?: string;
+  pending_ticket_events?: Array<Record<string, unknown>>;
+  pending_ticket_build?: Record<string, unknown>;
 }
 
 export interface StoredChatMessage {

@@ -1,5 +1,17 @@
 # Alpha changelog
 
+## 1.1.0-beta.14 — 2026-08-24
+
+- Fixed the adaptive-reasoning runtime patch that referenced `deepWorker` before initialization and prevented every autonomous skill build.
+- Added repeated-pipeline and infrastructure-failure circuit breakers so unlimited Auto Learn moves to another topic instead of retrying one broken method forever.
+- Deferred failed backlog items with bounded exponential backoff while preserving their checkpoints and error history.
+- Refreshes the Skills registry as soon as Auto Learn installs a verified skill.
+- Added three verified operational skills: authorized API traffic analysis, macOS/system capability mapping and cybersecurity risk prioritization.
+- Added dual-runtime learned skills that can run in Docker or directly on macOS when Full local access is enabled, with the execution target recorded in each result.
+- Added schema-constrained skill planning/building, resilient JSON extraction, bounded non-thinking workers, and actual stdout diagnostics so a failed attempt can repair the candidate instead of repeating it blindly.
+- Added verified Web API contract discovery and a macOS-host Python/Playwright concert-ticket project builder that supports reserved seating and standing tickets, creates unique projects under `Program_Create`, respects queues, and hands control to the user for login, CAPTCHA, OTP, and payment.
+- Fixed the preview launcher so Beta13, Auto Learn recovery, and the ticket workflow are applied in order; the five core Beta14 skills are installed only when missing rather than retested on every start.
+
 ## 1.1.0-beta.13 — 2026-08-24
 
 - Fixed the 30–60 second composer lock after visible answer completion. The chat stream now finishes immediately after the assistant message and Artifact state are persisted.

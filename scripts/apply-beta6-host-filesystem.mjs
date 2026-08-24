@@ -188,12 +188,15 @@ async function patchChatRoute() {
   ].join("\n");
   source = source.replace(helperNeedle, helpers + helperNeedle);
 
-  const recentNeedle = `  const recentStored = await listRecentChatMessages(chat.id, 12);
+  const beta14TicketStatePresent = source.includes("const latestTicketWorkflow =");
+  const recentNeedle = beta14TicketStatePresent
+    ? `  if (artifactLocationQuestion(message)) {`
+    : `  const recentStored = await listRecentChatMessages(chat.id, 12);
   if (artifactLocationQuestion(message)) {`;
   if (!source.includes(recentNeedle)) throw new Error("หา beta4 recentStored block ไม่พบ");
 
   const direct = [
-    `  const recentStored = await listRecentChatMessages(chat.id, 12);`,
+    ...(beta14TicketStatePresent ? [] : [`  const recentStored = await listRecentChatMessages(chat.id, 12);`]),
     `  if (hostPathVerificationQuestion(message)) {`,
     `    const explicitPath = extractAbsoluteHostPath(message);`,
     `    const recentArtifactPath = [...recentStored].reverse().flatMap((item) => item.role === "assistant" ? (item.metadata.artifacts ?? []) : []).map((item) => item.path).find(Boolean) || "";`,

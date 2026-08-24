@@ -30,6 +30,23 @@ function classifySkillFailure(reason: string): "infrastructure" | "candidate_tim
   return "candidate_behavior";
 }
 
+function repairEntrypointContract(
+  files: Array<{ path: string; content: string }>,
+  skill: SkillDefinition,
+): { files: Array<{ path: string; content: string }>; repairs: string[] } {
+  const repairs: string[] = [];
+  const repaired = files.map((file) => {
+    if (file.path !== skill.entrypoint || skill.runtime !== "python") return file;
+    const next = file.content.replace(
+      /if\s+__name__\s*==\s*(["'])main\1\s*:/g,
+      'if __name__ == "__main__":',
+    );
+    if (next !== file.content) repairs.push("แก้ Python main guard จากชื่อ main ที่ไม่มี underscore ให้เป็น __main__");
+    return { ...file, content: next };
+  });
+  return { files: repaired, repairs };
+}
+
 interface TrainingInput {
   mode?: "skill" | "research";
   topic?: unknown;
@@ -97,13 +114,17 @@ async function runSkillLab(
   let evidence: SearchResult[] = [];
   controller.enqueue(event("status", { label: "กำลังออกแบบเกณฑ์ทดสอบของ Skill Lab", round: 0 }));
 
-  if (settings.web_search_enabled) {
+  const needsExternalEvidence = /(?:official|ล่าสุด|framework|library|dependency|package|api|protocol|browser|เว็บไซต์|เว็บ|เครื่องมือภายนอก|เวอร์ชัน)/i.test(`${objective}\n${successCriteria}`)
+    && !/(?:standard library|stdlib|ไม่ใช้ network|offline|ออฟไลน์)/i.test(`${objective}\n${successCriteria}`);
+  if (settings.web_search_enabled && needsExternalEvidence) {
     try {
       controller.enqueue(event("status", { label: "กำลังค้นเอกสารเครื่องมือที่เชื่อถือได้", round: 0 }));
       evidence = await searchWeb(`${objective} official documentation open source tool`, settings);
     } catch (error) {
       controller.enqueue(event("notice", { message: `ค้นเอกสารไม่ได้ จึงออกแบบจากความรู้ในโมเดล: ${error instanceof Error ? error.message : "unknown error"}` }));
     }
+  } else {
+    controller.enqueue(event("notice", { message: "เป้าหมายนี้เป็นงาน deterministic ที่ใช้ standard library จึงข้าม web research และเริ่มสร้างสกิลทันที" }));
   }
 
   const resumeCheckpoint = rawResumeCheckpoint && typeof rawResumeCheckpoint === "object" ? rawResumeCheckpoint as Record<string, unknown> : null;
@@ -156,6 +177,7 @@ async function runSkillLab(
   let lastCheckpoint: Record<string, unknown> | null = resumeCheckpoint;
   let infrastructureRetries = 0;
   const infrastructureRetryLimit = settings.auto_learn_retry_limit === 0 ? Infinity : Math.max(1, settings.auto_learn_retry_limit);
+  const infrastructureFailureCounts = new Map<string, number>();
   let retryFiles: Array<{ path: string; content: string }> | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     controller.enqueue(event("status", { label: retryFiles ? `Attempt ${attempt}: รีเซ็ตระบบทดสอบแล้ว ใช้ source เดิมทดสอบซ้ำ` : `Attempt ${attempt}: กำลังสร้างสกิลใน environment แยก`, round: attempt }));
@@ -175,14 +197,22 @@ async function runSkillLab(
       controller.enqueue(event("attempt", { round: attempt, passed: false, query: `Attempt ${attempt}`, confidence: 0, gaps: [previousFailure], reason: previousFailure }));
       continue;
     }
-    previousFiles = build.files;
+    const contractRepair = repairEntrypointContract(build.files, plan.skill);
+    previousFiles = contractRepair.files;
+    if (contractRepair.repairs.length) {
+      controller.enqueue(event("contract_repair", {
+        round: attempt,
+        label: "ซ่อม entrypoint contract ที่พิสูจน์ได้ก่อนทดสอบ",
+        repairs: contractRepair.repairs,
+      }));
+    }
 
     controller.enqueue(event("status", { label: `Attempt ${attempt}: กำลังรัน test ใน Docker แบบปิดเครือข่าย`, round: attempt }));
     let result: Record<string, unknown>;
     try {
       result = await executeTool("skill_lab_test", {
         goal_id: plan.skill.id, objective, success_criteria: successCriteria,
-        run_id: runId || `skill-lab-${plan.skill.id}`, attempt, skill: plan.skill, files: build.files, hidden_test_cases: hiddenTests,
+        run_id: runId || `skill-lab-${plan.skill.id}`, attempt, skill: plan.skill, files: previousFiles, hidden_test_cases: hiddenTests,
         verification_scope: `${plan.skill.test_cases.length} visible fixtures + ${hiddenTests.length} hidden fixtures สำหรับ ${plan.skill.description}`,
         test_case_limit: settings.skill_test_case_limit,
         origin, cleanup_run: attempt === maxAttempts,
@@ -200,9 +230,20 @@ async function runSkillLab(
     lastConfidence = confidence;
     if (failureKind === "infrastructure") {
       infrastructureRetries += 1;
-      controller.enqueue(event("infrastructure_repair", { round: attempt, label: "ตรวจพบว่าระบบทดสอบเสีย—ไม่นับเป็น attempt ของสกิล", reason, retry: infrastructureRetries }));
+      const infrastructureSignature = reason.replace(/\b\d+\b/g, "#").slice(0, 1000);
+      const sameInfrastructureFailures = (infrastructureFailureCounts.get(infrastructureSignature) || 0) + 1;
+      infrastructureFailureCounts.set(infrastructureSignature, sameInfrastructureFailures);
+      controller.enqueue(event("infrastructure_repair", {
+        round: attempt,
+        label: sameInfrastructureFailures >= 3
+          ? "ระบบทดสอบผิดแบบเดิมซ้ำ—หยุด retry วิธีเดิมและเก็บ checkpoint"
+          : "ตรวจพบว่าระบบทดสอบเสีย—ซ่อม environment แล้วทดสอบ source เดิมซ้ำ",
+        reason,
+        retry: infrastructureRetries,
+        repeated: sameInfrastructureFailures,
+      }));
       await executeTool("skill_lab_cleanup", { run_id: runId || `skill-lab-${plan.skill.id}` }, settings, signal).catch(() => ({}));
-      if (infrastructureRetries <= infrastructureRetryLimit) {
+      if (infrastructureRetries <= infrastructureRetryLimit && sameInfrastructureFailures < 3) {
         retryFiles = previousFiles;
         attempt -= 1;
         continue;
@@ -211,9 +252,15 @@ async function runSkillLab(
     completedAttempts = Math.max(completedAttempts, attempt);
     const failedChecks = tests.filter((test) => test && typeof test === "object" && (test as Record<string, unknown>).passed !== true).map((test) => {
       const record = test as Record<string, unknown>;
-      return { name: record.name, exit_code: record.exit_code, checks: record.checks, stderr: String(record.stderr || "").slice(0, 500) };
+      return {
+        name: record.name,
+        exit_code: record.exit_code,
+        checks: record.checks,
+        stdout: String(record.stdout || "").slice(0, 2000),
+        stderr: String(record.stderr || "").slice(0, 1000),
+      };
     });
-    const signatureChecks = failedChecks.map((item) => ({ name: item.name, exit_code: item.exit_code, checks: item.checks }));
+    const signatureChecks = failedChecks.map((item) => ({ name: item.name, exit_code: item.exit_code, checks: item.checks, stdout: item.stdout }));
     const failureSignature = result.passed ? "" : `${failureKind}:${reason}:${JSON.stringify(signatureChecks)}`.slice(0, 3000);
     const repeatedCount = failureSignature ? (failureCounts.get(failureSignature) || 0) + 1 : 0;
     if (failureSignature) failureCounts.set(failureSignature, repeatedCount);

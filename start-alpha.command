@@ -128,7 +128,7 @@ else
 fi
 
 ALPHA_RUNTIME_NEEDS_INSTALL=false
-for ALPHA_MANIFEST in package.json package-lock.json pnpm-lock.yaml; do
+for ALPHA_MANIFEST in package.json package-lock.json pnpm-lock.yaml pnpm-workspace.yaml; do
   if [[ -f "$ALPHA_DIR/$ALPHA_MANIFEST" ]] && ! cmp -s "$ALPHA_DIR/$ALPHA_MANIFEST" "$ALPHA_SHARED_NODE_RUNTIME/$ALPHA_MANIFEST"; then
     ALPHA_RUNTIME_NEEDS_INSTALL=true
   fi
@@ -140,11 +140,11 @@ fi
 if [[ "$ALPHA_RUNTIME_NEEDS_INSTALL" == true ]]; then
   echo "กำลังเตรียม Node dependency runtime กลางบน Mac..."
   mkdir -p "$ALPHA_SHARED_NODE_RUNTIME"
-  for ALPHA_MANIFEST in package.json package-lock.json pnpm-lock.yaml; do
+  for ALPHA_MANIFEST in package.json package-lock.json pnpm-lock.yaml pnpm-workspace.yaml; do
     [[ -f "$ALPHA_DIR/$ALPHA_MANIFEST" ]] && cp "$ALPHA_DIR/$ALPHA_MANIFEST" "$ALPHA_SHARED_NODE_RUNTIME/$ALPHA_MANIFEST"
   done
   if [[ "$ALPHA_PACKAGE_RUNNER_NAME" == "pnpm" ]]; then
-    (cd "$ALPHA_SHARED_NODE_RUNTIME" && "${ALPHA_PACKAGE_RUNNER[@]}" install --frozen-lockfile)
+    (cd "$ALPHA_SHARED_NODE_RUNTIME" && CI=true "${ALPHA_PACKAGE_RUNNER[@]}" install --frozen-lockfile)
   else
     (cd "$ALPHA_SHARED_NODE_RUNTIME" && "${ALPHA_PACKAGE_RUNNER[@]}" install)
   fi

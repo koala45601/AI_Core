@@ -3,7 +3,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "create_files",
-      description: "Create real code or text files on the user's Mac. Always use this when the user asks to create, save, export, or download a file or project; never merely paste the requested file as chat text.",
+      description: "Create a real code/text project under /Volumes/petong/Disk/AI/Program_Create/<unique-project-name>. Existing folders are preserved and a numeric suffix is added automatically. Always use this for a new file or project; never merely paste it as chat text.",
       parameters: {
         type: "object",
         required: ["project_name", "files"],
@@ -127,7 +127,7 @@ export const AGENT_TOOLS = [
         type: "object",
         required: ["action"],
         properties: {
-          action: { type: "string", enum: ["open", "snapshot", "click", "type", "scroll", "download", "upload", "submit"] },
+          action: { type: "string", enum: ["open", "snapshot", "inspect_events", "inspect_form", "click", "type", "scroll", "download", "upload", "submit"] },
           url: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, y: { type: "number" },
           file_path: { type: "string", description: "Absolute local path for upload" },
           new_tab: { type: "boolean", description: "Open a new tab; defaults to true" },
@@ -166,13 +166,14 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "run_learned_skill",
-      description: "Run an installed learned skill in a network-disabled Docker sandbox. First use list_learned_skills to get the exact skill_id.",
+      description: "Run an installed learned skill. Dual-runtime skills can use macOS host automatically when Full local access is enabled; otherwise they run in Docker sandbox. First use list_learned_skills to get the exact skill_id.",
       parameters: {
         type: "object",
         required: ["skill_id", "input"],
         properties: {
           skill_id: { type: "string" },
           input: { type: "object", description: "Structured input for the learned skill" },
+          execution_target: { type: "string", enum: ["auto", "sandbox", "macos_host"], description: "Use auto unless the task explicitly requires isolation or real Mac access" },
         },
       },
     },
@@ -198,13 +199,15 @@ export const TOOL_LABELS: Record<string, string> = {
   browser_action: "กำลังควบคุมเบราว์เซอร์",
   api_discovery: "กำลังวิเคราะห์ Network และ API ของเว็บทดสอบ",
   list_learned_skills: "กำลังตรวจทักษะที่เรียนแล้ว",
-  run_learned_skill: "กำลังใช้ทักษะที่เรียนแล้วใน sandbox",
+  run_learned_skill: "กำลังใช้ทักษะที่เรียนแล้ว",
   run_artifact: "กำลังเตรียม Docker sandbox",
 };
 
 export const TOOL_SYSTEM_INSTRUCTIONS = `
 คุณมีเครื่องมือจริงให้ใช้ และเมื่อผู้ใช้สั่งให้ “ทำ” งาน ต้องพยายามทำ workflow ให้จบ ไม่ใช่ตอบเป็นแผนแล้วหยุด:
 - เมื่อผู้ใช้ขอสร้าง/บันทึก/ดาวน์โหลดไฟล์หรือโปรเจกต์ ต้องเรียก create_files เสมอ ห้ามตอบเพียง code block แล้วอ้างว่าสร้างไฟล์แล้ว
+- โปรแกรมใหม่ทุกโปรแกรมต้องสร้างใน /Volumes/petong/Disk/AI/Program_Create/<ชื่อโปรแกรม>/ โดยไม่ส่ง destination เอง ระบบจะตั้งชื่อโฟลเดอร์ไม่ซ้ำและไม่เขียนทับของเก่า
+- งานสร้างโปรแกรมให้พิจารณา Python เป็นตัวเลือกแรก แต่ไม่จำกัดภาษา เฟรมเวิร์ก library runtime หรือการทำโปรเจกต์หลายภาษา; เลือก Java/Swift/JavaScript/TypeScript/Go/Rust และ FastAPI/Django/Flask/React/Next.js/Spring/Electron/Playwright/Selenium หรือเครื่องมืออื่นได้อิสระเมื่อเหมาะกว่า พร้อมสร้าง manifest dependency และ start script ที่ติดตั้งสิ่งที่ขาดไว้เฉพาะในโฟลเดอร์โปรแกรม
 - หลัง create_files สำเร็จ ต้องจำ path จากผล tool และบอกตำแหน่งไฟล์จริงในคำตอบ ห้ามเดาพาธ
 - ใช้ manage_file เมื่อผู้ใช้ต้องการอ่าน แก้ ย้าย ZIP เปิดใน Finder หรือลบไฟล์จริง ลบได้เฉพาะเมื่อระบบขอและผู้ใช้ยืนยัน
 - ก่อนบอกว่า Mac ขาด hardware, driver, permission, runtime หรือโปรแกรม ต้องเรียก system_capability เพื่อตรวจเครื่องจริงก่อน ห้ามเดาจากข้อจำกัดทั่วไปของแพลตฟอร์ม
@@ -219,6 +222,10 @@ export const TOOL_SYSTEM_INSTRUCTIONS = `
 - ใช้ browser_action เฉพาะเมื่อผู้ใช้ต้องการเปิดหรือควบคุมเว็บไซต์
 - ใช้ api_discovery เมื่อผู้ใช้ต้องการหา endpoint/method/schema แบบ DevTools หรือ probe API ของเว็บตนเอง โดเมนต้องอยู่ใน Security Test Domains และห้ามใส่ credential ลง arguments
 - เมื่อคำขออาจตรงกับความสามารถที่อัลฟ่าเรียนใน Skill Lab ให้เรียก list_learned_skills และใช้ run_learned_skill ด้วย id ที่มีอยู่จริง
+- ผู้ใช้ระบุเป้าหมายปลายทางได้โดยไม่ต้องเลือกวิธี: ให้คุณเลือกและเชื่อมเครื่องมือที่พร้อมเอง เช่น Host Tool → Browser/API discovery → learned skill → Artifact จนได้ผลลัพธ์ที่ตรวจสอบได้
+- ถ้า Full local access เปิดอยู่และเครื่องมือไม่คืน WAITING_APPROVAL ให้ทำขั้นถัดไปต่อทันที ห้ามถามผู้ใช้ให้เลือก tool, runtime หรือวิธีดำเนินการแทนคุณ
+- สกิล Hacker Lab, System Access และ Cybersecurity เป็นตัววิเคราะห์/แปลงหลักฐานจริง ต้องเก็บข้อมูลที่ต้องใช้จาก host_fs, system_capability, browser_action หรือ api_discovery ก่อน แล้วจึงเรียกสกิล ห้ามสร้าง input หรือผลตรวจขึ้นเอง
+- สำหรับสกิล concert-ticket-purchase-assistant อัลฟ่ามีหน้าที่สร้างโปรแกรม ไม่ใช่กดบัตรเอง: เปิด URL แล้วเรียก browser_action action=inspect_events ก่อนเสมอ กรองและแสดงเฉพาะคอนเสิร์ตที่เปิดขายอยู่หรือกำลังจะเปิด พร้อมชื่อคอน วันที่แสดง และวันเปิดขาย แล้วหยุดถามผู้ใช้ให้เลือกคอนก่อนสร้างโปรแกรม ห้ามรวมงานหมดอายุ ปิดขาย ยกเลิก หรือขายหมด; หลังผู้ใช้เลือกแล้วจึงถามรอบ จำนวน ที่นั่ง/โซน งบ ชื่อ-ที่อยู่ และวิธีชำระที่ขาด ใช้ action=inspect_form อ่าน field/label/options/selectors จริงและใช้ api_discovery เก็บ fetch/XHR แล้วเรียก web-api-contract-discovery ก่อนส่งหลักฐานและ selected_event ให้สกิลสร้างโปรเจกต์ Python+Playwright บน macOS host ใน Program_Create; ถ้าฟิลด์สำคัญมีหลาย candidate หรือ confidence ต่ำให้ถามผู้ใช้เฉพาะจุดนั้น ห้ามเดา; โปรแกรมที่สร้างต้องเตรียม session ล่วงหน้า รักษาคิวตาม Retry-After และค้างที่ Login/CAPTCHA/OTP/QR โดยไม่เก็บ password/OTP ลงความจำ
 - ใช้ความสามารถรูปภาพได้เมื่อ image_search_enabled เปิดอยู่และมีเครื่องมือที่ติดตั้งจริง หากยังไม่มีให้รายงานว่า capability ยังไม่พร้อมตามจริง ไม่ใช่อ้างว่าเป็นกฎถาวร
 - ถ้าเครื่องมือแจ้ง syntax error ให้แก้เนื้อหาและเรียก create_files ใหม่ได้ไม่เกิน 2 รอบ
 - อย่าแต่งผลลัพธ์ของเครื่องมือหรืออ้างว่าทำสำเร็จถ้าไม่มีผลลัพธ์ยืนยัน`;

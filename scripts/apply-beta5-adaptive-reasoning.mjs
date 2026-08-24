@@ -92,10 +92,14 @@ for (const [startNeedle, endNeedle, predictExpression, label] of [
   patchSection(startNeedle, endNeedle, (section) => {
     let next = section;
     const anchor = label === "designSkillGoal" ? "  const sourceText =" : label === "designHiddenSkillTests" ? "  const requested =" : label === "buildSkillAttempt" ? "  const previousSource =" : "  const evidence =";
+    // Replace the option value before inserting the declaration. Doing this in
+    // the opposite order rewrites the newly inserted initializer and produces
+    // `deepWorkerOptions(settings, deepWorker.numPredict)`, which throws in the
+    // temporal dead zone before every Auto Learn skill/research request.
+    next = next.replace(predictExpression, "deepWorker.numPredict");
     next = next.replace(anchor, `  const deepWorker = deepWorkerOptions(settings, ${predictExpression});\n${anchor}`);
     next = next.replace("      think: false,", "      think: deepWorker.think,");
     next = next.replace(/num_ctx: settings\.max_context_tokens/g, "num_ctx: deepWorker.numCtx");
-    next = next.replace(predictExpression, "deepWorker.numPredict");
     next = next.replace(/timedSignal\((180_000|240_000), signal\)/g, "timedSignal(deepWorker.timeoutMs, signal)");
     return next;
   }, label);

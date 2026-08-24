@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.13..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.14..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -36,6 +36,8 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.13..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta11-full-host-permission.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta12-host-access-routing.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta13-nonblocking-post-response.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-auto-learn-recovery.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs" "$ALPHA_DIR"
 
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server-wrapper-beta3.mjs"
@@ -53,6 +55,8 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.13..."
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta11-full-host-permission.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta12-host-access-routing.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta13-nonblocking-post-response.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta14-auto-learn-recovery.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ollama.ts" >/dev/null 2>&1 || true
 
 zsh "$ALPHA_DIR/stop-alpha.command" >/dev/null 2>&1 || true
@@ -77,7 +81,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta13 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta14 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -100,7 +104,7 @@ for _ in {1..120}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta13 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta14 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
@@ -112,5 +116,27 @@ else
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
 fi
 
-echo "Alpha v1.1.0-beta.13 พร้อม: ตอบเสร็จแล้วส่งคำถามถัดไปได้ทันที + background memory + deterministic host access"
+ALPHA_SKILL_ROOT="$ALPHA_DIR/outputs/Alpha Outputs/Learned Skills"
+ALPHA_REQUIRED_SKILLS=(
+  authorized-api-traffic-analyzer
+  system-access-capability-mapper
+  cybersecurity-audit-prioritizer
+  web-api-contract-discovery
+  concert-ticket-purchase-assistant
+)
+ALPHA_INSTALL_SKILLS=false
+for ALPHA_SKILL_ID in "${ALPHA_REQUIRED_SKILLS[@]}"; do
+  if [[ ! -f "$ALPHA_SKILL_ROOT/$ALPHA_SKILL_ID/alpha-skill.json" ]]; then
+    ALPHA_INSTALL_SKILLS=true
+    break
+  fi
+done
+if [[ "$ALPHA_INSTALL_SKILLS" == true ]]; then
+  echo "กำลังทดสอบและติดตั้งสกิลแกนหลักที่ยังขาด..."
+  "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/install-security-skills.mjs" "$ALPHA_DIR"
+else
+  echo "สกิลแกนหลัก Beta14 ติดตั้งครบแล้ว"
+fi
+
+echo "Alpha v1.1.0-beta.14 พร้อม: Auto Learn recovery + Skills + ticket bot workflow + ตอบเสร็จแล้วส่งคำถามถัดไปได้ทันที"
 open "http://localhost:3000" >/dev/null 2>&1 || true
