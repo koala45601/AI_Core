@@ -17,6 +17,8 @@ ALPHA_OLLAMA_URL="http://$ALPHA_OLLAMA_HOST"
 ALPHA_OLLAMA_MODELS_DIR="$ALPHA_DIR/models/ollama"
 ALPHA_SHARED_NODE_RUNTIME="/Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime"
 ALPHA_SHARED_NODE_MODULES="$ALPHA_SHARED_NODE_RUNTIME/node_modules"
+ALPHA_VITE_CACHE_DIR="/Users/ratchanonsakdamanee/Library/Caches/Alpha/vite"
+ALPHA_VITE_CACHE_STAMP="$ALPHA_VITE_CACHE_DIR/.alpha-runtime-manifest.sha256"
 ALPHA_CODEX_NODE_DIR="/Users/ratchanonsakdamanee/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin"
 ALPHA_CODEX_FALLBACK_DIR="/Users/ratchanonsakdamanee/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback"
 ALPHA_URL="http://localhost:3000"
@@ -160,6 +162,31 @@ if [[ ! -d "$ALPHA_DIR/node_modules" ]]; then
   echo "Node dependency runtime กลางไม่พร้อมใช้งาน: $ALPHA_SHARED_NODE_RUNTIME"
   read -r "?กด Enter เพื่อปิดหน้าต่าง..."
   exit 1
+fi
+
+# Vinext/Vite keeps optimized React Server Component bundles outside the project.
+# Reusing those bundles after a dependency change can make the web server fail with
+# "A module cannot have multiple default exports". Invalidate only Alpha's derived
+# Vite cache when the dependency manifests change; user data and project files are
+# never touched.
+ALPHA_RUNTIME_MANIFEST_HASH="$({
+  for ALPHA_MANIFEST in package.json package-lock.json pnpm-lock.yaml pnpm-workspace.yaml; do
+    [[ -f "$ALPHA_DIR/$ALPHA_MANIFEST" ]] && shasum -a 256 "$ALPHA_DIR/$ALPHA_MANIFEST"
+  done
+} | shasum -a 256 | awk '{print $1}')"
+ALPHA_CACHED_MANIFEST_HASH=""
+if [[ -f "$ALPHA_VITE_CACHE_STAMP" ]]; then
+  ALPHA_CACHED_MANIFEST_HASH="$(<"$ALPHA_VITE_CACHE_STAMP")"
+fi
+if [[ "$ALPHA_RUNTIME_MANIFEST_HASH" != "$ALPHA_CACHED_MANIFEST_HASH" ]]; then
+  if [[ "$ALPHA_VITE_CACHE_DIR" != "/Users/ratchanonsakdamanee/Library/Caches/Alpha/vite" ]]; then
+    echo "พาธ cache ของ Alpha ไม่ถูกต้อง จึงหยุดเพื่อป้องกันการลบผิดตำแหน่ง"
+    exit 1
+  fi
+  echo "กำลังรีเฟรช cache ของหน้าเว็บหลัง dependency เปลี่ยน..."
+  rm -rf -- "$ALPHA_VITE_CACHE_DIR"
+  mkdir -p "$ALPHA_VITE_CACHE_DIR"
+  print -r -- "$ALPHA_RUNTIME_MANIFEST_HASH" > "$ALPHA_VITE_CACHE_STAMP"
 fi
 
 if [[ ! -f "$ALPHA_DIR/.dev.vars" ]]; then

@@ -30,6 +30,7 @@ if selected:
 
 facts = payload.get("event_facts") if isinstance(payload.get("event_facts"), dict) else {}
 preflight = payload.get("functional_preflight") if isinstance(payload.get("functional_preflight"), dict) else {}
+runtime_discovery_required = bool(preflight.get("runtime_discovery_required"))
 show_dates = facts.get("show_dates") if isinstance(facts.get("show_dates"), list) else []
 first_show = show_dates[0] if show_dates and isinstance(show_dates[0], dict) else {}
 schedule = str(payload.get("schedule") or first_show.get("iso") or first_show.get("raw") or "").strip()
@@ -55,11 +56,11 @@ if not event_url:
     missing.append("event_url")
 if not selected or not event_name:
     missing.append("selected_event")
-if not schedule or re.search(r"ตาม(?:รอบ|วัน|เวลา|เว็บไซต์)|เลือกในเว็บไซต์|tbd|unknown", schedule, re.I):
+if (not schedule or re.search(r"ตาม(?:รอบ|วัน|เวลา|เว็บไซต์)|เลือกในเว็บไซต์|tbd|unknown", schedule, re.I)) and not runtime_discovery_required:
     missing.append("schedule")
-if not sale_open_at:
+if not sale_open_at and not runtime_discovery_required:
     missing.append("sale_open_at")
-if not preflight.get("public_page_verified"):
+if not preflight.get("public_page_verified") and not runtime_discovery_required:
     missing.append("verified_event_facts")
 if quantity < 1:
     missing.append("quantity")
@@ -113,6 +114,7 @@ if not missing:
         "eventUrl": event_url,
         "schedule": schedule,
         "saleOpenAt": sale_open_at,
+        "runtimeDiscoveryRequired": runtime_discovery_required,
         "queueOpenAt": queue_open_at,
         "saleStatus": str(facts.get("sale_status", "unknown")),
         "quantity": quantity,
@@ -1214,7 +1216,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
         "live_checkout_verified": False,
         "stdout": completed.stdout,
         "stderr": completed.stderr,
-        "scope": "local deterministic fixtures plus public event-page facts; no live purchase, queue, login or payment was attempted",
+        "scope": "local deterministic fixtures plus public event-page facts when available; runtime discovery is required when the public detail page blocks inspection; no live purchase, queue, login or payment was attempted",
     }
     (project / "verification-report.json").write_text(json.dumps(verification, ensure_ascii=False, indent=2), encoding="utf-8")
     shutil.copytree(project, destination_project)

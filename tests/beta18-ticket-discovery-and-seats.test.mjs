@@ -29,11 +29,12 @@ test("public event inspection falls back from the blocked homepage without requi
 
 test("Ticket Studio distinguishes sale states and disables unavailable events", async () => {
   const [page, service] = await Promise.all([source("app/page.tsx"), source("tool-service/server.mjs")]);
-  for (const label of ["เปิดขายอยู่", "กำลังจะเปิด", "ขายหมด", "ปิดขาย", "งานจบแล้ว", "ยกเลิก", "ยังยืนยันไม่ได้"]) {
+  for (const label of ["เปิดช่วงขาย — ยังไม่ยืนยันที่นั่ง", "กำลังจะเปิดช่วงขาย", "พบป้าย SOLD OUT", "ปิดขาย", "งานจบแล้ว", "ยกเลิก", "ยังยืนยันไม่ได้"]) {
     assert.match(page, new RegExp(label));
   }
   assert.match(page, /disabled=\{!selectable\}/);
   assert.match(service, /sale_status: closedStatus/);
+  assert.match(service, /inventory_status: "not_checked"/);
   assert.match(service, /selectable: false/);
 });
 

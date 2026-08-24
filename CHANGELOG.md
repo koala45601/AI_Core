@@ -1,5 +1,14 @@
 # Alpha changelog
 
+## 1.1.0-beta.19 — 2026-08-25
+
+- เลือกคอนเสิร์ตและสร้างบอทได้ทันที ไม่บังคับให้ public detail inspection ผ่านก่อน
+- เมื่อเว็บบล็อกหน้ารายละเอียด โปรแกรมที่สร้างจะค้นรอบ โซน และฟอร์มจริงหลัง Login ตอนรัน
+- งบสูงสุดเป็นตัวเลือกเสริม; ค่า 0 หมายถึงไม่จำกัดงบ
+- แสดงและกรองสถานะ Open, Upcoming, SOLD OUT, Closed, Ended, Cancelled และ Unknown พร้อมจำนวนศูนย์
+- แยก “ช่วงขายเปิดแล้ว” ออกจาก “มีที่นั่งว่าง”: หน้ารวมไม่ถูกใช้ยืนยัน inventory และ UI แจ้งชัดว่าต้อง Login เข้าโซน/ผังที่นั่งจริง
+- ย้าย public inspection/API discovery ไปเบื้องหลังแบบ headless และปิดหน้าตรวจชั่วคราว ไม่ทิ้งแท็บ Access Denied
+
 ## 1.1.0-beta.18 — 2026-08-25
 
 - Public concert discovery now detects a ThaiTicketMajor homepage `Access Denied` response and retries the official `booking.thaiticketmajor.com` public listing without requiring Login.

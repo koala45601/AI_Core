@@ -36,6 +36,7 @@ const artifacts = new Map();
 const pending = new Map();
 const extensionClients = new Set();
 let alphaContext = null;
+let publicInspectionContext = null;
 let lastHeavyUse = 0;
 let idleSeconds = 300;
 let dockerOpenedByAlpha = false;
@@ -62,7 +63,7 @@ await fs.mkdir(autoLearnOutputDir, { recursive: true });
 await fs.mkdir(autoLearnRunsDir, { recursive: true });
 
 const mimeByExtension = {
-  ".py": "text/x-python", ".js": "text/javascript", ".mjs": "text/javascript",
+  ".py": "text/x-python", ".js": "text/javascript", ".mjs": "text/javascript", ".sh": "text/x-shellscript", // alpha-beta4-shell-artifacts-v1
   ".html": "text/html", ".css": "text/css", ".json": "application/json",
   ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
   ".zip": "application/zip", ".pdf": "application/pdf", ".svg": "image/svg+xml",
@@ -169,7 +170,7 @@ function safeRelativePath(value) {
     throw new Error("พาธไฟล์ไม่ปลอดภัย");
   }
   const extension = extname(normalized).toLowerCase();
-  const allowed = new Set([".py", ".js", ".mjs", ".html", ".css", ".json", ".md", ".txt", ".csv"]);
+  const allowed = new Set([".py", ".js", ".mjs", ".sh", ".html", ".css", ".json", ".md", ".txt", ".csv"]);
   if (!allowed.has(extension)) throw new Error(`ยังไม่รองรับไฟล์ชนิด ${extension || "ไม่มีนามสกุล"}`);
   return normalized;
 }
@@ -201,10 +202,25 @@ function assertNotBlocked(target) {
   return absolute;
 }
 
+// alpha-beta8-permission-domains-v1
+function workspacePathSensitive(target) {
+  const absolute = resolve(target);
+  const gitRoot = resolve(appDir, ".git");
+  if (pathInside(absolute, gitRoot)) return true;
+  const rel = relative(appDir, absolute);
+  const first = rel.split(sep)[0] || "";
+  if (first === ".dev.vars" || first === ".env" || first.startsWith(".env.")) return true;
+  return false;
+}
+
 function allowedTarget(destination, settings, approved = false) {
   const mode = settings.file_access_mode || "ask";
   const target = assertNotBlocked(destination);
   if (pathInside(target, outputsDir) || pathInside(target, programCreateDir)) return target;
+  if (pathInside(target, appDir)) {
+    if (workspacePathSensitive(target)) throw new Error("ตำแหน่งนี้เป็นไฟล์ลับหรือ metadata ภายใน workspace ของ Alpha");
+    return target;
+  }
   if (mode === "ask" && approved && (pathInside(target, homedir()) || pathInside(target, "/Volumes"))) return target;
   if (mode === "full_user_files") {
     if (pathInside(target, homedir()) || pathInside(target, "/Volumes")) return target;
@@ -250,6 +266,7 @@ async function validateStaging(staging, files) {
       if (extname(item.path).toLowerCase() === ".json") JSON.parse(item.content);
       if (extname(item.path).toLowerCase() === ".py") await run("/usr/bin/python3", ["-m", "py_compile", filePath], { timeout: 12_000 });
       if ([".js", ".mjs"].includes(extname(item.path).toLowerCase())) await run(process.execPath, ["--check", filePath], { timeout: 12_000 });
+      if (extname(item.path).toLowerCase() === ".sh") await run("/bin/zsh", ["-n", filePath], { timeout: 12_000 });
     } catch (error) {
       errors.push(`${item.path}: ${error.message}`);
     }
@@ -276,7 +293,28 @@ async function createFiles(args, settings, approved = false) {
       suffix += 1;
     }
   }
-  const destination = allowedTarget(requestedDestination, settings, approved);
+  // alpha-beta7-file-workflow-recovery-v1
+  let destination;
+  try {
+    destination = allowedTarget(requestedDestination, settings, approved);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error || "");
+    if (reason.includes("ตำแหน่งนี้อยู่นอกขอบเขตไฟล์ที่อนุญาต")) {
+      return {
+        ok: false,
+        code: "FILE_DESTINATION_OUT_OF_SCOPE",
+        error: reason,
+        requested_destination: requestedDestination,
+        safe_fallback_destination: join(outputsDir, project),
+        file_access_mode: settings.file_access_mode || "ask",
+        requires_approval: settings.file_access_mode === "ask" && !approved,
+        host_scope: "macos",
+        docker_used: false,
+        message: "ปลายทางที่ขออยู่นอกขอบเขตไฟล์ที่อนุญาต สามารถสร้างใน Alpha Outputs เป็น fallback ได้โดยไม่ใช้ Docker",
+      };
+    }
+    throw error;
+  }
   await assertNoSymlinkEscape(destination);
   const staging = join(outputsDir, `.staging-${randomUUID()}`);
   await fs.mkdir(staging, { recursive: true });
@@ -316,7 +354,7 @@ async function createFiles(args, settings, approved = false) {
       await run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", destination, archivePath], { timeout: 30_000 });
       created.push(await hydrateArtifact(registerArtifact(archivePath, project, "archive")));
     }
-    return { ok: true, message: `สร้าง ${files.length} ไฟล์เรียบร้อย`, artifacts: created, destination };
+    return { ok: true, message: `สร้าง ${files.length} ไฟล์เรียบร้อย`, artifacts: created, destination, host_scope: "macos", file_scope: "macos_host", execution_scope: "none", docker_used: false, workspace_root: appDir };
   } finally {
     await fs.rm(staging, { recursive: true, force: true });
   }
@@ -412,6 +450,8 @@ async function refreshStorageState() {
   }
   if (alphaContext) await alphaContext.close().catch(() => {});
   alphaContext = null;
+  if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
+  publicInspectionContext = null;
   if (await dockerReady()) {
     await run("/usr/local/bin/docker", ["rm", "-f", "alpha-searxng"], { timeout: 15_000, allowFailure: true }).catch(() => {});
     await removeSkillLabContainers().catch(() => {});
@@ -446,7 +486,6 @@ async function ensureDocker() {
 
 async function ensureSearxng() {
   if (!await refreshStorageState()) throw new Error(storageError);
-  lastHeavyUse = Date.now();
   try {
     const response = await fetch("http://127.0.0.1:8888/healthz", { signal: AbortSignal.timeout(1500) });
     if (response.ok) return;
@@ -509,6 +548,7 @@ async function searchDuckDuckGo(query, degradedReason = "") {
 }
 
 async function searchWeb(query) {
+  lastHeavyUse = Date.now();
   let searxError = "";
   try {
     await ensureSearxng();
@@ -615,6 +655,21 @@ async function ensureAlphaBrowser() {
   });
   alphaContext.on("close", () => { alphaContext = null; });
   return alphaContext;
+}
+
+async function ensurePublicInspectionBrowser() {
+  lastHeavyUse = Date.now();
+  if (publicInspectionContext) return publicInspectionContext;
+  const profile = join(workDir, "public-inspection-profile");
+  await fs.mkdir(profile, { recursive: true });
+  publicInspectionContext = await chromium.launchPersistentContext(profile, {
+    channel: "chrome",
+    headless: true,
+    acceptDownloads: false,
+    viewport: { width: 1280, height: 820 },
+  });
+  publicInspectionContext.on("close", () => { publicInspectionContext = null; });
+  return publicInspectionContext;
 }
 
 async function browserRisk(page) {
@@ -760,7 +815,8 @@ async function inspectBrowserEvents(page) {
       title: accessBlock.title,
       events: [],
       excluded_count: 0,
-      counts: { open: 0, upcoming: 0, sold_out: 0, closed: 0 },
+      counts: { open: 0, upcoming: 0, sold_out: 0, closed: 0, ended: 0, cancelled: 0 },
+      inventory_scope: "not_checked",
     };
   }
   const rawEvents = await page.evaluate(() => {
@@ -903,6 +959,8 @@ async function inspectBrowserEvents(page) {
         source: candidate.source,
         selectable: false,
         status_evidence: statusEvidence,
+        inventory_status: closedStatus === "sold_out" ? "sold_out" : "not_checked",
+        inventory_evidence: closedStatus === "sold_out" ? "explicit_sold_out_label_on_listing" : "listing_only",
         exclusion_reason: dateExpired ? "event_ended" : "sale_closed",
       });
       continue;
@@ -918,6 +976,8 @@ async function inspectBrowserEvents(page) {
       source: candidate.source,
       selectable: true,
       status_evidence: statusEvidence,
+      inventory_status: "not_checked",
+      inventory_evidence: "sale_window_label_only",
     });
   }
   const statusOrder = { open: 0, upcoming: 1, sold_out: 2, closed: 3, ended: 4, cancelled: 5 };
@@ -940,6 +1000,8 @@ async function inspectBrowserEvents(page) {
     events: events.slice(0, 100),
     excluded_count: excluded.length,
     counts,
+    inventory_scope: "listing_only",
+    inventory_instruction: "สถานะ open หมายถึงช่วงขายเปิดแล้ว ไม่ได้ยืนยันว่ามีที่นั่ง ต้องตรวจ inventory หลัง Login ในหน้าเลือกโซน/ที่นั่ง",
     needs_user_choice: eligible.length > 0,
     selection_instruction: eligible.length
       ? "แสดงชื่อคอนเสิร์ต วันที่แสดง และวันเปิดขายทั้งหมดนี้ให้ผู้ใช้เลือกก่อนสร้างโปรแกรม"
@@ -948,7 +1010,7 @@ async function inspectBrowserEvents(page) {
 }
 
 async function alphaBrowserAction(action, args) {
-  const context = await ensureAlphaBrowser();
+  const context = args.public_inspection === true ? await ensurePublicInspectionBrowser() : await ensureAlphaBrowser();
   let pages = context.pages();
   let page = pages.at(-1) || await context.newPage();
   if (pages.length > 3) {
@@ -961,11 +1023,15 @@ async function alphaBrowserAction(action, args) {
     if (args.fresh_page === true) {
       page = await context.newPage();
       pages = context.pages();
-      while (pages.length > 3) {
-        const candidate = pages.find((item) => item !== page);
-        if (!candidate) break;
-        await candidate.close();
-        pages = context.pages();
+      if (args.public_inspection === true) {
+        for (const candidate of pages.filter((item) => item !== page)) await candidate.close().catch(() => {});
+      } else {
+        while (pages.length > 3) {
+          const candidate = pages.find((item) => item !== page);
+          if (!candidate) break;
+          await candidate.close();
+          pages = context.pages();
+        }
       }
     }
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -1085,7 +1151,7 @@ async function apiDiscovery(args, settings) {
   lastHeavyUse = Date.now();
   if (settings.browser_mode !== "alpha") throw new Error("API Discovery Lab ต้องเลือก Alpha Browser ใน Settings");
   const action = String(args.action || "discover");
-  const context = await ensureAlphaBrowser();
+  const context = args.public_inspection === true ? await ensurePublicInspectionBrowser() : await ensureAlphaBrowser();
 
   if (action === "probe") {
     const method = String(args.method || "GET").toUpperCase();
@@ -1156,6 +1222,7 @@ async function apiDiscovery(args, settings) {
   } finally {
     page.off("request", onRequest);
     page.off("response", onResponse);
+    await page.close().catch(() => {});
   }
 }
 
@@ -2347,6 +2414,8 @@ async function toolHealth() {
 async function stopHeavyTools() {
   if (alphaContext) await alphaContext.close().catch(() => {});
   alphaContext = null;
+  if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
+  publicInspectionContext = null;
   const dockerConnected = await dockerReady();
   if (dockerConnected) {
     if (storageConnected) await run("/usr/local/bin/docker", ["compose", "-f", composeFile, "down", "--remove-orphans"], { timeout: 30_000, allowFailure: true });
@@ -2367,12 +2436,36 @@ setInterval(async () => {
   if (autoLearnJob?.status === "running") { lastHeavyUse = Date.now(); return; }
   if (lastHeavyUse && Date.now() - lastHeavyUse > idleSeconds * 1000) {
     lastHeavyUse = 0;
-    await stopHeavyTools().catch(() => {});
+    // alpha-beta10-persistent-search-v1
+    // Reclaim UI/browser state only. Search service lifetime is the Alpha session,
+    // not the generic heavy-tool idle timeout.
+    if (alphaContext) await alphaContext.close().catch(() => {});
+    alphaContext = null;
   }
 }, 15_000).unref();
 
 await cleanupOwnedSkillLabResources().catch(() => {});
 await restoreLastAutoLearn();
+
+// alpha-beta10-persistent-search-v1: keep local search warm for the whole Tool Service lifetime.
+// Start eagerly and self-heal if the SearXNG container exits while Alpha is open.
+let searxngKeepAliveBusy = false;
+async function keepSearxngAlive() {
+  if (searxngKeepAliveBusy || !storageConnected) return;
+  searxngKeepAliveBusy = true;
+  try {
+    await ensureSearxng();
+    if (lastToolError.startsWith("SearXNG keepalive:")) lastToolError = "";
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "SearXNG ไม่พร้อม";
+    lastToolError = "SearXNG keepalive: " + reason;
+  } finally {
+    searxngKeepAliveBusy = false;
+  }
+}
+
+void keepSearxngAlive();
+setInterval(() => { void keepSearxngAlive(); }, 30_000).unref();
 
 const webSocketServer = new WebSocketServer({ noServer: true });
 webSocketServer.on("connection", (socket) => {

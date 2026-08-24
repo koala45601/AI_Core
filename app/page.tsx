@@ -20,6 +20,17 @@ interface Usage {
   unlimited_messages: boolean;
 }
 
+// alpha-beta4-task-ui-v1
+interface AgentRunView {
+  id: string;
+  status: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "blocked";
+  stage: string;
+  label: string;
+  detail: string;
+  tool: string;
+  updated_at: number;
+}
+
 interface UiMessage {
   id: string;
   role: "user" | "assistant";
@@ -135,7 +146,12 @@ interface TicketEventChoice {
   source?: string;
   selectable?: boolean;
   status_evidence?: string;
+  inventory_status?: "not_checked" | "available" | "sold_out" | "unknown";
+  inventory_evidence?: string;
 }
+
+type TicketSaleStatus = NonNullable<TicketEventChoice["sale_status"]>;
+type TicketStatusFilter = "all" | TicketSaleStatus;
 
 interface TicketFormInspection {
   page?: { url?: string; title?: string; requested_url?: string; inspection_url?: string; used_public_fallback?: boolean };
@@ -172,6 +188,8 @@ interface TicketFormInspection {
     unresolved?: string[];
     can_build?: boolean;
     can_run_live_selection?: boolean;
+    runtime_discovery_required?: boolean;
+    inspection_warning?: string;
   };
 }
 
@@ -218,10 +236,11 @@ function formatFileSize(bytes: number) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
-const TICKET_SALE_STATUS: Record<NonNullable<TicketEventChoice["sale_status"]>, { label: string; className: string }> = {
-  open: { label: "เปิดขายอยู่", className: "open" },
-  upcoming: { label: "กำลังจะเปิด", className: "upcoming" },
-  sold_out: { label: "ขายหมด", className: "sold-out" },
+const TICKET_SALE_STATUS_ORDER: TicketSaleStatus[] = ["open", "upcoming", "sold_out", "closed", "ended", "cancelled", "unknown"];
+const TICKET_SALE_STATUS: Record<TicketSaleStatus, { label: string; className: string }> = {
+  open: { label: "เปิดช่วงขาย — ยังไม่ยืนยันที่นั่ง", className: "open" },
+  upcoming: { label: "กำลังจะเปิดช่วงขาย", className: "upcoming" },
+  sold_out: { label: "พบป้าย SOLD OUT", className: "sold-out" },
   closed: { label: "ปิดขาย", className: "closed" },
   ended: { label: "งานจบแล้ว", className: "ended" },
   cancelled: { label: "ยกเลิก", className: "cancelled" },
@@ -365,6 +384,8 @@ export default function Home() {
   });
   const [thinkingSteps, setThinkingSteps] = useState<string[]>([]);
   const [isThinking, setIsThinking] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeRun, setActiveRun] = useState<AgentRunView | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [memoryDraft, setMemoryDraft] = useState("");
@@ -396,10 +417,11 @@ export default function Home() {
   const [skillListScrollTop, setSkillListScrollTop] = useState(0);
   const [ticketSourceUrl, setTicketSourceUrl] = useState("https://www.thaiticketmajor.com/index.html");
   const [ticketEvents, setTicketEvents] = useState<TicketEventChoice[]>([]);
+  const [ticketStatusFilter, setTicketStatusFilter] = useState<TicketStatusFilter>("all");
   const [ticketSelectedId, setTicketSelectedId] = useState("");
   const [ticketInspection, setTicketInspection] = useState<TicketFormInspection | null>(null);
   const [ticketStage, setTicketStage] = useState<"idle" | "inspecting" | "event_ready" | "form_inspecting" | "preferences" | "building" | "ready" | "error">("idle");
-  const [ticketStatus, setTicketStatus] = useState("ใส่ลิงก์หน้ารวมคอนเสิร์ต แล้วให้อัลฟ่าตรวจเฉพาะงานที่เปิดขายหรือกำลังจะเปิด");
+  const [ticketStatus, setTicketStatus] = useState("ใส่ลิงก์หน้ารวมคอนเสิร์ต แล้วให้อัลฟ่าตรวจทุกสถานะจากเว็บไซต์ต้นทาง");
   const [ticketSchedule, setTicketSchedule] = useState("");
   const [ticketQueueOpenAt, setTicketQueueOpenAt] = useState("");
   const [ticketSeatMode, setTicketSeatMode] = useState<"reserved" | "standing" | "general_admission">("reserved");
@@ -427,10 +449,22 @@ export default function Home() {
   const [correctionDraft, setCorrectionDraft] = useState("");
   const [rememberCorrection, setRememberCorrection] = useState(true);
   const [toolTestStatus, setToolTestStatus] = useState("");
+  // alpha-beta9-auto-grow-composer-v1
   const messageScrollRef = useRef<HTMLDivElement>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const followLatestRef = useRef(true);
   const skillListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const textarea = composerInputRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const viewportCap = typeof window === "undefined" ? 320 : Math.min(320, Math.max(140, Math.floor(window.innerHeight * 0.35)));
+    const nextHeight = Math.max(38, Math.min(textarea.scrollHeight, viewportCap));
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > viewportCap ? "auto" : "hidden";
+  }, [draft]);
   // alpha-beta13-nonblocking-post-response-v1
   const postprocessTimerRef = useRef<number | null>(null);
   const postprocessAbortRef = useRef<AbortController | null>(null);
@@ -756,6 +790,36 @@ export default function Home() {
     }, 8_000);
   }
 
+  useEffect(() => {
+    if (!activeRunId) return;
+    let stopped = false;
+    let clearTimer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch("/api/tasks/" + encodeURIComponent(activeRunId), { cache: "no-store" });
+        if (!response.ok || stopped) return;
+        const data = await response.json() as { run?: AgentRunView };
+        if (data.run) {
+          setActiveRun(data.run);
+          if (["completed", "failed", "blocked"].includes(data.run.status) && clearTimer === undefined) {
+            clearTimer = window.setTimeout(() => {
+              if (!stopped) {
+                setActiveRunId(null);
+                setActiveRun(null);
+              }
+            }, 3500);
+          }
+        }
+      } catch { /* next poll retries */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 800);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      if (clearTimer !== undefined) window.clearTimeout(clearTimer);
+    };
+  }, [activeRunId]);
   async function runChat(content: string, forceSearch = false, addUser = true, removeMessageId?: string, existingUserId?: string) {
     const cleanContent = content.trim();
     if (!cleanContent || isThinking) return;
@@ -763,6 +827,8 @@ export default function Home() {
 
     const userMessage: UiMessage = { id: existingUserId || crypto.randomUUID(), role: "user", content: cleanContent };
     const assistantId = crypto.randomUUID();
+    setActiveRunId(userMessage.id);
+    setActiveRun({ id: userMessage.id, status: "running", stage: "received", label: "รับคำขอแล้ว", detail: "", tool: "", updated_at: Date.now() });
     const visible = addUser ? [...messages, userMessage] : messages.filter((message) => message.id !== removeMessageId);
 
     followLatestRef.current = true;
@@ -1226,8 +1292,9 @@ export default function Home() {
   async function inspectTicketEvents() {
     if (!ticketSourceUrl.trim() || ticketStage === "inspecting") return;
     setTicketStage("inspecting");
-    setTicketStatus("กำลังเปิดเว็บไซต์และตรวจคอนเสิร์ตที่ยังซื้อได้…");
+    setTicketStatus("กำลังอ่านสถานะช่วงขายจากหน้ารวม — ยังไม่สรุปว่ามีที่นั่งจนกว่าจะเข้า inventory จริง…");
     setTicketEvents([]);
+    setTicketStatusFilter("all");
     setTicketSelectedId("");
     setTicketInspection(null);
     setTicketBuildReport(null);
@@ -1289,8 +1356,37 @@ export default function Home() {
         : `หลักฐานหน้าจริงยังไม่ครบ: ${unresolved.join(", ") || "ไม่พบวันแสดง/วันเปิดขาย"}`);
       setTicketStage("preferences");
     } catch (error) {
-      setTicketStage("error");
-      setTicketStatus(error instanceof Error ? error.message : "ตรวจหน้าเลือกบัตรไม่สำเร็จ");
+      const warning = error instanceof Error ? error.message : "ตรวจหน้าเลือกบัตรไม่สำเร็จ";
+      const listingFacts: NonNullable<TicketFormInspection["facts"]> = {
+        event_name: selected.name,
+        event_url: selected.url,
+        show_dates: selected.start_date ? [{ raw: selected.start_date }] : [],
+        sale_open_at: selected.sale_open_at || "",
+        sale_open_at_raw: selected.sale_open_at || "",
+        sale_status: selected.sale_status || "unknown",
+        evidence: [{ field: "sale_status", text: selected.sale_status || "unknown", source: "public_listing" }],
+      };
+      setTicketInspection({
+        page: { requested_url: selected.url, inspection_url: selected.url },
+        candidates: {},
+        ambiguous_roles: [],
+        api_calls: [],
+        api_warning: warning,
+        facts: listingFacts,
+        functional_preflight: {
+          passed: false,
+          public_page_verified: false,
+          purchase_controls_ready: false,
+          workflow_state: "runtime_discovery",
+          unresolved: ["schedule", "sale_open_at", "form_controls"].filter((field) => field !== "schedule" || !selected.start_date),
+          can_build: ["open", "upcoming"].includes(selected.sale_status || "unknown"),
+          can_run_live_selection: false,
+          runtime_discovery_required: true,
+          inspection_warning: warning,
+        },
+      });
+      setTicketStage("preferences");
+      setTicketStatus(`หน้ารายละเอียดถูกเว็บไซต์ปฏิเสธ แต่สร้างบอทได้ — โปรแกรมจะอ่านรอบ โซน และฟอร์มจริงหลัง Login ตอนรัน (${warning})`);
     }
   }
 
@@ -1525,7 +1621,19 @@ export default function Home() {
               </button>
             )}
 
-            {isThinking && (
+            {activeRun && (
+              <div className={"thinking-bar task-state task-" + activeRun.status} role="status" aria-live="polite">
+                <div className="thinking-pulse"><span /><span /><span /></div>
+                <div>
+                  <strong>{activeRun.status === "completed" ? "✅ งานเสร็จแล้ว" : activeRun.status === "waiting_approval" ? "⏸ รอการอนุญาต" : activeRun.status === "failed" ? "❌ งานล้มเหลว" : activeRun.status === "blocked" ? "⛔ งานถูกบล็อก" : "🟢 อัลฟ่ากำลังทำงาน"}</strong>
+                  <span>{activeRun.label}{activeRun.detail ? " — " + activeRun.detail : ""}</span>
+                  {activeRun.tool && <small>Tool: {activeRun.tool}</small>}
+                </div>
+                <div className="thinking-track"><i /></div>
+              </div>
+            )}
+
+            {isThinking && !activeRun && (
               <div className="thinking-bar" role="status" aria-live="polite">
                 <div className="thinking-pulse"><span /><span /><span /></div>
                 <div><strong>อัลฟ่ากำลังทำงาน</strong><span>{thinkingSteps[thinkingSteps.length - 1] ?? "กำลังคิด"}</span></div>
@@ -1535,7 +1643,7 @@ export default function Home() {
 
             <div className="chat-bottom">
               <form className="composer" onSubmit={submit}>
-                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+                <textarea ref={composerInputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (draft.trim()) void runChat(draft); }
                 }} placeholder="พิมพ์ข้อความถึงอัลฟ่า..." aria-label="ข้อความถึงอัลฟ่า" rows={1} />
                 <div className="composer-footer">
@@ -1716,16 +1824,16 @@ export default function Home() {
                 <span className="ticket-status-dot" />
                 <div><strong>สถานะ Full Loop</strong><p>{ticketStatus}</p></div>
               </div>
-              {ticketEvents.length > 0 && <div className="ticket-status-legend">
-                {(["open", "upcoming", "sold_out", "closed", "ended", "cancelled", "unknown"] as const).map((status) => {
+              {ticketEvents.length > 0 && <div className="ticket-status-legend" aria-label="กรองสถานะคอนเสิร์ต">
+                <button type="button" className={`ticket-status-filter ${ticketStatusFilter === "all" ? "active" : ""}`} onClick={() => setTicketStatusFilter("all")}>ทั้งหมด {ticketEvents.length}</button>
+                {TICKET_SALE_STATUS_ORDER.map((status) => {
                   const count = ticketEvents.filter((event) => (event.sale_status || "unknown") === status).length;
-                  if (!count) return null;
                   const meta = ticketSaleStatus(status);
-                  return <span key={status} className={`ticket-sale-pill ${meta.className}`}>{meta.label} {count}</span>;
+                  return <button type="button" key={status} className={`ticket-sale-pill ticket-status-filter ${meta.className} ${ticketStatusFilter === status ? "active" : ""} ${count === 0 ? "empty" : ""}`} onClick={() => setTicketStatusFilter(status)}>{meta.label} {count}</button>;
                 })}
               </div>}
               <div className="ticket-event-list">
-                {ticketEvents.map((event) => {
+                {ticketEvents.filter((event) => ticketStatusFilter === "all" || (event.sale_status || "unknown") === ticketStatusFilter).map((event) => {
                   const selectable = event.selectable !== false && ["open", "upcoming"].includes(event.sale_status || "unknown");
                   const saleMeta = ticketSaleStatus(event.sale_status);
                   return (
@@ -1736,18 +1844,21 @@ export default function Home() {
                       setTicketInspection(null);
                       setTicketBuildReport(null);
                       setTicketStage("event_ready");
+                      setTicketStatus(`เลือก ${event.name} แล้ว · ตั้งจำนวนบัตรและกดสร้างได้ทันที ส่วนตรวจรายละเอียดเป็นขั้นตอนเสริม`);
                     }} />
                     <span>
                       <span className="ticket-event-title"><strong>{event.name}</strong><span className={`ticket-sale-pill ${saleMeta.className}`}>{saleMeta.label}</span></span>
                       <small>{event.start_date ? `วันแสดง ${event.start_date}` : "ตรวจรอบจากหน้าถัดไป"}</small>
-                      <small>{event.sale_open_at ? `เปิดขาย ${event.sale_open_at}` : event.status_evidence || (selectable ? "เลือกเพื่อตรวจรายละเอียดต่อได้" : "แสดงไว้เพื่อบอกสถานะ แต่สร้างบอทไม่ได้")}</small>
+                      <small>{event.sale_open_at ? `เวลาเปิดช่วงขาย ${event.sale_open_at}` : event.status_evidence || (selectable ? "เลือกเพื่อตรวจรายละเอียดต่อได้" : "แสดงไว้เพื่อบอกสถานะ แต่สร้างบอทไม่ได้")}</small>
+                      {selectable && <small className="ticket-inventory-warning">สถานะที่นั่ง: ยังไม่ได้ตรวจ — ต้อง Login แล้วเข้าโซน/ผังที่นั่งจริง</small>}
                     </span>
                   </label>
                 );})}
-                {!ticketEvents.length && <div className="ticket-empty"><span>▱</span><strong>ยังไม่มีรายการคอนเสิร์ต</strong><p>ระบบจะแสดงเฉพาะงานที่เปิดขายหรือกำลังจะเปิด</p></div>}
+                {!ticketEvents.length && <div className="ticket-empty"><span>▱</span><strong>ยังไม่มีรายการคอนเสิร์ต</strong><p>ระบบจะแสดงทุกสถานะที่เว็บไซต์ต้นทางส่งมา</p></div>}
+                {ticketEvents.length > 0 && !ticketEvents.some((event) => ticketStatusFilter === "all" || (event.sale_status || "unknown") === ticketStatusFilter) && <div className="ticket-empty"><span>0</span><strong>หน้ารวมไม่พบป้ายสถานะนี้</strong><p>ไม่ได้แปลว่า inventory ทุกงานยังมีบัตร — ต้องตรวจงานที่เลือกหลัง Login</p></div>}
               </div>
               <div className="ticket-discovery-actions">
-                <button type="button" disabled={!ticketSelectedId || ticketStage === "form_inspecting"} onClick={() => void inspectSelectedTicketEvent()}>{ticketStage === "form_inspecting" ? "กำลังอ่านหน้าเว็บ…" : "ตรวจรอบ ฟอร์ม และ API"}</button>
+                <button type="button" disabled={!ticketSelectedId || ticketStage === "form_inspecting"} onClick={() => void inspectSelectedTicketEvent()}>{ticketStage === "form_inspecting" ? "กำลังอ่านหน้าเว็บ…" : "ตรวจรายละเอียดเพิ่ม (ไม่บังคับ)"}</button>
               </div>
             </aside>
 
@@ -1761,11 +1872,11 @@ export default function Home() {
                   <form className="ticket-build-form" onSubmit={buildTicketBot}>
                     <section className="ticket-selected-summary">
                       <div><span>คอนเสิร์ตที่เลือก</span><strong>{ticketEvents.find((event) => event.id === ticketSelectedId)?.name}</strong><small>{ticketEvents.find((event) => event.id === ticketSelectedId)?.url}</small></div>
-                      <span className={ticketInspection ? "verified" : "pending"}>{ticketInspection ? "ตรวจหน้าแล้ว" : "รอตรวจหน้า"}</span>
+                      <span className={ticketInspection?.functional_preflight?.public_page_verified ? "verified" : "pending"}>{ticketInspection?.functional_preflight?.public_page_verified ? "ตรวจหน้าแล้ว" : ticketInspection?.functional_preflight?.runtime_discovery_required ? "ค้นต่อเมื่อรัน" : "รอตรวจหน้า"}</span>
                     </section>
 
                     {ticketInspection && <section className="ticket-evidence-card">
-                      <div><strong>หลักฐานจากหน้าเว็บ</strong><span>{ticketInspection.functional_preflight?.public_page_verified ? "ยืนยันข้อมูลสาธารณะแล้ว" : "หลักฐานยังไม่ครบ"} · {ticketInspection.api_calls.length} API calls</span></div>
+                      <div><strong>หลักฐานจากหน้าเว็บ</strong><span>{ticketInspection.functional_preflight?.public_page_verified ? "ยืนยันข้อมูลสาธารณะแล้ว" : ticketInspection.functional_preflight?.runtime_discovery_required ? "เว็บบล็อกหน้ารายละเอียด — จะค้นต่อเมื่อรัน" : "หลักฐานยังไม่ครบ"} · {ticketInspection.api_calls.length} API calls</span></div>
                       <p>สถานะ: {ticketInspection.functional_preflight?.workflow_state || "unknown"} · วันแสดง: {ticketInspection.facts?.show_dates?.[0]?.raw || ticketInspection.facts?.show_dates?.[0]?.iso || "ไม่พบ"} · เปิดขาย: {ticketInspection.facts?.sale_open_at_raw || ticketInspection.facts?.sale_open_at || "ไม่พบ"}</p>
                       <p>การตรวจสอบรายการใช้หน้าสาธารณะโดยไม่ล็อกอิน{ticketInspection.page?.used_public_fallback ? ` · หน้าแรกถูกปฏิเสธ จึงใช้หน้า official สำรอง ${ticketInspection.page.inspection_url || ""}` : ""} ส่วนโปรแกรมจริงจะต้องยืนยัน Login ก่อน Checkout</p>
                       {ticketInspection.facts?.prices?.length ? <p>ราคาที่อ่านได้: {ticketInspection.facts.prices.map((price) => price.toLocaleString()).join(" / ")} บาท</p> : null}
@@ -1792,7 +1903,7 @@ export default function Home() {
                           <label className="field"><span>ถ้าที่นั่งเป้าหมายไม่ว่าง</span><select value={ticketSeatFallback} onChange={(event) => setTicketSeatFallback(event.target.value as typeof ticketSeatFallback)}><option value="exact">เอาตรงตามที่ระบุเท่านั้น</option><option value="nearest">เลือกเลขใกล้ที่สุดในโซนเดิม</option><option value="zone_any">ใบไหนก็ได้ แต่ต้องอยู่โซนเดิม</option></select></label>
                         </>}
                         <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
-                        <label className="field"><span>งบสูงสุดรวม (บาท)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่กำหนด" /></label>
+                        <label className="field"><span>งบสูงสุดรวม (ไม่บังคับ)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่จำกัดงบ" /><small>ปล่อยเป็น 0 ได้ บอทจะไม่ใช้ราคาเป็นเงื่อนไขตัดออก</small></label>
                         <label className="field"><span>ชื่อโฟลเดอร์โปรเจกต์</span><input value={ticketProjectName} onChange={(event) => setTicketProjectName(event.target.value)} placeholder="เว้นว่างเพื่อสร้างชื่ออัตโนมัติ" /></label>
                       </div>
                     </section>
@@ -1824,7 +1935,7 @@ export default function Home() {
                       <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · State fixtures: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · คิวจริง: {ticketBuildReport.verification?.live_queue_observed ? "พบแล้ว" : "ยังไม่พบ"} · Checkout จริง: {ticketBuildReport.verification?.live_checkout_verified ? "ยืนยันแล้ว" : "รอรันโปรเจกต์"} · รันด้วย run-full-loop.command</small>
                     </section>}
 
-                    <div className="ticket-build-actions"><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting"}>ตรวจหน้าอีกครั้ง</button><button className="save-button" type="submit" disabled={!ticketInspection?.functional_preflight?.can_build || ticketStage === "building"}>{ticketStage === "building" ? "กำลังสร้างและทดสอบ…" : "สร้างและทดสอบบอท"}</button></div>
+                    <div className="ticket-build-actions"><span className="ticket-build-hint">จำเป็น: เลือกคอนเสิร์ต + จำนวนบัตร · งบและการตรวจรายละเอียดไม่บังคับ</span><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting"}>ตรวจเพิ่ม</button><button className="save-button" type="submit" disabled={!["open", "upcoming"].includes(ticketEvents.find((event) => event.id === ticketSelectedId)?.sale_status || "unknown") || ticketStage === "building"}>{ticketStage === "building" ? "กำลังสร้างและทดสอบ…" : ticketInspection?.functional_preflight?.runtime_discovery_required || !ticketInspection ? "สร้างบอท — ค้นข้อมูลจริงตอนรัน" : "สร้างและทดสอบบอท"}</button></div>
                   </form>
                 )}
               </div>
@@ -1926,7 +2037,7 @@ export default function Home() {
                   <option value="ask">ถามก่อนทุกครั้ง (แนะนำ)</option>
                   <option value="alpha_outputs">ทำงานอัตโนมัติเฉพาะ Alpha Outputs</option>
                   <option value="selected_folders">ทำงานในโฟลเดอร์ที่เลือก</option>
-                  <option value="full_user_files">ไฟล์ผู้ใช้ทั้งหมด</option>
+                  <option value="full_user_files">Full — ไฟล์ผู้ใช้ทั้งหมด + Host actions อัตโนมัติ</option>{/* alpha-beta11-full-host-permission-v1 */}
                 </select>
               </label>
               {settings.file_access_mode === "selected_folders" && (

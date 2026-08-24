@@ -17,6 +17,8 @@ interface TicketEvent {
   source?: string;
   selectable?: boolean;
   status_evidence?: string;
+  inventory_status?: "not_checked" | "available" | "sold_out" | "unknown";
+  inventory_evidence?: string;
 }
 
 interface TicketBuildInput {
@@ -89,6 +91,8 @@ function normalizedEvents(result: ToolExecutionResult): TicketEvent[] {
       source: asText(record.source, 50),
       selectable: record.selectable !== false && ["open", "upcoming"].includes(status),
       status_evidence: asText(record.status_evidence, 300),
+      inventory_status: asText(record.inventory_status, 30) as TicketEvent["inventory_status"] || "not_checked",
+      inventory_evidence: asText(record.inventory_evidence, 300),
     }];
   }).slice(0, 100);
 }
@@ -112,6 +116,8 @@ function safeCandidates(value: unknown): TicketEvent[] {
       source: asText(record.source, 50),
       selectable: true,
       status_evidence: asText(record.status_evidence, 300),
+      inventory_status: asText(record.inventory_status, 30) as TicketEvent["inventory_status"] || "not_checked",
+      inventory_evidence: asText(record.inventory_evidence, 300),
     }];
   }).slice(0, 100);
 }
@@ -167,7 +173,7 @@ function inspectionBlocked(result: ToolExecutionResult): boolean {
 async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form"): Promise<ToolExecutionResult & { requested_url: string; inspection_url: string; used_public_fallback: boolean }> {
   const inspectAction = mode === "events" ? "inspect_events" : "inspect_form";
   await executeTool("browser_action", { action: "open", url, fresh_page: true, public_inspection: true }, settings);
-  let result = await executeTool("browser_action", { action: inspectAction }, settings);
+  let result = await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
   let inspectionUrl = url;
   let usedPublicFallback = false;
   if (inspectionBlocked(result)) {
@@ -175,7 +181,7 @@ async function inspectPage(url: string, settings: AppSettings, mode: "events" | 
     if (!fallback || fallback === url) throw new Error(`หน้า public ถูกเว็บไซต์ปฏิเสธ (${asText(result.block_reason, 500) || "Access Denied"})`);
     assertInternetAndDomain(fallback, settings);
     await executeTool("browser_action", { action: "open", url: fallback, fresh_page: true, public_inspection: true }, settings);
-    result = await executeTool("browser_action", { action: inspectAction }, settings);
+    result = await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
     inspectionUrl = fallback;
     usedPublicFallback = true;
   }
@@ -199,8 +205,8 @@ export async function POST(request: Request) {
         result[status] = (result[status] || 0) + 1;
         return result;
       }, {} as Record<string, number>);
-      const availableCount = (counts.open || 0) + (counts.upcoming || 0);
-      const unavailableCount = events.length - availableCount;
+      const unavailableCount = events.filter((event) => event.selectable === false).length;
+      const inventoryCheckedCount = events.filter((event) => ["available", "sold_out"].includes(event.inventory_status || "not_checked")).length;
       const fallbackNote = inspected.used_public_fallback === true ? " · ใช้หน้ารวม official สำรองเพราะหน้าแรกตอบ Access Denied" : "";
       return Response.json({
         ok: true,
@@ -209,7 +215,8 @@ export async function POST(request: Request) {
         events,
         counts,
         excluded_count: unavailableCount,
-        message: events.length ? `เปิดขาย ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · ขายหมด/ปิด/จบแล้ว ${unavailableCount}${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
+        inventory: { scope: "listing_only", checked_count: inventoryCheckedCount, requires_login_for_live_stock: true },
+        message: events.length ? `เปิดช่วงขายตามหน้ารวม ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · พบป้าย SOLD OUT ${counts.sold_out || 0} · ปิดขาย ${counts.closed || 0} · จบงาน ${counts.ended || 0} · ยกเลิก ${counts.cancelled || 0} · ไม่ทราบ ${counts.unknown || 0} · ที่นั่งว่างยังไม่ได้ตรวจ ต้องเข้า Login/หน้าเลือกโซน${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
       });
     }
 
@@ -221,7 +228,7 @@ export async function POST(request: Request) {
       let apiWarning = "";
       if (body.discover_api === true && settings.browser_mode === "alpha") {
         try {
-          const discovered = await executeTool("api_discovery", { action: "discover", url, observe_seconds: 3 }, settings);
+          const discovered = await executeTool("api_discovery", { action: "discover", url, observe_seconds: 3, public_inspection: true }, settings);
           apiCalls = safeApiEvidence(discovered.api_calls);
         } catch (error) {
           apiWarning = error instanceof Error ? error.message : "ตรวจ API แบบ passive ไม่สำเร็จ";
@@ -251,16 +258,39 @@ export async function POST(request: Request) {
       if (!selected) throw new Error("กรุณาเลือกคอนเสิร์ตจากรายการที่ตรวจพบก่อนสร้างบอท");
       if (selected.url !== eventUrl) throw new Error("URL ของคอนเสิร์ตไม่ตรงกับรายการที่เลือก กรุณาตรวจหน้าเว็บใหม่");
       assertInternetAndDomain(selected.url, settings);
-      const liveInspection = await inspectPage(selected.url, settings, "form");
-      const eventFacts = liveInspection.facts && typeof liveInspection.facts === "object" && !Array.isArray(liveInspection.facts)
-        ? liveInspection.facts as Record<string, unknown>
-        : {};
-      const functionalPreflight = liveInspection.functional_preflight && typeof liveInspection.functional_preflight === "object" && !Array.isArray(liveInspection.functional_preflight)
-        ? liveInspection.functional_preflight as Record<string, unknown>
-        : {};
+      let eventFacts: Record<string, unknown> = {
+        event_name: selected.name,
+        event_url: selected.url,
+        show_dates: selected.start_date ? [{ raw: selected.start_date }] : [],
+        sale_open_at: selected.sale_open_at,
+        sale_status: selected.sale_status,
+        evidence: [{ field: "sale_status", text: selected.sale_status, source: "public_listing" }],
+      };
+      let functionalPreflight: Record<string, unknown> = {};
+      let inspectionWarning = "";
+      try {
+        const liveInspection = await inspectPage(selected.url, settings, "form");
+        if (liveInspection.facts && typeof liveInspection.facts === "object" && !Array.isArray(liveInspection.facts)) eventFacts = liveInspection.facts as Record<string, unknown>;
+        if (liveInspection.functional_preflight && typeof liveInspection.functional_preflight === "object" && !Array.isArray(liveInspection.functional_preflight)) functionalPreflight = liveInspection.functional_preflight as Record<string, unknown>;
+      } catch (error) {
+        inspectionWarning = error instanceof Error ? error.message : "ตรวจหน้ารายละเอียดไม่ได้";
+      }
       if (functionalPreflight.public_page_verified !== true) {
-        const unresolved = Array.isArray(functionalPreflight.unresolved) ? functionalPreflight.unresolved.map((item) => asText(item, 80)).filter(Boolean) : [];
-        throw new Error(`หลักฐานหน้าคอนเสิร์ตยังไม่ครบ${unresolved.length ? `: ${unresolved.join(", ")}` : ""} — ยังไม่สร้างโปรเจกต์เพื่อป้องกันผลผ่านปลอม`);
+        const unresolved = Array.isArray(functionalPreflight.unresolved)
+          ? functionalPreflight.unresolved.map((item) => asText(item, 80)).filter(Boolean)
+          : ["schedule", "sale_open_at", "form_controls"];
+        functionalPreflight = {
+          ...functionalPreflight,
+          passed: false,
+          public_page_verified: false,
+          purchase_controls_ready: false,
+          workflow_state: "runtime_discovery",
+          unresolved,
+          can_build: true,
+          can_run_live_selection: false,
+          runtime_discovery_required: true,
+          inspection_warning: inspectionWarning,
+        };
       }
       if (functionalPreflight.can_build !== true) throw new Error("คอนเสิร์ตนี้ไม่อยู่ในสถานะที่สร้าง workflow ต่อได้");
       const seatMode = asText(input.seat_mode, 30);
@@ -336,6 +366,8 @@ export async function POST(request: Request) {
           fixture_tests_passed: fixturePass,
           queue_fixture_verified: fixtureVerification.queue_fixture_verified === true,
           live_public_page_verified: functionalPreflight.public_page_verified === true,
+          runtime_discovery_required: functionalPreflight.runtime_discovery_required === true,
+          inspection_warning: asText(functionalPreflight.inspection_warning, 1_000),
           live_queue_observed: false,
           live_checkout_verified: false,
           workflow_state: asText(functionalPreflight.workflow_state, 80),
