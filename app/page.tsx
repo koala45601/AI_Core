@@ -316,6 +316,14 @@ export default function Home() {
   const messageEndRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
   const skillListRef = useRef<HTMLDivElement>(null);
+  // alpha-beta13-nonblocking-post-response-v1
+  const postprocessTimerRef = useRef<number | null>(null);
+  const postprocessAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    if (postprocessTimerRef.current !== null) window.clearTimeout(postprocessTimerRef.current);
+    postprocessAbortRef.current?.abort();
+  }, []);
 
   const loadChat = useCallback(async (id: string) => {
     try {
@@ -588,9 +596,49 @@ export default function Home() {
     await persistSettings({ ...settings, web_search_enabled: value }, true);
   }
 
+  function cancelPendingChatPostprocess() {
+    if (postprocessTimerRef.current !== null) {
+      window.clearTimeout(postprocessTimerRef.current);
+      postprocessTimerRef.current = null;
+    }
+    postprocessAbortRef.current?.abort();
+    postprocessAbortRef.current = null;
+  }
+
+  function scheduleChatPostprocess(task: { chat_id: string; user_message_id: string; assistant_message_id: string }) {
+    cancelPendingChatPostprocess();
+    postprocessTimerRef.current = window.setTimeout(async () => {
+      postprocessTimerRef.current = null;
+      const controller = new AbortController();
+      postprocessAbortRef.current = controller;
+      try {
+        const response = await fetch(`/api/chats/${encodeURIComponent(task.chat_id)}/postprocess`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_message_id: task.user_message_id,
+            assistant_message_id: task.assistant_message_id,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const result = await response.json() as { memories_added?: number; summarized?: boolean };
+        if ((result.memories_added ?? 0) > 0) void loadMemories();
+        if (result.summarized) void loadChats(chatSearch);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.warn("Alpha chat post-processing failed", error);
+        }
+      } finally {
+        if (postprocessAbortRef.current === controller) postprocessAbortRef.current = null;
+      }
+    }, 8_000);
+  }
+
   async function runChat(content: string, forceSearch = false, addUser = true, removeMessageId?: string, existingUserId?: string) {
     const cleanContent = content.trim();
     if (!cleanContent || isThinking) return;
+    cancelPendingChatPostprocess();
 
     const userMessage: UiMessage = { id: existingUserId || crypto.randomUUID(), role: "user", content: cleanContent };
     const assistantId = crypto.randomUUID();
@@ -601,6 +649,7 @@ export default function Home() {
     setDraft("");
     setIsThinking(true);
     setThinkingSteps(["รับคำถามแล้ว", "กำลังตรวจสอบกฎ"]);
+    let pendingPostprocess: { chat_id: string; user_message_id: string; assistant_message_id: string } | null = null;
 
     try {
       const response = await fetch("/api/chat", {
@@ -708,8 +757,15 @@ export default function Home() {
               setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, id: saved.id! } : message));
             }
           }
+          if (event.type === "done" && event.postprocess && typeof event.postprocess === "object") {
+            const task = event.postprocess as Record<string, unknown>;
+            if (typeof task.chat_id === "string" && typeof task.user_message_id === "string" && typeof task.assistant_message_id === "string") {
+              pendingPostprocess = task as { chat_id: string; user_message_id: string; assistant_message_id: string };
+            }
+          }
         }
       }
+      if (pendingPostprocess) scheduleChatPostprocess(pendingPostprocess);
     } catch (error) {
       const message = error instanceof Error ? error.message : "เชื่อมต่ออัลฟ่าไม่สำเร็จ";
       setMessages((current) => current.map((item) => item.id === assistantId

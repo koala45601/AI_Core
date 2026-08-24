@@ -196,6 +196,7 @@ export async function extractDurableMemories(
   userMessage: string,
   assistantMessage: string,
   settings: AppSettings,
+  signal?: AbortSignal,
 ): Promise<ExtractedMemory[]> {
   const response = await ollamaFetch("/api/chat", {
     method: "POST",
@@ -218,7 +219,7 @@ export async function extractDurableMemories(
         { role: "user", content: `ผู้ใช้: ${userMessage.slice(0, 5000)}\nอัลฟ่า: ${assistantMessage.slice(0, 5000)}` },
       ],
     }),
-    signal: AbortSignal.timeout(180_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000),
   });
   if (!response.ok) return [];
   const payload = await response.json() as { message?: { content?: string } };
@@ -240,6 +241,7 @@ export async function summarizeChat(
   messages: Array<{ role: "user" | "assistant"; content: string }>,
   existingSummary: string,
   settings: AppSettings,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!messages.length) return existingSummary;
   const transcript = messages.map((item) => `${item.role === "user" ? "ผู้ใช้" : "อัลฟ่า"}: ${redactCredentials(item.content)}`).join("\n\n");
@@ -260,7 +262,7 @@ export async function summarizeChat(
         { role: "user", content: `สรุปเดิม:\n${redactCredentials(existingSummary) || "ยังไม่มี"}\n\nข้อความใหม่:\n${transcript.slice(0, 18_000)}` },
       ],
     }),
-    signal: AbortSignal.timeout(180_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000),
   });
   if (!response.ok) throw new Error(`สรุปแชตไม่สำเร็จ (${response.status})`);
   const payload = await response.json() as { message?: { content?: string } };

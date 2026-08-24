@@ -1,5 +1,13 @@
 # Alpha changelog
 
+## 1.1.0-beta.13 — 2026-08-24
+
+- Fixed the 30–60 second composer lock after visible answer completion. The chat stream now finishes immediately after the assistant message and Artifact state are persisted.
+- Moved durable-memory extraction and rolling-summary generation to a separate idle post-processing request instead of keeping the user-facing SSE response open.
+- Added an 8-second idle grace period and cancellation: a new user question cancels pending/in-flight post-processing so interactive chat takes priority over utility model work.
+- Preserved automatic memory and chat summarization when Alpha is idle; post-processing validates that the referenced user/assistant messages belong to the same chat.
+- Added Beta13 runtime patching and regression coverage so both fresh source and the patched macOS preview receive the same behavior.
+
 ## 1.1.0-beta.12 — 2026-08-24
 
 - Fixed a deterministic-routing gap where prompts such as `เช็คการเข้าถึง path /Volumes/...` could fall through to the LLM and falsely claim that Sandbox/Docker prevented host access.

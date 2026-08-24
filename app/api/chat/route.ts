@@ -590,32 +590,13 @@ export async function POST(request: Request) {
         const savedAssistant = await appendMessage({ id: assistantId, chatId: chat.id, role: "assistant", content: assistantText.trim() || (artifacts.length ? "ดำเนินการเรียบร้อยแล้ว" : ""), metadata: { sources, artifacts, searched: wantsSearch || directRead, search_backend: searchBackend, tool_events: toolEvents.map(({ type, payload }) => ({ type, ...payload })) }, promptTokens, responseTokens });
         if (savedAssistant) controller.enqueue(event("message_saved", { message: savedAssistant }));
 
-        if (!fastPath && settings.memory_enabled && settings.auto_learn_enabled && assistantText.trim()) {
-          controller.enqueue(event("status", { stage: "learning", label: "กำลังคัดเลือกสิ่งที่ควรจำ" }));
-          try {
-            const extracted = await extractDurableMemories(redactCredentials(message), redactCredentials(assistantText), settings);
-            const learned = [];
-            for (const item of extracted) {
-              const memory = await addMemory(item.content, "auto", { category: item.category, confidence: item.confidence, sourceChatId: chat.id });
-              if (memory) learned.push(memory);
-            }
-            if (learned.length) controller.enqueue(event("memory_updated", { memories: learned }));
-          } catch { /* learning is best effort */ }
-        }
-
-        if (settings.auto_summarize_enabled) {
-          const allMessages = await listChatMessages(chat.id);
-          const userTurns = allMessages.filter((item) => item.role === "user").length;
-          const shouldSummarize = userTurns > 0 && (userTurns % 6 === 0 || estimateTokens(allMessages) > 3500) && allMessages.length > chat.summarized_message_count;
-          if (shouldSummarize) {
-            controller.enqueue(event("status", { stage: "summary", label: "กำลังย่อบริบทสำหรับแชตครั้งต่อไป" }));
-            try {
-              const summary = await summarizeChat(allMessages.map(({ role, content }) => ({ role, content })), chat.rolling_summary, settings);
-              await saveChatSummary(chat.id, summary, allMessages.length);
-            } catch { /* summary is best effort */ }
-          }
-        }
-        controller.enqueue(event("done"));
+        // alpha-beta13-nonblocking-post-response-v1
+        const postprocess = savedUser && savedAssistant ? {
+          chat_id: chat.id,
+          user_message_id: savedUser.id,
+          assistant_message_id: savedAssistant.id,
+        } : undefined;
+        controller.enqueue(event("done", postprocess ? { postprocess } : {}));
       } catch {
         controller.enqueue(event("error", { message: "การเชื่อมต่อกับโมเดลถูกตัดระหว่างตอบ" }));
         controller.enqueue(event("done"));

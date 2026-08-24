@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.12..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.13..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -35,6 +35,7 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.12..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta10-host-execution.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta11-full-host-permission.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta12-host-access-routing.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta13-nonblocking-post-response.mjs" "$ALPHA_DIR"
 
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server-wrapper-beta3.mjs"
@@ -51,6 +52,7 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.12..."
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta10-host-execution.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta11-full-host-permission.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta12-host-access-routing.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta13-nonblocking-post-response.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ollama.ts" >/dev/null 2>&1 || true
 
 zsh "$ALPHA_DIR/stop-alpha.command" >/dev/null 2>&1 || true
@@ -75,7 +77,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta12 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta13 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -98,7 +100,7 @@ for _ in {1..120}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta12 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta13 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
@@ -110,5 +112,5 @@ else
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
 fi
 
-echo "Alpha v1.1.0-beta.12 พร้อม: deterministic host access checks + Full host actions + persistent search"
+echo "Alpha v1.1.0-beta.13 พร้อม: ตอบเสร็จแล้วส่งคำถามถัดไปได้ทันที + background memory + deterministic host access"
 open "http://localhost:3000" >/dev/null 2>&1 || true
