@@ -30,7 +30,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --ignore-scripts --no-audit --no-fund
 
       - name: Apply beta23 Create Video patch
         run: node scripts/apply-beta23-create-video.mjs "$PWD"
