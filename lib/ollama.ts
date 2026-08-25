@@ -47,6 +47,85 @@ async function ollamaFetch(path: string, init?: RequestInit): Promise<Response> 
   });
 }
 
+// alpha-beta5-adaptive-reasoning-v1
+type AlphaReasoningTier = "fast" | "balanced" | "deep";
+
+interface AlphaReasoningProfile {
+  tier: AlphaReasoningTier;
+  think: boolean;
+  numCtx: number;
+  numPredict: number;
+  timeoutMs: number;
+}
+
+function lastUserText(messages: OllamaConversationMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") return String(messages[index]?.content || "");
+  }
+  return "";
+}
+
+function isFastLocalConversation(messages: OllamaConversationMessage[]): boolean {
+  return messages.some((item) => item.role === "system" && /คำถามทั่วไปที่ไม่ต้องใช้เว็บหรือเครื่องมือ|ตอบตรงคำถามทันที/i.test(String(item.content || "")));
+}
+
+function adaptiveReasoningProfile(
+  messages: OllamaConversationMessage[],
+  settings: AppSettings,
+  purpose: "chat" | "single" | "tool",
+): AlphaReasoningProfile {
+  const text = lastUserText(messages);
+  const baseCtx = Math.max(4096, settings.max_context_tokens || 6144);
+  const basePredict = Math.max(768, settings.max_output_tokens || 1536);
+  const deepIntent = /(วิเคราะห์|วางแผน|ออกแบบ|architecture|debug|bug|แก้โค้ด|เขียนโค้ด|โปรแกรม|security|cyber|pentest|wifi|wi-fi|wireless|audit|docker|api|database|incident|root cause|rca|reason|logic|หลายขั้น|workflow|agent|tool|ทดสอบ|ตรวจสอบ|เปรียบเทียบ|optimi[sz]e)/i.test(text);
+  const mediumIntent = deepIntent || text.length > 700 || /(?:ทำไม|อย่างไร|ยังไง|อธิบาย|คิด|ประเมิน|recommend|แนะนำ)/i.test(text);
+
+  if (purpose === "tool") {
+    return {
+      tier: "deep",
+      think: true,
+      numCtx: Math.min(24_576, Math.max(baseCtx, 16_384)),
+      numPredict: Math.min(3_072, Math.max(basePredict, 2_048)),
+      timeoutMs: 300_000,
+    };
+  }
+
+  if (isFastLocalConversation(messages) && !deepIntent) {
+    return { tier: "fast", think: false, numCtx: baseCtx, numPredict: basePredict, timeoutMs: 180_000 };
+  }
+
+  if (deepIntent) {
+    return {
+      tier: "deep",
+      think: true,
+      numCtx: Math.min(24_576, Math.max(baseCtx, 16_384)),
+      numPredict: Math.min(3_072, Math.max(basePredict, 2_048)),
+      timeoutMs: 300_000,
+    };
+  }
+
+  if (mediumIntent || purpose === "single") {
+    return {
+      tier: "balanced",
+      think: true,
+      numCtx: Math.min(16_384, Math.max(baseCtx, 8_192)),
+      numPredict: Math.min(2_048, Math.max(basePredict, 1_536)),
+      timeoutMs: 240_000,
+    };
+  }
+
+  return { tier: "fast", think: false, numCtx: baseCtx, numPredict: basePredict, timeoutMs: 180_000 };
+}
+
+function deepWorkerOptions(settings: AppSettings, requestedPredict: number) {
+  return {
+    think: true,
+    numCtx: Math.min(24_576, Math.max(settings.max_context_tokens || 6144, 16_384)),
+    numPredict: Math.min(4_096, Math.max(requestedPredict, settings.max_output_tokens || 1536)),
+    timeoutMs: 300_000,
+  };
+}
+
 export async function decideSearchWithModel(message: string, settings: AppSettings): Promise<boolean> {
   const response = await ollamaFetch("/api/chat", {
     method: "POST",
@@ -76,6 +155,7 @@ export async function requestChatStream(
   messages: OllamaConversationMessage[],
   settings: AppSettings,
 ): Promise<Response> {
+  const reasoning = adaptiveReasoningProfile(messages, settings, "chat");
   return ollamaFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -83,16 +163,16 @@ export async function requestChatStream(
       model: settings.model,
       messages,
       stream: true,
-      think: false,
+      think: reasoning.think,
       keep_alive: "5m",
       options: {
-        num_ctx: settings.max_context_tokens,
-        num_predict: settings.max_output_tokens,
+        num_ctx: reasoning.numCtx,
+        num_predict: reasoning.numPredict,
         temperature: 0.6,
         top_p: 0.9,
       },
     }),
-    signal: AbortSignal.timeout(180_000),
+    signal: AbortSignal.timeout(reasoning.timeoutMs),
   });
 }
 
@@ -101,6 +181,7 @@ export async function requestChatOnce(
   settings: AppSettings,
   temperature = 0.35,
 ): Promise<{ content: string; prompt_tokens: number; response_tokens: number }> {
+  const reasoning = adaptiveReasoningProfile(messages, settings, "single");
   const response = await ollamaFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -108,16 +189,16 @@ export async function requestChatOnce(
       model: settings.model,
       messages,
       stream: false,
-      think: false,
+      think: reasoning.think,
       keep_alive: "5m",
       options: {
-        num_ctx: settings.max_context_tokens,
-        num_predict: settings.max_output_tokens,
+        num_ctx: reasoning.numCtx,
+        num_predict: reasoning.numPredict,
         temperature,
         top_p: 0.9,
       },
     }),
-    signal: AbortSignal.timeout(180_000),
+    signal: AbortSignal.timeout(reasoning.timeoutMs),
   });
   if (!response.ok) throw new Error(`Ollama ตอบกลับด้วยสถานะ ${response.status}`);
   const payload = await response.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
@@ -132,6 +213,7 @@ export async function requestToolPlan(
   messages: OllamaConversationMessage[],
   settings: AppSettings,
 ): Promise<OllamaConversationMessage> {
+  const reasoning = adaptiveReasoningProfile(messages, settings, "tool");
   const response = await ollamaFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -140,15 +222,15 @@ export async function requestToolPlan(
       messages,
       tools: AGENT_TOOLS,
       stream: false,
-      think: false,
+      think: reasoning.think,
       keep_alive: "5m",
       options: {
-        num_ctx: settings.max_context_tokens,
-        num_predict: Math.min(settings.max_output_tokens, 1400),
+        num_ctx: reasoning.numCtx,
+        num_predict: reasoning.numPredict,
         temperature: 0.1,
       },
     }),
-    signal: AbortSignal.timeout(180_000),
+    signal: AbortSignal.timeout(reasoning.timeoutMs),
   });
   if (!response.ok) throw new Error(`Ollama tool planner ตอบกลับ ${response.status}`);
   const data = await response.json() as { message?: OllamaConversationMessage };
@@ -469,6 +551,7 @@ export async function designSkillGoal(
   settings: AppSettings,
   signal?: AbortSignal,
 ): Promise<SkillPlanResult> {
+  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 4096), numPredict: Math.min(1200, settings.max_output_tokens), timeoutMs: 240_000 };
   const sourceText = evidence.slice(0, settings.search_result_limit || undefined).map((item) => `- ${item.title}: ${item.snippet}\n${item.url}`).join("\n\n");
   const systemPrompt = `คุณเป็นสถาปนิก Skill Lab ของอัลฟ่า ออกแบบสเปกทักษะที่ทดสอบได้และรันแบบออฟไลน์ใน Docker
 runtime ที่ใช้ได้: python หรือ node
@@ -491,7 +574,7 @@ trigger_examples ต้องเป็น array ของข้อความ�
       body: JSON.stringify({
         model: settings.model,
         stream: false,
-        think: false,
+        think: deepWorker.think,
         format: skillPlanSchema,
         keep_alive: "5m",
         options: { num_ctx: Math.min(settings.max_context_tokens, 4096), num_predict: Math.min(1200, settings.max_output_tokens), temperature: planAttempt === 1 ? 0.1 : 0 },
@@ -500,7 +583,7 @@ trigger_examples ต้องเป็น array ของข้อความ�
           { role: "user", content: `เป้าหมาย:\n${objective}\n\nเกณฑ์สำเร็จ:\n${successCriteria || "ทำตามเป้าหมายได้จริงและผลทดสอบตรวจซ้ำได้"}\n\nข้อมูลจากเว็บ (อาจไม่มี):\n${sourceText || "ไม่มี"}${repair}` },
         ],
       }),
-      signal: timedSignal(240_000, signal),
+      signal: timedSignal(deepWorker.timeoutMs, signal),
     });
     if (!response.ok) throw new Error(`ออกแบบสกิลไม่สำเร็จ (${response.status})`);
     const payload = await response.json() as { message?: { content?: string; thinking?: string }; prompt_eval_count?: number; eval_count?: number };
@@ -526,6 +609,7 @@ export async function designHiddenSkillTests(
   settings: AppSettings,
   signal?: AbortSignal,
 ): Promise<{ tests: SkillTestCase[]; prompt_tokens: number; response_tokens: number }> {
+  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 4096), numPredict: Math.min(1000, settings.max_output_tokens), timeoutMs: 240_000 };
   const requested = settings.skill_hidden_test_runs;
   let promptTokens = 0;
   let responseTokens = 0;
@@ -537,7 +621,7 @@ export async function designHiddenSkillTests(
       body: JSON.stringify({
         model: settings.model,
         stream: false,
-        think: false,
+        think: deepWorker.think,
         format: hiddenTestsSchema,
         keep_alive: "5m",
         options: { num_ctx: Math.min(settings.max_context_tokens, 4096), num_predict: Math.min(1000, settings.max_output_tokens), temperature: attempt === 1 ? 0.15 : 0 },
@@ -553,7 +637,7 @@ ${requested > 0 ? `สร้างไม่เกิน ${requested} ราย�
           { role: "user", content: `เป้าหมาย: ${objective}\nเกณฑ์สำเร็จ: ${successCriteria}\nสเปกสกิล (ยังไม่มี source code):\n${JSON.stringify(skill)}${repair}` },
         ],
       }),
-      signal: timedSignal(180_000, signal),
+      signal: timedSignal(deepWorker.timeoutMs, signal),
     });
     if (!response.ok) throw new Error(`สร้าง hidden tests ไม่สำเร็จ (${response.status})`);
     const payload = await response.json() as { message?: { content?: string; thinking?: string }; prompt_eval_count?: number; eval_count?: number };
@@ -589,6 +673,7 @@ export async function buildSkillAttempt(
       content: `${file.content.slice(0, headLength)}\n# ... source middle omitted from repair prompt ...\n${file.content.slice(-tailLength)}`,
     };
   });
+  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 6144), numPredict: Math.min(3200, Math.max(1800, settings.max_output_tokens * 2)), timeoutMs: 360_000 };
   const previousSource = JSON.stringify(promptFiles);
   let promptTokens = 0;
   let responseTokens = 0;
@@ -600,10 +685,10 @@ export async function buildSkillAttempt(
       body: JSON.stringify({
         model: settings.model,
         stream: false,
-        think: false,
+        think: deepWorker.think,
         format: skillBuildSchema,
         keep_alive: "5m",
-        options: { num_ctx: settings.max_context_tokens, num_predict: Math.min(3600, Math.max(2200, settings.max_output_tokens * 2)), temperature: responseAttempt === 1 ? 0.15 : 0 },
+        options: { num_ctx: deepWorker.numCtx, num_predict: Math.min(3600, Math.max(2200, settings.max_output_tokens * 2)), temperature: responseAttempt === 1 ? 0.15 : 0 },
         messages: [
           {
             role: "system",
@@ -624,7 +709,7 @@ export async function buildSkillAttempt(
           { role: "user", content: `เป้าหมาย: ${objective}\nเกณฑ์สำเร็จ: ${successCriteria}\n\nสเปกที่ล็อกไว้:\n${JSON.stringify(skill)}\n\nผลล้มเหลวจาก attempt ก่อน (ให้แก้ต้นเหตุ):\n${previousFailure || "ยังไม่มี นี่คือ attempt แรก"}\n\nsource code จาก attempt ก่อน (แก้ต่อจากนี้และส่งไฟล์ฉบับเต็มกลับมา ห้ามเริ่มใหม่โดยไม่จำเป็น):\n${previousSource || "ยังไม่มี source code ก่อนหน้า"}${repair}` },
         ],
       }),
-      signal: timedSignal(240_000, signal),
+      signal: timedSignal(deepWorker.timeoutMs, signal),
     });
     if (!response.ok) throw new Error(`สร้างสกิลไม่สำเร็จ (${response.status})`);
     const payload = await response.json() as { message?: { content?: string; thinking?: string }; prompt_eval_count?: number; eval_count?: number };
@@ -662,6 +747,7 @@ export async function synthesizeResearchRound(
   settings: AppSettings,
   signal?: AbortSignal,
 ): Promise<ResearchSynthesis> {
+  const deepWorker = deepWorkerOptions(settings, Math.min(settings.max_output_tokens, 1200));
   const evidence = sources.map((source, index) => (
     `[${index + 1}] ${source.title}\n${source.url}\n${source.snippet}`
   )).join("\n\n");
@@ -671,12 +757,12 @@ export async function synthesizeResearchRound(
     body: JSON.stringify({
       model: settings.model,
       stream: false,
-      think: false,
+      think: deepWorker.think,
       format: "json",
       keep_alive: "5m",
       options: {
-        num_ctx: settings.max_context_tokens,
-        num_predict: Math.min(settings.max_output_tokens, 1200),
+        num_ctx: deepWorker.numCtx,
+        num_predict: deepWorker.numPredict,
         temperature: 0.2,
       },
       messages: [
@@ -690,7 +776,7 @@ export async function synthesizeResearchRound(
         },
       ],
     }),
-    signal: timedSignal(180_000, signal),
+    signal: timedSignal(deepWorker.timeoutMs, signal),
   });
 
   if (!response.ok) throw new Error(`Ollama ตอบกลับด้วยสถานะ ${response.status}`);

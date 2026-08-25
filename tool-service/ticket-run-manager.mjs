@@ -49,6 +49,8 @@ function publicRun(run) {
     latest_url: run.latest_url,
     full_loop_verified: run.full_loop_verified === true,
     payment_handoff_verified: run.payment_handoff_verified === true,
+    result_status: run.result_status,
+    result_reason: run.result_reason,
   };
 }
 
@@ -241,10 +243,16 @@ export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh
         run.detail = run.result_status
           ? `${run.result_status}${run.result_reason ? ` · ${run.result_reason}` : ""} (exit code ${code ?? 1})`
           : `Ticket Bot จบด้วย exit code ${code ?? 1}`;
-      } else {
+      } else if (run.payment_handoff_verified) {
         run.status = "completed";
-        run.stage = run.payment_handoff_verified ? "completed_payment_handoff" : "completed_without_payment_handoff";
-        run.detail = run.payment_handoff_verified ? "process จบหลังยืนยัน PAYMENT_HANDOFF" : "process จบ แต่ยังไม่มีหลักฐาน PAYMENT_HANDOFF";
+        run.stage = "completed_payment_handoff";
+        run.detail = "process จบหลังยืนยัน PAYMENT_HANDOFF";
+      } else {
+        run.status = "not_verified";
+        run.stage = run.result_status ? run.result_status.toLowerCase() : "ended_without_payment_handoff";
+        run.detail = run.result_status
+          ? `${run.result_status}${run.result_reason ? ` · ${run.result_reason}` : ""} · ยังไม่ผ่าน Full Loop`
+          : "process จบโดยยังไม่มีหลักฐาน PAYMENT_HANDOFF — ไม่ถือว่าผ่าน";
       }
       run.child = null;
     });

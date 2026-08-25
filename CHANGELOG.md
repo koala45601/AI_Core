@@ -1,5 +1,15 @@
 # Alpha changelog
 
+## 1.1.0-beta.23 — 2026-08-25
+
+- “ตรวจคอนเสิร์ต” refreshes each open/upcoming event once, stores announced show dates plus queue/sale times in D1, and reuses that session cache until the user explicitly refreshes again.
+- Multi-day events require a saved day/round selection before build; the generated bot keeps that exact selection through the same waiting-room session and never falls back to another day silently.
+- Recognizes the real visible ThaiTicketMajor `เลือกรอบ/ประเภทบัตร` control as sale entry and activates it during a live run.
+- Inspect-only keeps the visible isolated Chrome window open for review and reports `INSPECTION_ONLY_NOT_FULL_LOOP` instead of completion.
+- A zero-exit process without verified `PAYMENT_HANDOFF` is reported as `not_verified`, never `completed`.
+- Ticket Studio shows a readable action timeline and separates Fixture, live runtime, and verified Full Loop states.
+- The browser remains visible without moving the system mouse; API observations and DOM actions are surfaced as runtime evidence.
+
 ## 1.1.0-beta.21 — 2026-08-25
 
 - Added a real Ticket Run Manager: build success can start the generated Ticket Bot process instead of stopping at fixture verification.
@@ -18,6 +28,7 @@
 - Active queue detection now requires explicit queue-progress evidence and no longer treats generic waiting-room wording as proof.
 - Purchase entry requires a visible, enabled control instead of incidental “ซื้อบัตร” text in event instructions.
 - Ticket-selection state now requires visible seat/zone/quantity controls; event copy containing “เลือกที่นั่ง” is not accepted as live seat inventory evidence.
+- Ticket Studio labels fixture-only builds as `Fixture เท่านั้น`; only runtime `PAYMENT_HANDOFF` evidence may display `Full Loop ผ่าน`.
 - Generated bots keep the same browser session alive before queue/sale opening, use bounded waits, and recover if a verified control disappears before click.
 - Added generated fixture coverage for hidden/instructional queue and purchase copy.
 

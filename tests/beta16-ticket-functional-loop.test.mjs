@@ -64,11 +64,41 @@ test("an on-sale performance-time link is a verified sale entry", () => {
     url: "https://www.thaiticketmajor.com/concert/on-sale.html",
     title: "On-sale concert",
     body_text: `วันที่แสดง\n24 ตุลาคม 2569\nวันเปิดจำหน่าย\n25 สิงหาคม 2569, 12:00 น.\nTicket Status\nON SALE NOW`,
-    controls: [{ label: "19:00", semantic_role: "schedule", selector: "", context_text: "เมืองไทยรัชดาลัย เธียเตอร์ 19:00" }],
+    controls: [{ label: "19:00 ซื้อบัตร", semantic_role: "schedule", selector: "[data-button='round-1']", context_text: "24 ตุลาคม 2569 19:00 ซื้อบัตร" }],
   });
-  assert.equal(facts.performance_options[0].label, "19:00");
+  assert.equal(facts.performance_options[0].label, "19:00 ซื้อบัตร");
   assert.equal(facts.sale_status, "open");
   assert.equal(evaluateTicketPreflight(facts).workflow_state, "sale_entry");
+});
+
+test("announced multi-day performances and queue time are retained before queue entry", () => {
+  const facts = extractTicketPageFacts({
+    url: "https://www.thaiticketmajor.com/concert/multi-day.html",
+    title: "Multi-day concert",
+    body_text: `วันที่แสดง
+วันเสาร์ที่ 7 พฤศจิกายน 2569 - วันอาทิตย์ที่ 8 พฤศจิกายน 2569
+สถานที่แสดง
+Arena
+วันเปิดจำหน่าย
+วันเสาร์ที่ 30 พฤษภาคม 2569, 10:00 น.
+Ticket Status
+COMING SOON
+จำหน่ายบัตรรอบทั่วไป
+วันที่ 30 พฤษภาคม 2569 กดคิว 9:00 น. เปิดจำหน่าย 10:00 น. เป็นต้นไป`,
+    announced_performances: [
+      { label: "18:00", context_text: "วันเสาร์ที่ 7 พฤศจิกายน 2569 18:00", data_button: "9097", target_url: "https://tickets.test/day-1", disabled: true },
+      { label: "18:00", context_text: "วันอาทิตย์ที่ 8 พฤศจิกายน 2569 18:00", data_button: "9098", target_url: "https://tickets.test/day-2", disabled: true },
+    ],
+    controls: [
+      { label: "เลือกรอบ/ประเภทบัตร", semantic_role: "schedule", selector: "" },
+      { label: "18:00", context_text: "18:00", semantic_role: "schedule", data_button: "9097", target_url: "https://tickets.test/day-1", selector: "[data-button='9097']" },
+    ],
+  });
+  assert.deepEqual(facts.show_dates.map((item) => item.iso), ["2026-11-07T00:00:00+07:00", "2026-11-08T00:00:00+07:00"]);
+  assert.deepEqual(facts.performance_options.map((item) => item.schedule), ["2026-11-07T18:00:00+07:00", "2026-11-08T18:00:00+07:00"]);
+  assert.equal(facts.queue_open_at, "2026-05-30T09:00:00+07:00");
+  assert.equal(facts.sale_entry_controls.length, 0);
+  assert.equal(evaluateTicketPreflight(facts).workflow_state, "pre_sale");
 });
 
 test("purchase history is never treated as an event purchase control", () => {
@@ -147,6 +177,6 @@ test("launcher waits for the real web health endpoint before reporting ready", a
   const launcher = await source("start-alpha-v11.command");
   assert.match(launcher, /WEB_READY=false/);
   assert.match(launcher, /http:\/\/localhost:3000\/api\/health/);
-  assert.match(launcher, /"app_version":"1\.1\.0-beta\.18"/);
+  assert.match(launcher, /"app_version":"1\.1\.0-beta\.23"/);
   assert.match(launcher, /หน้าเว็บ Alpha เปิดไม่สำเร็จ/);
 });

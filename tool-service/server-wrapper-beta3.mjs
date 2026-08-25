@@ -1,9 +1,10 @@
 import http from "node:http";
 import net from "node:net";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 const appDir = resolve(process.env.ALPHA_APP_DIR || process.argv[2] || process.cwd());
 const publicPort = Number(process.env.ALPHA_TOOL_PORT || 4317);
@@ -197,6 +198,132 @@ async function safeCommand(command, args = [], timeout = 10_000, env = {}) {
   }
 }
 
+// alpha-beta6-host-filesystem-v1
+const hostOutputsDir = resolve(appDir, "outputs", "Alpha Outputs");
+const hostBlockedRoots = ["/System", "/usr", "/bin", "/sbin", "/private", "/Library", "/Applications"];
+const hostBlockedSensitiveParts = ["/.ssh", "/.gnupg", "/Library/Keychains", "/Library/Mail", "/Library/Messages", "/Library/Safari", "/Library/Application Support/Google/Chrome"];
+
+function hostPathInside(child, parent) {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith(".." + sep) && rel !== "..");
+}
+
+function hostFsAllowed(rawPath, settings = {}) {
+  const target = resolve(String(rawPath || ""));
+  if (!String(rawPath || "").startsWith("/")) throw new Error("host_fs ต้องใช้ absolute path ของ macOS");
+  if (hostBlockedRoots.some((root) => target === root || target.startsWith(root + sep))) throw new Error("ตำแหน่งระบบ macOS นี้ไม่อยู่ในขอบเขต host_fs");
+  if (hostBlockedSensitiveParts.some((part) => target.includes(part))) throw new Error("ตำแหน่งนี้มีข้อมูลลับหรือข้อมูลส่วนตัว");
+  if (hostPathInside(target, appDir) || hostPathInside(target, hostOutputsDir)) return target;
+  const mode = String(settings.file_access_mode || "alpha_outputs");
+  if (mode === "full_user_files" && (hostPathInside(target, homedir()) || hostPathInside(target, "/Volumes"))) return target;
+  if (mode === "selected_folders" && Array.isArray(settings.allowed_file_roots) && settings.allowed_file_roots.some((root) => hostPathInside(target, String(root)))) return target;
+  throw new Error("path นี้อยู่นอกขอบเขตไฟล์ที่อนุญาตสำหรับ host_fs");
+}
+
+// alpha-beta12-host-access-routing-v1
+async function hostCanAccess(target, mode) {
+  try {
+    await fs.access(target, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function nearestExistingHostParent(target) {
+  let current = resolve(target);
+  while (true) {
+    try {
+      const stat = await fs.lstat(current);
+      if (stat.isDirectory()) return current;
+      return resolve(current, "..");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = resolve(current, "..");
+      if (parent === current) return current;
+      current = parent;
+    }
+  }
+}
+async function hostFs(args = {}, settings = {}) {
+  const action = new Set(["exists", "stat", "list", "access"]).has(String(args.action)) ? String(args.action) : "stat"; // alpha-beta12-host-access-routing-v1
+  const target = hostFsAllowed(args.path, settings);
+  if (action === "access") {
+    try {
+      const accessStat = await fs.lstat(target);
+      const readable = await hostCanAccess(target, 4);
+      const writable = await hostCanAccess(target, 2);
+      const executable = await hostCanAccess(target, 1);
+      return {
+        ok: true,
+        host_scope: "macos",
+        docker_used: false,
+        action: "access",
+        path: target,
+        exists: true,
+        type: accessStat.isDirectory() ? "directory" : accessStat.isFile() ? "file" : accessStat.isSymbolicLink() ? "symlink" : "other",
+        readable,
+        writable,
+        executable,
+        creatable: accessStat.isDirectory() ? (writable && executable) : false,
+        nearest_existing_parent: accessStat.isDirectory() ? target : resolve(target, ".."),
+        app_dir: appDir,
+      };
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = await nearestExistingHostParent(resolve(target, ".."));
+      const parentWritable = await hostCanAccess(parent, 2);
+      const parentExecutable = await hostCanAccess(parent, 1);
+      return {
+        ok: true,
+        host_scope: "macos",
+        docker_used: false,
+        action: "access",
+        path: target,
+        exists: false,
+        readable: false,
+        writable: false,
+        executable: false,
+        creatable: parentWritable && parentExecutable,
+        nearest_existing_parent: parent,
+        parent_writable: parentWritable,
+        parent_executable: parentExecutable,
+        app_dir: appDir,
+      };
+    }
+  }
+  let stat;
+  try {
+    stat = await fs.lstat(target);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { ok: true, host_scope: "macos", docker_used: false, action, path: target, exists: false, app_dir: appDir };
+    throw error;
+  }
+  const kind = stat.isDirectory() ? "directory" : stat.isFile() ? "file" : stat.isSymbolicLink() ? "symlink" : "other";
+  const base = {
+    ok: true,
+    host_scope: "macos",
+    docker_used: false,
+    action,
+    path: target,
+    exists: true,
+    type: kind,
+    size: stat.size,
+    mode: (stat.mode & 0o777).toString(8).padStart(3, "0"),
+    mtime: stat.mtime.toISOString(),
+    app_dir: appDir,
+  };
+  if (action !== "list") return base;
+  if (!stat.isDirectory()) throw new Error("host_fs list ใช้ได้เฉพาะ directory");
+  const limit = Math.max(1, Math.min(200, Number(args.max_entries || 100)));
+  const entries = (await fs.readdir(target, { withFileTypes: true })).slice(0, limit).map((entry) => ({
+    name: entry.name,
+    path: join(target, entry.name),
+    type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
+  }));
+  return { ...base, entries, entry_count: entries.length, truncated: entries.length >= limit };
+}
+
 async function systemCapability(args = {}) {
   const area = new Set(["general", "development", "wifi", "security"]).has(String(args.area)) ? String(args.area) : "general";
   const requested = Array.isArray(args.commands) ? args.commands.map(String).slice(0, 20) : [];
@@ -366,6 +493,284 @@ async function installPackage(args, approved = false, confirmationId = "") {
   };
 }
 
+// alpha-beta4-batch-install-v1
+function validateFormulaList(values) {
+  const list = Array.isArray(values) ? values : [];
+  const formulas = [...new Set(list.map(validateFormula))].slice(0, 8);
+  if (!formulas.length) throw new Error("ต้องระบุ package อย่างน้อย 1 รายการ");
+  return formulas;
+}
+
+async function queueBatchInstallConfirmation(packages, reason) {
+  const now = Date.now();
+  const key = packages.slice().sort().join("|");
+  for (const [id, item] of pending) {
+    const existingKey = item.type === "install_packages" && Array.isArray(item.args?.packages)
+      ? item.args.packages.slice().sort().join("|") : "";
+    if (existingKey === key && ["pending", "running"].includes(String(item.status))) {
+      item.updatedAt = now;
+      item.expiresAt = now + CONFIRMATION_TTL_MS;
+      await persistPending();
+      return id;
+    }
+  }
+  const id = randomUUID();
+  pending.set(id, {
+    type: "install_packages",
+    args: { packages, reason },
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: now + CONFIRMATION_TTL_MS,
+    cachedResult: null,
+  });
+  await persistPending();
+  return id;
+}
+
+async function installPackages(args, approved = false) {
+  const packages = validateFormulaList(args.packages);
+  const reason = String(args.reason || "จำเป็นสำหรับงานปัจจุบัน").trim().slice(0, 500);
+  const brew = await brewPath();
+  if (!brew) return {
+    ok: false,
+    package_manager_missing: true,
+    manager: "homebrew",
+    message: "ยังไม่พบ Homebrew ใน Mac จึงยังติดตั้ง formula ไม่ได้",
+    resume: false,
+  };
+
+  const missing = [];
+  const versions = {};
+  for (const formula of packages) {
+    const installed = await installedFormula(brew, formula);
+    if (installed) versions[formula] = installed;
+    else missing.push(formula);
+  }
+  if (!missing.length) return {
+    ok: true,
+    already_installed: true,
+    packages,
+    versions,
+    manager: "homebrew",
+    message: "ตรวจแล้ว dependency ครบ " + packages.length + " รายการ",
+    resume: true,
+    resume_prompt: "dependency ที่ต้องใช้มีครบแล้ว ให้ตรวจ capability ใหม่และดำเนินงานเดิมต่อทันที",
+  };
+
+  for (const formula of missing) {
+    const info = await run(brew, ["info", "--json=v2", formula], {
+      timeout: 60_000,
+      allowFailure: true,
+      env: { HOMEBREW_NO_AUTO_UPDATE: "1", HOMEBREW_NO_ENV_HINTS: "1" },
+    });
+    if (info.code !== 0) throw new Error("ไม่พบ Homebrew formula '" + formula + "'");
+  }
+
+  if (!approved) {
+    const id = await queueBatchInstallConfirmation(missing, reason);
+    return {
+      ok: false,
+      confirmation_required: true,
+      confirmation_id: id,
+      expires_at: pending.get(id)?.expiresAt,
+      summary: "ต้องติดตั้ง " + missing.join(", ") + " เพื่อ" + reason + " — อนุญาตติดตั้งทั้งหมดครั้งเดียวหรือไม่?",
+      packages: missing,
+      manager: "homebrew",
+    };
+  }
+
+  const startedAt = Date.now();
+  const result = await run(brew, ["install", ...missing], {
+    timeout: 30 * 60_000,
+    allowFailure: true,
+    env: { HOMEBREW_NO_AUTO_UPDATE: "1", HOMEBREW_NO_ENV_HINTS: "1", NONINTERACTIVE: "1" },
+  });
+  const verified = {};
+  for (const formula of missing) verified[formula] = await installedFormula(brew, formula);
+  const failed = missing.filter((formula) => !verified[formula]);
+  const safeNames = missing.join("_").replace(/[^a-z0-9_.@+-]/g, "_");
+  const logPath = resolve(installLogDir, String(startedAt) + "-batch-" + safeNames + ".log");
+  await fs.writeFile(logPath, [result.stdout, result.stderr].filter(Boolean).join("\n"), "utf8").catch(() => {});
+  if (result.code !== 0 || failed.length) return {
+    ok: false,
+    packages: missing,
+    installed: Object.entries(verified).filter(([, version]) => Boolean(version)).map(([name]) => name),
+    failed,
+    manager: "homebrew",
+    message: "ติดตั้ง dependency ไม่ครบ: " + (failed.join(", ") || "Homebrew returned an error"),
+    error: result.stderr.trim().split("\n").slice(-8).join("\n") || "Homebrew batch install failed",
+    log_path: logPath,
+    resume: false,
+  };
+  return {
+    ok: true,
+    packages: missing,
+    versions: verified,
+    manager: "homebrew",
+    message: "ติดตั้ง dependency สำเร็จ " + missing.length + " รายการ: " + missing.join(", "),
+    log_path: logPath,
+    resume: true,
+    resume_prompt: "ติดตั้ง dependency ที่ขาดทั้งหมดสำเร็จแล้ว ให้ตรวจ system_capability ใหม่ จากนั้นดำเนินงานเดิมต่ออัตโนมัติจนจบหรือจนพบ approval/ข้อจำกัดใหม่ที่จำเป็นจริง",
+  };
+}
+// alpha-beta10-host-execution-v1
+function hostPathInsideWorkspace(target) {
+  const root = resolve(appDir);
+  const absolute = resolve(target);
+  return absolute === root || absolute.startsWith(root + "/");
+}
+
+function hostPathSensitive(target) {
+  const absolute = resolve(target);
+  const relativePath = absolute === resolve(appDir) ? "" : absolute.slice(resolve(appDir).length + 1);
+  const segments = relativePath.split("/").filter(Boolean);
+  if (segments.includes(".git")) return true;
+  const leaf = segments.at(-1) || "";
+  return leaf === ".dev.vars" || leaf === ".env" || leaf.startsWith(".env.");
+}
+
+function validateHostArgs(value) {
+  const args = Array.isArray(value) ? value.slice(0, 32).map((item) => String(item)) : [];
+  for (const item of args) {
+    if (item.length > 2000 || item.includes("\0")) throw new Error("argument สำหรับ host execution ไม่ถูกต้อง");
+  }
+  return args;
+}
+
+async function resolveHostArtifact(rawPath) {
+  const requested = String(rawPath || "").trim();
+  if (!requested.startsWith("/")) throw new Error("run_host_artifact ต้องใช้ absolute path ของ Artifact");
+  const resolved = resolve(requested);
+  if (!hostPathInsideWorkspace(resolved)) throw new Error("HOST_ARTIFACT_OUT_OF_WORKSPACE: รันบน Mac ได้เฉพาะ Artifact ภายใน workspace ของ Alpha");
+  if (hostPathSensitive(resolved)) throw new Error("HOST_ARTIFACT_PROTECTED: ไม่อนุญาตให้รันไฟล์ลับหรือ metadata ของ workspace");
+  const real = await fs.realpath(resolved).catch(() => "");
+  if (!real || !hostPathInsideWorkspace(real) || hostPathSensitive(real)) throw new Error("HOST_ARTIFACT_INVALID: Artifact ไม่มีอยู่จริงหรือ symlink ออกจาก workspace");
+  const stat = await fs.stat(real);
+  if (!stat.isFile()) throw new Error("run_host_artifact รองรับเฉพาะไฟล์");
+  if (stat.size > 2 * 1024 * 1024) throw new Error("Artifact ใหญ่เกิน 2MB สำหรับ host execution preview");
+  const lower = basename(real).toLowerCase();
+  let interpreter = "";
+  if (lower.endsWith(".sh")) interpreter = "/bin/zsh";
+  else if (lower.endsWith(".py")) interpreter = await executablePath("python3");
+  else if (lower.endsWith(".js") || lower.endsWith(".mjs")) interpreter = process.execPath;
+  else throw new Error("run_host_artifact รองรับ .sh, .py, .js และ .mjs เท่านั้น");
+  if (!interpreter) throw new Error("ไม่พบ interpreter ที่ต้องใช้บน Mac");
+  return { path: real, interpreter };
+}
+
+function runHostProcess(command, args, options = {}) {
+  return new Promise((resolveRun, reject) => {
+    const safeEnv = {};
+    for (const key of ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL"]) {
+      if (process.env[key]) safeEnv[key] = process.env[key];
+    }
+    safeEnv.ALPHA_EXECUTION_SCOPE = "macos_host";
+    const child = spawn(command, args, {
+      cwd: options.cwd || appDir,
+      env: safeEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    const timeout = Math.min(600_000, Math.max(1_000, Number(options.timeout || 120_000)));
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      if (!settled) { settled = true; reject(new Error("HOST_EXECUTION_TIMEOUT")); }
+    }, timeout);
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveRun({
+        code: code ?? 1,
+        stdout: Buffer.concat(stdout).toString("utf8").slice(0, 64_000),
+        stderr: Buffer.concat(stderr).toString("utf8").slice(0, 32_000),
+      });
+    });
+  });
+}
+
+async function queueHostArtifactConfirmation(args, resolvedArtifact) {
+  const now = Date.now();
+  const key = resolvedArtifact.path + "|" + JSON.stringify(validateHostArgs(args.args));
+  for (const [id, item] of pending) {
+    const existingKey = item.type === "run_host_artifact" ? String(item.key || "") : "";
+    if (existingKey === key && ["pending", "running"].includes(String(item.status))) {
+      item.updatedAt = now;
+      item.expiresAt = now + CONFIRMATION_TTL_MS;
+      await persistPending();
+      return id;
+    }
+  }
+  const id = randomUUID();
+  pending.set(id, {
+    type: "run_host_artifact",
+    key,
+    args: { ...args, path: resolvedArtifact.path },
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: now + CONFIRMATION_TTL_MS,
+    cachedResult: null,
+  });
+  await persistPending();
+  return id;
+}
+
+// alpha-beta11-full-host-permission-v1
+function fullHostPermission(settings = {}) {
+  return String(settings?.file_access_mode || "") === "full_user_files";
+}
+
+async function runHostArtifact(args, approved = false, settings = {}) {
+  const artifact = await resolveHostArtifact(args.path);
+  const runArgs = validateHostArgs(args.args);
+  const reason = String(args.reason || "งานนี้ต้องใช้ environment จริงของ Mac").trim().slice(0, 600);
+  const timeoutSeconds = Math.min(600, Math.max(1, Number(args.timeout_seconds || 120)));
+  if (!approved && !fullHostPermission(settings)) {
+    const id = await queueHostArtifactConfirmation(args, artifact);
+    return {
+      ok: false,
+      confirmation_required: true,
+      confirmation_id: id,
+      expires_at: pending.get(id)?.expiresAt,
+      summary: "อนุญาตให้อัลฟ่ารัน " + basename(artifact.path) + " บน Mac เครื่องจริง (ไม่ใช่ Docker) เพื่อ" + reason + " หรือไม่?",
+      path: artifact.path,
+      interpreter: artifact.interpreter,
+      execution_scope: "macos_host",
+      docker_used: false,
+    };
+  }
+  const result = await runHostProcess(artifact.interpreter, [artifact.path, ...runArgs], { cwd: dirname(artifact.path), timeout: timeoutSeconds * 1000 });
+  return {
+    ok: result.code === 0,
+    message: result.code === 0 ? "รัน " + basename(artifact.path) + " บน Mac จริงเสร็จแล้ว" : "รัน " + basename(artifact.path) + " บน Mac จริงจบด้วย exit code " + result.code,
+    path: artifact.path,
+    interpreter: artifact.interpreter,
+    args: runArgs,
+    exit_code: result.code,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    execution_scope: "macos_host",
+    host_scope: "macos",
+    docker_used: false,
+    permission_mode: fullHostPermission(settings) ? "persistent_full" : (approved ? "approved_once" : "default"),
+    approval_skipped: fullHostPermission(settings),
+    resume: result.code === 0,
+    resume_prompt: result.code === 0 ? "host execution สำเร็จแล้ว ให้ใช้ stdout/stderr เป็นหลักฐานและดำเนิน workflow เดิมต่อจนจบ" : "",
+  };
+}
+
 function virtualWirelessSkill() {
   return {
     id: "mac-wireless-audit-controller",
@@ -459,6 +864,8 @@ async function augmentedHealth(request, response) {
     return json(response, core.status, {
       ...payload,
       host_capability_ready: true,
+      host_filesystem_ready: true,
+      app_dir: appDir,
       package_install_ready: Boolean(brew),
       package_manager: brew ? "homebrew" : "none",
       approval_store: "persistent",
@@ -497,7 +904,11 @@ async function confirmHostAction(id, approved) {
   try {
     const result = item.type === "install_package"
       ? await installPackage(item.args || {}, true, id)
-      : { ok: false, error: "confirmation type ไม่รู้จัก", resume: false };
+      : item.type === "install_packages"
+        ? await installPackages(item.args || {}, true)
+        : item.type === "run_host_artifact"
+          ? await runHostArtifact(item.args || {}, true)
+          : { ok: false, error: "confirmation type ไม่รู้จัก", resume: false };
     item.status = result.ok ? "completed" : "failed";
     item.updatedAt = Date.now();
     item.cachedResult = result;
@@ -530,9 +941,26 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/v1/tool/execute" && request.method === "POST") {
       const { buffer, value: body } = await readJson(request);
       const name = String(body.name || "");
+      if (name === "host_fs") return json(response, 200, await hostFs(body.arguments || {}, body.settings || {}));
       if (name === "system_capability") return json(response, 200, await systemCapability(body.arguments || {}));
+      if (name === "run_host_artifact") {
+        const result = await runHostArtifact(body.arguments || {}, false, body.settings || {});
+        return json(response, result.confirmation_required ? 409 : (result.ok ? 200 : 500), result);
+      }
+      if (name === "install_packages") {
+        const result = await installPackages(body.arguments || {}, fullHostPermission(body.settings || {}));
+        if (fullHostPermission(body.settings || {}) && result && typeof result === "object") {
+          result.permission_mode = "persistent_full";
+          result.approval_skipped = true;
+        }
+        return json(response, result.confirmation_required ? 409 : 200, result);
+      }
       if (name === "install_package") {
-        const result = await installPackage(body.arguments || {}, false);
+        const result = await installPackage(body.arguments || {}, fullHostPermission(body.settings || {}));
+        if (fullHostPermission(body.settings || {}) && result && typeof result === "object") {
+          result.permission_mode = "persistent_full";
+          result.approval_skipped = true;
+        }
         return json(response, result.confirmation_required ? 409 : 200, result);
       }
       if (name === "list_learned_skills") {

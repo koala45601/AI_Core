@@ -2,6 +2,7 @@ import { domainAllowed } from "@/lib/policy.js";
 import { getSettings } from "@/lib/settings-store";
 import { executeTool, getTicketRun, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult } from "@/lib/tool-client"; // alpha-beta21-ticket-runtime-v1
 import { AppSettings } from "@/lib/types";
+import { loadTicketScheduleCache, saveTicketScheduleCache, TicketScheduleCacheRecord } from "@/lib/ticket-event-cache";
 
 type TicketAction = "inspect" | "inspect_form" | "build" | "run" | "run_status" | "run_input" | "run_stop";
 type TicketSaleStatus = "open" | "upcoming" | "sold_out" | "closed" | "ended" | "cancelled" | "unknown";
@@ -19,6 +20,12 @@ interface TicketEvent {
   status_evidence?: string;
   inventory_status?: "not_checked" | "available" | "sold_out" | "unknown";
   inventory_evidence?: string;
+  show_dates?: Array<{ raw?: string; iso?: string }>;
+  performance_options?: Array<{ schedule?: string; label?: string; context_text?: string; selector?: string; data_button?: string; target_url?: string }>;
+  queue_open_at?: string;
+  schedule_checked_at?: number;
+  schedule_status?: "fresh" | "cached" | "unavailable";
+  cached_inspection?: Record<string, unknown>;
 }
 
 interface TicketBuildInput {
@@ -27,6 +34,7 @@ interface TicketBuildInput {
   selected_event_id?: unknown;
   selected_event_name?: unknown;
   schedule?: unknown;
+  selected_performance?: unknown;
   sale_open_at?: unknown;
   queue_open_at?: unknown;
   seat_mode?: unknown;
@@ -68,15 +76,29 @@ function assertInternetAndDomain(url: string, settings: AppSettings) {
   if (!domainAllowed(url, settings)) throw new Error("เว็บไซต์นี้ถูกบล็อกโดย blocked_domains หรือไม่อยู่ใน allowed_domains");
 }
 
+function canonicalTicketEventUrl(value: unknown): string {
+  const text = asText(value, 2_000);
+  try {
+    const parsed = new URL(text);
+    if (parsed.hostname.toLowerCase() === "booking.thaiticketmajor.com" && /^\/concert\//i.test(parsed.pathname)) {
+      parsed.hostname = "www.thaiticketmajor.com";
+    }
+    return parsed.toString();
+  } catch {
+    return text;
+  }
+}
+
 function normalizedEvents(result: ToolExecutionResult): TicketEvent[] {
   if (!Array.isArray(result.events)) return [];
   const allowedStatuses = new Set<TicketSaleStatus>(["open", "upcoming", "sold_out", "closed", "ended", "cancelled", "unknown"]);
   return result.events.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
-    const id = asText(record.id, 500);
+    const rawId = asText(record.id, 500);
     const name = asText(record.name, 500);
-    const url = asText(record.url, 2_000);
+    const url = canonicalTicketEventUrl(record.url);
+    const id = /^https?:\/\//i.test(rawId) ? canonicalTicketEventUrl(rawId) : rawId;
     const rawStatus = asText(record.sale_status, 30) as TicketSaleStatus;
     const status = allowedStatuses.has(rawStatus) ? rawStatus : "unknown";
     if (!id || !name || !url) return [];
@@ -102,9 +124,10 @@ function safeCandidates(value: unknown): TicketEvent[] {
   return value.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
-    const id = asText(record.id, 500);
+    const rawId = asText(record.id, 500);
     const name = asText(record.name, 500);
-    const url = asText(record.url, 2_000);
+    const url = canonicalTicketEventUrl(record.url);
+    const id = /^https?:\/\//i.test(rawId) ? canonicalTicketEventUrl(rawId) : rawId;
     const status = asText(record.sale_status, 30);
     if (!id || !name || !url || !["open", "upcoming"].includes(status) || record.selectable === false) return [];
     return [{
@@ -128,6 +151,46 @@ function safeSelectors(value: unknown): Record<string, string> {
     .filter(([key, selector]) => /^[a-zA-Z0-9_.-]{1,80}$/.test(key) && typeof selector === "string" && selector.length <= 500 && selector.trim())
     .slice(0, 30)
     .map(([key, selector]) => [key, String(selector).trim()]));
+}
+
+function safeSelectedPerformance(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const performance = {
+    schedule: asText(record.schedule, 300),
+    label: asText(record.label, 300),
+    context_text: asText(record.context_text, 500),
+    selector: asText(record.selector, 500),
+    data_button: asText(record.data_button, 120),
+    target_url: asText(record.target_url, 2_000),
+  };
+  return performance.schedule || performance.context_text || performance.label ? performance : null;
+}
+
+function safePerformanceOptions(value: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(value)) return [];
+  const options = value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    .slice(0, 60)
+    .map((item) => ({
+      schedule: asText(item.schedule, 300), label: asText(item.label, 300), context_text: asText(item.context_text, 500),
+      selector: asText(item.selector, 500), data_button: asText(item.data_button, 120), target_url: asText(item.target_url, 2_000),
+    }));
+  const datedTimes = new Set(options.flatMap((option) => {
+    const text = `${option.schedule} ${option.context_text} ${option.label}`;
+    const dated = /^\d{4}-\d{2}-\d{2}T/.test(option.schedule) || /\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}/.test(text);
+    return dated ? (text.match(/\b\d{1,2}:\d{2}\b/g) || []) : [];
+  }));
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    const text = `${option.schedule} ${option.context_text} ${option.label}`;
+    const time = text.match(/\b\d{1,2}:\d{2}\b/)?.[0] || "";
+    const dated = /^\d{4}-\d{2}-\d{2}T/.test(option.schedule) || /\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}/.test(text);
+    if (!dated && time && datedTimes.has(time)) return false;
+    const key = option.data_button ? `button:${option.data_button}` : option.target_url ? `url:${option.target_url}` : `${option.schedule}\u0000${option.context_text}\u0000${option.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return Boolean(option.schedule || option.context_text || option.label);
+  });
 }
 
 function safeApiEvidence(value: unknown): Array<Record<string, unknown>> {
@@ -195,8 +258,9 @@ async function inspectPageOnce(url: string, settings: AppSettings, mode: "events
   return Object.assign({}, result, { requested_url: url, inspection_url: inspectionUrl, used_public_fallback: usedPublicFallback });
 }
 
-async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form"): Promise<TicketInspectionResult> {
+async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form", forceRefresh = false): Promise<TicketInspectionResult> {
   const key = `${mode}:${url}`;
+  if (forceRefresh) inspectionFlights.delete(key);
   const current = inspectionFlights.get(key);
   if (current && current.expires_at > Date.now()) return current.promise;
 
@@ -247,8 +311,75 @@ export async function POST(request: Request) {
     if (action === "inspect") {
       const url = publicHttpUrl(body.url);
       assertInternetAndDomain(url, settings);
-      const inspected = await inspectPage(url, settings, "events");
-      const events = normalizedEvents(inspected);
+      await executeTool("browser_action", { action: "reset_public_inspection", public_inspection: true }, settings);
+      const inspected = await inspectPage(url, settings, "events", true);
+      const listedEvents = normalizedEvents(inspected);
+      const oldCache = await loadTicketScheduleCache(url);
+      const cacheUpdates: TicketScheduleCacheRecord[] = [];
+      let freshScheduleCount = 0;
+      let cachedScheduleCount = 0;
+      const events: TicketEvent[] = [];
+      for (const event of listedEvents) {
+        if (!event.selectable || !["open", "upcoming"].includes(event.sale_status || "unknown")) {
+          events.push(event);
+          continue;
+        }
+        try {
+          const detail = await inspectPage(event.url, settings, "form", true);
+          const facts = detail.facts && typeof detail.facts === "object" && !Array.isArray(detail.facts) ? detail.facts as Record<string, unknown> : {};
+          const showDates = Array.isArray(facts.show_dates) ? facts.show_dates.filter((item): item is { raw?: string; iso?: string } => Boolean(item && typeof item === "object")).slice(0, 30) : [];
+          const performanceOptions = safePerformanceOptions(facts.performance_options).slice(0, 30);
+          const checkedAt = Date.now();
+          const enriched: TicketEvent = {
+            ...event,
+            show_dates: showDates,
+            performance_options: performanceOptions,
+            sale_open_at: asText(facts.sale_open_at, 200) || event.sale_open_at,
+            queue_open_at: asText(facts.queue_open_at, 200),
+            schedule_checked_at: checkedAt,
+            schedule_status: "fresh",
+            cached_inspection: {
+              page: { url: asText(detail.url, 2_000), title: asText(detail.title, 500), requested_url: event.url, inspection_url: asText(detail.inspection_url, 2_000), used_public_fallback: detail.used_public_fallback === true },
+              candidates: detail.candidates && typeof detail.candidates === "object" ? detail.candidates : {},
+              ambiguous_roles: Array.isArray(detail.ambiguous_roles) ? detail.ambiguous_roles : [],
+              facts,
+              functional_preflight: detail.functional_preflight && typeof detail.functional_preflight === "object" ? detail.functional_preflight : {},
+              api_calls: [],
+            },
+          };
+          events.push(enriched);
+          freshScheduleCount += 1;
+          cacheUpdates.push({
+            source_url: url, event_id: event.id, event_name: event.name, event_url: event.url,
+            show_dates: showDates,
+            performance_options: performanceOptions.map(({ schedule, label, context_text }) => ({ schedule, label, context_text })),
+            sale_open_at: enriched.sale_open_at || "", queue_open_at: enriched.queue_open_at || "", updated_at: checkedAt,
+          });
+        } catch {
+          const cached = oldCache.get(event.id);
+          if (!cached) {
+            events.push({ ...event, schedule_status: "unavailable" });
+            continue;
+          }
+          cachedScheduleCount += 1;
+          const cachedPerformanceOptions = safePerformanceOptions(cached.performance_options);
+          events.push({
+            ...event,
+            show_dates: cached.show_dates,
+            performance_options: cachedPerformanceOptions,
+            sale_open_at: cached.sale_open_at || event.sale_open_at,
+            queue_open_at: cached.queue_open_at,
+            schedule_checked_at: cached.updated_at,
+            schedule_status: "cached",
+            cached_inspection: {
+              page: { requested_url: event.url, inspection_url: event.url }, candidates: {}, ambiguous_roles: [], api_calls: [],
+              facts: { event_name: event.name, event_url: event.url, show_dates: cached.show_dates, performance_options: cachedPerformanceOptions, sale_open_at: cached.sale_open_at, queue_open_at: cached.queue_open_at, sale_status: event.sale_status, evidence: [{ field: "schedule_cache", text: "cached announced dates", source: "ticket_event_schedule_cache" }] },
+              functional_preflight: { public_page_verified: false, runtime_discovery_required: true, can_build: true, workflow_state: event.sale_status === "upcoming" ? "pre_sale" : "runtime_discovery" },
+            },
+          });
+        }
+      }
+      await saveTicketScheduleCache(cacheUpdates);
       const counts = events.reduce((result, event) => {
         const status = event.sale_status || "unknown";
         result[status] = (result[status] || 0) + 1;
@@ -265,7 +396,8 @@ export async function POST(request: Request) {
         counts,
         excluded_count: unavailableCount,
         inventory: { scope: "listing_only", checked_count: inventoryCheckedCount, requires_login_for_live_stock: true },
-        message: events.length ? `เปิดช่วงขายตามหน้ารวม ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · พบป้าย SOLD OUT ${counts.sold_out || 0} · ปิดขาย ${counts.closed || 0} · จบงาน ${counts.ended || 0} · ยกเลิก ${counts.cancelled || 0} · ไม่ทราบ ${counts.unknown || 0} · ที่นั่งว่างยังไม่ได้ตรวจ ต้องเข้า Login/หน้าเลือกโซน${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
+        schedule_cache: { fresh_count: freshScheduleCount, cached_fallback_count: cachedScheduleCount, inventory_stored: false },
+        message: events.length ? `ตรวจวันแสดงใหม่ ${freshScheduleCount} งาน · ใช้ข้อมูลเดิมเพราะเว็บปฏิเสธชั่วคราว ${cachedScheduleCount} งาน · เปิดช่วงขาย ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · ไม่เก็บจำนวนบัตรหรือสถานะที่นั่ง${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
       });
     }
 
@@ -275,7 +407,7 @@ export async function POST(request: Request) {
       let inspected: TicketInspectionResult | null = null;
       let inspectionWarning = "";
       try {
-        inspected = await inspectPage(url, settings, "form");
+        inspected = await inspectPage(url, settings, "form", true);
       } catch (error) {
         inspectionWarning = error instanceof Error ? error.message : "หน้าเว็บไม่อนุญาตให้ตรวจแบบ passive";
       }
@@ -341,7 +473,16 @@ export async function POST(request: Request) {
       if (!selected) throw new Error("กรุณาเลือกคอนเสิร์ตจากรายการที่ตรวจพบก่อนสร้างบอท");
       if (selected.url !== eventUrl) throw new Error("URL ของคอนเสิร์ตไม่ตรงกับรายการที่เลือก กรุณาตรวจหน้าเว็บใหม่");
       assertInternetAndDomain(selected.url, settings);
-      let eventFacts: Record<string, unknown> = {
+      const suppliedFacts = input.event_facts && typeof input.event_facts === "object" && !Array.isArray(input.event_facts)
+        ? input.event_facts as Record<string, unknown> : null;
+      const suppliedPreflight = input.functional_preflight && typeof input.functional_preflight === "object" && !Array.isArray(input.functional_preflight)
+        ? input.functional_preflight as Record<string, unknown> : null;
+      const suppliedEventUrl = suppliedFacts ? asText(suppliedFacts.event_url, 2_000) : "";
+      const hasCachedScheduleEvidence = Boolean(suppliedFacts
+        && (!suppliedEventUrl || suppliedEventUrl === selected.url)
+        && ((Array.isArray(suppliedFacts.performance_options) && suppliedFacts.performance_options.length)
+          || (Array.isArray(suppliedFacts.show_dates) && suppliedFacts.show_dates.length)));
+      let eventFacts: Record<string, unknown> = hasCachedScheduleEvidence ? suppliedFacts! : {
         event_name: selected.name,
         event_url: selected.url,
         show_dates: selected.start_date ? [{ raw: selected.start_date }] : [],
@@ -349,14 +490,16 @@ export async function POST(request: Request) {
         sale_status: selected.sale_status,
         evidence: [{ field: "sale_status", text: selected.sale_status, source: "public_listing" }],
       };
-      let functionalPreflight: Record<string, unknown> = {};
+      let functionalPreflight: Record<string, unknown> = hasCachedScheduleEvidence && suppliedPreflight ? suppliedPreflight : {};
       let inspectionWarning = "";
-      try {
-        const liveInspection = await inspectPage(selected.url, settings, "form");
-        if (liveInspection.facts && typeof liveInspection.facts === "object" && !Array.isArray(liveInspection.facts)) eventFacts = liveInspection.facts as Record<string, unknown>;
-        if (liveInspection.functional_preflight && typeof liveInspection.functional_preflight === "object" && !Array.isArray(liveInspection.functional_preflight)) functionalPreflight = liveInspection.functional_preflight as Record<string, unknown>;
-      } catch (error) {
-        inspectionWarning = error instanceof Error ? error.message : "ตรวจหน้ารายละเอียดไม่ได้";
+      if (!hasCachedScheduleEvidence) {
+        try {
+          const liveInspection = await inspectPage(selected.url, settings, "form");
+          if (liveInspection.facts && typeof liveInspection.facts === "object" && !Array.isArray(liveInspection.facts)) eventFacts = liveInspection.facts as Record<string, unknown>;
+          if (liveInspection.functional_preflight && typeof liveInspection.functional_preflight === "object" && !Array.isArray(liveInspection.functional_preflight)) functionalPreflight = liveInspection.functional_preflight as Record<string, unknown>;
+        } catch (error) {
+          inspectionWarning = error instanceof Error ? error.message : "ตรวจหน้ารายละเอียดไม่ได้";
+        }
       }
       if (functionalPreflight.public_page_verified !== true) {
         const unresolved = Array.isArray(functionalPreflight.unresolved)
@@ -386,6 +529,14 @@ export async function POST(request: Request) {
       if (!new Set(["qr", "promptpay"]).has(paymentMethod)) throw new Error("รองรับวิธีชำระเงิน QR หรือ PromptPay ใน Full Loop นี้");
       const quantity = Math.min(10, Math.max(1, Math.floor(Number(input.quantity || 1))));
       const budget = Math.max(0, Number(input.budget || 0));
+      const selectedPerformance = safeSelectedPerformance(input.selected_performance);
+      const announcedPerformances = Array.isArray(eventFacts.performance_options) ? eventFacts.performance_options : [];
+      if (announcedPerformances.length > 1 && !selectedPerformance) throw new Error("คอนเสิร์ตนี้มีหลายวัน กรุณาเลือกรอบก่อนเริ่มบอท เพื่อไม่ให้เลือกรอบผิดหลังผ่านคิว");
+      if (selectedPerformance?.target_url) {
+        const performanceUrl = publicHttpUrl(selectedPerformance.target_url);
+        assertInternetAndDomain(performanceUrl, settings);
+        selectedPerformance.target_url = performanceUrl;
+      }
       const address = input.shipping_address && typeof input.shipping_address === "object" && !Array.isArray(input.shipping_address)
         ? Object.fromEntries(Object.entries(input.shipping_address as Record<string, unknown>).filter(([key, value]) => /^[a-zA-Z0-9_.-]{1,60}$/.test(key) && typeof value === "string" && value.trim()).slice(0, 20).map(([key, value]) => [key, String(value).trim().slice(0, 500)]))
         : {};
@@ -403,6 +554,7 @@ export async function POST(request: Request) {
           schedule: asText(input.schedule, 200)
             || asText((Array.isArray(eventFacts.show_dates) ? (eventFacts.show_dates[0] as Record<string, unknown> | undefined)?.iso : ""), 200)
             || asText((Array.isArray(eventFacts.show_dates) ? (eventFacts.show_dates[0] as Record<string, unknown> | undefined)?.raw : ""), 200),
+          selected_performance: selectedPerformance,
           sale_open_at: asText(eventFacts.sale_open_at, 200),
           queue_open_at: asText(input.queue_open_at, 200),
           seat_mode: seatMode,

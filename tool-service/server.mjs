@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import net from "node:net";
 import { chromium } from "playwright-core";
@@ -38,6 +38,7 @@ const pending = new Map();
 const extensionClients = new Set();
 let alphaContext = null;
 let publicInspectionContext = null;
+let publicInspectionProfile = "";
 let lastHeavyUse = 0;
 let idleSeconds = 300;
 let dockerOpenedByAlpha = false;
@@ -47,7 +48,7 @@ let storageError = "";
 let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
-const ticketRunManager = createTicketRunManager({ programCreateDir, requiredGeneratorVersion: "1.1.0-beta.22" });
+const ticketRunManager = createTicketRunManager({ programCreateDir, requiredGeneratorVersion: "1.1.0-beta.23" });
 
 if (token.length < 32) {
   console.error("ALPHA_TOOL_TOKEN is missing or too short");
@@ -662,15 +663,22 @@ async function ensureAlphaBrowser() {
 async function ensurePublicInspectionBrowser() {
   lastHeavyUse = Date.now();
   if (publicInspectionContext) return publicInspectionContext;
-  const profile = join(workDir, "public-inspection-profile");
-  await fs.mkdir(profile, { recursive: true });
+  const profile = await fs.mkdtemp(join(tmpdir(), "alpha-public-inspection-"));
+  publicInspectionProfile = profile;
   publicInspectionContext = await chromium.launchPersistentContext(profile, {
     channel: "chrome",
-    headless: true,
+    // ThaiTicketMajor's CDN rejects Chrome's headless transport even for public
+    // event pages. A normal isolated Chrome window can read the same public
+    // page without moving the user's system pointer or using their profile.
+    headless: false,
     acceptDownloads: false,
     viewport: { width: 1280, height: 820 },
   });
-  publicInspectionContext.on("close", () => { publicInspectionContext = null; });
+  publicInspectionContext.on("close", () => {
+    publicInspectionContext = null;
+    if (publicInspectionProfile === profile) publicInspectionProfile = "";
+    void fs.rm(profile, { recursive: true, force: true }).catch(() => {});
+  });
   return publicInspectionContext;
 }
 
@@ -730,11 +738,16 @@ async function inspectBrowserForm(page) {
     const element = node;
     const id = element.getAttribute("id") || "";
     const name = element.getAttribute("name") || "";
+    const dataButton = element.getAttribute("data-button") || "";
+    const href = element.getAttribute("href") || "";
+    const onclick = element.getAttribute("onclick") || "";
+    const targetMatch = onclick.match(/https?:\/\/[^'"\s)]+/i);
     const explicit = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent || "" : "";
     const wrapping = element.closest("label")?.textContent || "";
     const selector = id ? `#${CSS.escape(id)}`
       : name ? `${element.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`
         : element.getAttribute("data-testid") ? `[data-testid="${CSS.escape(element.getAttribute("data-testid"))}"]`
+          : dataButton ? `[data-button="${CSS.escape(dataButton)}"]`
           : element.tagName === "A" && element.getAttribute("href") && !String(element.getAttribute("href")).startsWith("javascript:")
             ? `a[href="${CSS.escape(element.getAttribute("href"))}"]`
           : "";
@@ -745,8 +758,9 @@ async function inspectBrowserForm(page) {
       tag: element.tagName.toLowerCase(), type: element.getAttribute("type") || "", id, name,
       autocomplete: element.getAttribute("autocomplete") || "", placeholder: element.getAttribute("placeholder") || "",
       aria_label: element.getAttribute("aria-label") || "", label: String(explicit || wrapping || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
-      context_text: String(element.closest("li, tr, article, section, .event, .round, .showtime, div")?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 300),
-      selector, options, disabled: Boolean(element.disabled), required: Boolean(element.required),
+      context_text: String(element.closest("tr, li, .row, .showtime, .round, .event, article, section, div")?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 300),
+      selector, data_button: dataButton, href: href.slice(0, 2_000), target_url: String(targetMatch?.[0] || "").slice(0, 2_000), options,
+      disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true" || element.classList.contains("disabled"), required: Boolean(element.required),
     };
   }));
   const mapped = controls.map((control) => ({ ...control, semantic_role: classifyFormControl(control), selector_confidence: control.selector ? (control.id ? 0.98 : 0.9) : 0.35 }));
@@ -783,6 +797,22 @@ async function inspectBrowserForm(page) {
       title: document.title,
       body_text: String(document.body?.innerText || "").slice(0, 60_000),
       structured_events: structured_events.slice(0, 30),
+      announced_performances: [...document.querySelectorAll(".box-event-list .row")].map((row) => {
+        const control = row.querySelector("a[data-button], button[data-button], a[onclick*='zones.php'], a[onclick*='rdId'], a, button");
+        const onclick = control?.getAttribute("onclick") || "";
+        const targetMatch = onclick.match(/https?:\/\/[^'"\s)]+/i);
+        const dataButton = control?.getAttribute("data-button") || "";
+        const text = String(row.textContent || "").trim().replace(/\s+/g, " ").slice(0, 300);
+        const label = String(control?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
+        return {
+          label,
+          context_text: text,
+          selector: dataButton ? `[data-button="${CSS.escape(dataButton)}"]` : "",
+          data_button: dataButton,
+          target_url: String(targetMatch?.[0] || "").slice(0, 2_000),
+          disabled: !control || Boolean(control.disabled) || control.getAttribute("aria-disabled") === "true" || control.classList.contains("disabled"),
+        };
+      }).filter((item) => /(?:\d{1,2}:\d{2}|\d{1,2}\s*(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s*\d{4})/.test(`${item.label} ${item.context_text}`)).slice(0, 50),
       discovered_zones: [...new Set([...document.querySelectorAll("area[href*='#'], [data-zone], [data-section]")].map((element) => {
         const href = String(element.getAttribute("href") || "");
         return String(element.getAttribute("data-zone") || element.getAttribute("data-section") || element.getAttribute("alt") || element.getAttribute("title") || href.split("#").pop() || "").trim();
@@ -1012,6 +1042,11 @@ async function inspectBrowserEvents(page) {
 }
 
 async function alphaBrowserAction(action, args) {
+  if (action === "reset_public_inspection") {
+    if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
+    publicInspectionContext = null;
+    return { ok: true, action, reset: true };
+  }
   const context = args.public_inspection === true ? await ensurePublicInspectionBrowser() : await ensureAlphaBrowser();
   let pages = context.pages();
   let page = pages.at(-1) || await context.newPage();

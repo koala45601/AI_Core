@@ -2,10 +2,10 @@ import { promises as fs } from "node:fs";
 import { resolve } from "node:path";
 
 const appDir = resolve(process.argv[2] || process.cwd());
-const marker = "alpha-beta22-visible-queue-evidence-v1";
+const marker = "alpha-beta23-visible-runtime-evidence-v1";
 
 async function writeAtomic(path, content) {
-  const temp = `${path}.beta22.tmp`;
+  const temp = `${path}.beta23.tmp`;
   await fs.writeFile(temp, content, "utf8");
   await fs.rename(temp, path);
 }
@@ -18,18 +18,24 @@ async function verifyAndMarkTemplate() {
     "def visible_actionable_controls(page):",
     "def visible_seat_control_count(page):",
     '"visible and enabled waiting-room control"',
-    '"visible and enabled purchase control"',
+    '"visible sale entry on an on-sale page"',
     '"reason": "waiting_for_visible_queue_or_sale_control"',
     '"status": "WAITING_ROOM_CONTROL_CHANGED"',
     '"status": "SERVER_ACCESS_DENIED"',
     'state == "unknown" and CONFIG.get("runtimeDiscoveryRequired")',
-    '"generatorVersion": "1.1.0-beta.22"',
-    '"generator_version": "1.1.0-beta.22"',
+    '"generatorVersion": "1.1.0-beta.23"',
+    '"generator_version": "1.1.0-beta.23"',
+    'เลือกรอบ\\s*/\\s*ประเภทบัตร',
+    '"status": "INSPECTION_ONLY_NOT_FULL_LOOP"',
+    '"browser_visible": True',
     'seat_control_count > 0',
+    "def activate_selected_performance(page):",
+    '"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE"',
+    '"selectedPerformance": {',
   ];
   const missing = required.filter((needle) => !source.includes(needle));
   if (missing.length) {
-    throw new Error(`Beta22 source is incomplete: ${missing.join(", ")}`);
+    throw new Error(`Beta23 source is incomplete: ${missing.join(", ")}`);
   }
   if (!source.includes(marker)) {
     source += `\n# ${marker}\n`;
@@ -52,8 +58,8 @@ async function updateInstalledTicketSkill() {
   await writeAtomic(entrypointPath, source);
   try {
     const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-    manifest.generator_version = "1.1.0-beta.22";
-    manifest.version = Math.max(Number(manifest.version || 1), 22);
+    manifest.generator_version = "1.1.0-beta.23";
+    manifest.version = Math.max(Number(manifest.version || 1), 23);
     manifest.updated_at = new Date().toISOString();
     await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   } catch {
@@ -64,13 +70,13 @@ async function updateInstalledTicketSkill() {
 async function updateVersionAndChangelog() {
   const packagePath = resolve(appDir, "package.json");
   const pkg = JSON.parse(await fs.readFile(packagePath, "utf8"));
-  pkg.version = "1.1.0-beta.22";
+  pkg.version = "1.1.0-beta.23";
   await writeAtomic(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 
   const changelogPath = resolve(appDir, "CHANGELOG.md");
   let changelog = await fs.readFile(changelogPath, "utf8");
-  if (!changelog.includes("## 1.1.0-beta.22")) {
-    const entry = `# Alpha changelog\n\n## 1.1.0-beta.22 — 2026-08-25\n\n- Repeated concert inspection and build/run clicks are serialized immediately in the UI, while the API reuses the same passive browser page and in-flight inspection instead of opening duplicate tabs or processes.\n- Passive inspection blocked by the public site now returns a truthful runtime-discovery result instead of an unhandled 500 error.\n- The launcher synchronizes the installed Ticket skill with the beta.22 generator, generated projects record their generator version, and stale or failed projects are rebuilt instead of silently rerun.\n- Repeated Run requests for the same active project reuse one process; stopped or failed runs retain their real result and reason.\n- Ticket Bot queue entry now requires a visible, enabled control; instructional copy containing “รับคิว” can no longer produce a false waiting-room state.\n- Active queue detection now requires explicit queue-progress evidence and no longer treats generic waiting-room wording as proof.\n- Purchase and seat-selection states require visible, enabled live controls instead of incidental instructional text.\n- Generated bots keep the same browser session alive before queue/sale opening, use bounded waits, and recover if a verified control disappears before click.\n- Added generated fixture coverage for hidden/instructional queue, purchase, and seat-selection copy.\n\n`;
+  if (!changelog.includes("## 1.1.0-beta.23")) {
+    const entry = `# Alpha changelog\n\n## 1.1.0-beta.23 — 2026-08-25\n\n- “ตรวจคอนเสิร์ต” refreshes each open/upcoming event once, stores announced show dates plus queue/sale times in D1, and reuses that session cache until the user explicitly refreshes again.\n- Multi-day events require a saved day/round selection before build; the generated bot keeps that exact selection through the same waiting-room session and never falls back to another day silently.\n- Recognizes the real visible ThaiTicketMajor “เลือกรอบ/ประเภทบัตร” control as sale entry and activates it during a live run.\n- Inspect-only keeps the visible isolated Chrome window open for review and reports INSPECTION_ONLY_NOT_FULL_LOOP instead of completion.\n- A zero-exit process without verified PAYMENT_HANDOFF is reported as not_verified, never completed.\n- Ticket Studio shows a readable action timeline and separates Fixture, live runtime, and verified Full Loop states.\n- The browser remains visible without moving the system mouse; API observations and DOM actions are surfaced as runtime evidence.\n\n`;
     changelog = changelog.replace(/^# Alpha changelog\n\n/, entry);
     await writeAtomic(changelogPath, changelog);
   }
@@ -79,4 +85,4 @@ async function updateVersionAndChangelog() {
 await verifyAndMarkTemplate();
 await updateInstalledTicketSkill();
 await updateVersionAndChangelog();
-console.log("Applied Alpha beta22 Ticket Bot visible-control evidence fix");
+console.log("Applied Alpha beta23 Ticket Bot schedule-cache and selected-performance fix");

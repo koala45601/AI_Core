@@ -34,6 +34,7 @@ runtime_discovery_required = bool(preflight.get("runtime_discovery_required"))
 show_dates = facts.get("show_dates") if isinstance(facts.get("show_dates"), list) else []
 first_show = show_dates[0] if show_dates and isinstance(show_dates[0], dict) else {}
 schedule = str(payload.get("schedule") or first_show.get("iso") or first_show.get("raw") or "").strip()
+selected_performance = payload.get("selected_performance") if isinstance(payload.get("selected_performance"), dict) else {}
 sale_open_at = str(payload.get("sale_open_at") or facts.get("sale_open_at") or "").strip()
 queue_open_at = str(payload.get("queue_open_at") or "").strip()
 seat_mode = str(payload.get("seat_mode", "")).casefold()
@@ -109,11 +110,19 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "1.1.0-beta.22",
+        "generatorVersion": "1.1.0-beta.23",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
         "schedule": schedule,
+        "selectedPerformance": {
+            "schedule": str(selected_performance.get("schedule", ""))[:300],
+            "label": str(selected_performance.get("label", ""))[:300],
+            "contextText": str(selected_performance.get("context_text", ""))[:500],
+            "selector": str(selected_performance.get("selector", ""))[:500],
+            "dataButton": str(selected_performance.get("data_button", ""))[:120],
+            "targetUrl": str(selected_performance.get("target_url", ""))[:2000],
+        },
         "saleOpenAt": sale_open_at,
         "runtimeDiscoveryRequired": runtime_discovery_required,
         "queueOpenAt": queue_open_at,
@@ -255,8 +264,8 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         state, evidence = "zone_selection", ["round and zone page"]
     elif seat_control_count > 0:
         state, evidence = "ticket_selection", [f"visible selectable seat controls ({seat_control_count})"]
-    elif re.search(r"buy now|buy ticket|book now|purchase|checkout|ซื้อบัตร|จองบัตร", actionable_text):
-        state, evidence = "sale_entry", ["visible and enabled purchase control"]
+    elif re.search(r"buy now|buy ticket|book now|purchase|checkout|ซื้อบัตร|จองบัตร", actionable_text) or (re.search(r"เลือกรอบ\s*/\s*ประเภทบัตร", actionable_text) and re.search(r"on\s*sale\s*now|เปิดจำหน่ายแล้ว|เปิดขายแล้ว", body)):
+        state, evidence = "sale_entry", ["visible sale entry on an on-sale page"]
     elif re.search(r"coming soon|เตรียมเปิดขาย|กำลังจะเปิด|เร็ว\s*ๆ\s*นี้|นับถอยหลังเวลารับคิวซื้อบัตร", text) or (remaining_seconds is not None and remaining_seconds > 0):
         imminent = remaining_seconds is not None and 0 < remaining_seconds <= 30 * 60
         state = "armed_pre_sale" if imminent else "pre_sale"
@@ -278,6 +287,7 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         "payment_evidence_count": payment_evidence_count,
         "actionable_control_count": len(snapshot.get("actionable_controls", []) or []),
         "seat_control_count": seat_control_count,
+        "actionable_labels": [str(item.get("label", "") if isinstance(item, dict) else item)[:160] for item in (snapshot.get("actionable_controls", []) or [])[:40]],
     }
 
 
@@ -524,6 +534,77 @@ def semantic_click(page, labels):
     return False
 
 
+def _performance_match_text(value):
+    return re.sub(r"\s+", " ", re.sub(r"(?:ซื้อบัตร|จองบัตร|buy\s*(?:now|ticket))\s*$", "", str(value or ""), flags=re.I)).strip()
+
+
+def activate_selected_performance(page):
+    selected = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
+    if not selected:
+        return semantic_click(page, sale_entry_labels())
+
+    selector = str(selected.get("selector", "")).strip()
+    wanted_context = _performance_match_text(selected.get("contextText") or selected.get("label") or selected.get("schedule"))
+    wanted_time = re.search(r"\b\d{1,2}:\d{2}\b", wanted_context or str(selected.get("schedule", "")))
+    wanted_date = re.search(r"(?:วัน[^\s-]{0,16}ที่\s*)?\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}", wanted_context)
+
+    def click_exact_control():
+        if selector:
+            try:
+                locator = page.locator(selector).first
+                if locator.count() and locator.is_enabled(timeout=500):
+                    locator.scroll_into_view_if_needed(timeout=1000)
+                    if locator.is_visible(timeout=500):
+                        locator.click()
+                        record("action", {"action": "select_announced_performance", "selector": selector, "schedule": selected.get("schedule"), "label": selected.get("label"), "same_queue_session": True})
+                        return True
+            except Exception:
+                pass
+        for scope in [page, *page.frames]:
+            controls = scope.locator("a[data-button], button[data-button], .box-event-list .row a, .box-event-list .row button")
+            try:
+                count = min(controls.count(), 100)
+            except Exception:
+                continue
+            for index in range(count):
+                control = controls.nth(index)
+                try:
+                    if not control.is_enabled(timeout=150):
+                        continue
+                    row_text = _performance_match_text(control.evaluate("element => (element.closest('.row,tr,li') || element).textContent || ''"))
+                    date_ok = not wanted_date or wanted_date.group(0) in row_text
+                    time_ok = not wanted_time or wanted_time.group(0) in row_text
+                    if date_ok and time_ok and (wanted_date or wanted_time):
+                        control.scroll_into_view_if_needed(timeout=1000)
+                        if control.is_visible(timeout=500):
+                            control.click()
+                            record("action", {"action": "select_announced_performance", "schedule": selected.get("schedule"), "matched_row": row_text[:300], "same_queue_session": True})
+                            return True
+                except Exception:
+                    pass
+        return False
+
+    if click_exact_control():
+        return True
+    try:
+        reveal = page.get_by_role("link", name=re.compile(r"เลือกรอบ\s*/\s*ประเภทบัตร", re.I)).first
+        if reveal.count() and reveal.is_visible(timeout=500) and reveal.is_enabled(timeout=500):
+            reveal.click()
+            page.wait_for_timeout(400)
+            if click_exact_control():
+                return True
+    except Exception:
+        pass
+    target_url = str(selected.get("targetUrl", "")).strip()
+    current_host = urlsplit(page.url).netloc.casefold()
+    event_host = urlsplit(str(CONFIG.get("eventUrl", ""))).netloc.casefold()
+    if target_url.startswith(("https://", "http://")) and current_host == event_host and page.url != target_url:
+        page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+        record("action", {"action": "navigate_selected_booking_target", "url": target_url.split("?", 1)[0], "schedule": selected.get("schedule"), "same_queue_session": True})
+        return True
+    return False
+
+
 def semantic_select_if_present(page, wanted_labels, family_labels, field_name):
     """Select an option only when that option family exists on the current page.
 
@@ -586,6 +667,11 @@ def field_descriptor(locator):
 
 def sale_entry_labels():
     labels = []
+    selected = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
+    for key in ("label", "contextText"):
+        value = str(selected.get(key, "")).strip()
+        if value:
+            labels.append(value)
     schedule = str(CONFIG.get("schedule", ""))
     labels.extend(re.findall(r"\b\d{1,2}:\d{2}\b", schedule))
     for control in CONFIG.get("saleEntryControls", CONFIG.get("purchaseControls", [])):
@@ -879,11 +965,12 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             str(ROOT / "browser-profile"),
             channel="chrome",
             headless=False,
-            args=["--start-minimized", "--no-first-run"],
+            args=["--window-size=1280,900", "--no-first-run"],
         )
-        record("runtime", {"mouse_control": False, "background_window": True, "profile": "isolated"})
+        record("runtime", {"mouse_control": False, "background_window": False, "browser_visible": True, "profile": "isolated", "detail": "เปิด Chrome แยกเพื่อแสดงทุกขั้น โดยไม่ขยับเมาส์ระบบ"})
         page = context.pages[-1] if context.pages else context.new_page()
         observed = {"retry_after": None, "http_status": None, "server_date": None}
+        observed_api = set()
         login_submitted = False
         login_verified = False
 
@@ -894,12 +981,22 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             if response.request.resource_type == "document":
                 observed["http_status"] = response.status
                 observed["server_date"] = response.headers.get("date") or observed["server_date"]
+            elif response.request.resource_type in {"xhr", "fetch"}:
+                parsed = urlsplit(response.url)
+                safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                key = (response.request.method, safe_url, response.status)
+                if key not in observed_api and len(observed_api) < 100:
+                    observed_api.add(key)
+                    record("api", {"method": response.request.method, "url": safe_url, "status": response.status, "resource_type": response.request.resource_type, "replayed": False})
 
         page.on("response", on_response)
         page.goto(CONFIG["eventUrl"], wait_until="domcontentloaded", timeout=45000)
         checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
         record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
         if inspect_only:
+            record("result", {"status": "INSPECTION_ONLY_NOT_FULL_LOOP", "state": checkpoint["state"], "reason": "ตรวจเฉพาะหน้าแรกและยังไม่ได้กดทางซื้อ", "live_checkout_verified": False})
+            record("input_required", {"field": "review", "stage": "inspection_only_review", "prompt": "เปิดหน้าค้างไว้ให้ตรวจแล้ว กดทำต่อหรือหยุดบอทเมื่อดูเสร็จ", "secret": False})
+            input("ตรวจหน้าใน Chrome แล้วกลับมากด Enter เพื่อปิด หรือกดหยุดบอทจาก Alpha: ")
             context.close()
             return 0
         if checkpoint["state"] in {"pre_sale", "armed_pre_sale"} and not wait_for_window:
@@ -961,7 +1058,9 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     page.reload(wait_until="domcontentloaded")
                 continue
             if state == "waiting_room_entry":
-                if not semantic_click(page, ["Join waiting room", "Join the queue", "Join queue", "เข้าห้องรอ", "กดรับคิว", "รับคิว"]):
+                selected_queue_entry = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
+                activated = activate_selected_performance(page) if selected_queue_entry else semantic_click(page, ["Join waiting room", "Join the queue", "Join queue", "เข้าห้องรอ", "กดรับคิว", "รับคิว"])
+                if not activated:
                     refreshed = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
                     record("recovery", {"status": "WAITING_ROOM_CONTROL_CHANGED", "previous_state": state, "current_state": refreshed["state"], "actionable_control_count": refreshed.get("actionable_control_count", 0)})
                     if refreshed["state"] != "waiting_room_entry":
@@ -971,7 +1070,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     record("result", {"status": "WAITING_ROOM_CONTROL_NOT_VERIFIED", "live_queue_observed": False, "live_checkout_verified": False, "reason": "visible control disappeared or could not be activated"})
                     context.close()
                     return 2
-                record("queue", {"status": "WAITING_ROOM_JOINED", "clicked_once": True, "same_session": True})
+                record("queue", {"status": "WAITING_ROOM_JOINED", "clicked_once": True, "same_session": True, "selected_schedule": CONFIG.get("schedule"), "selected_performance": CONFIG.get("selectedPerformance")})
                 page.wait_for_timeout(1000)
                 continue
             if state in {"queue", "server_unavailable"}:
@@ -987,8 +1086,10 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     page.reload(wait_until="domcontentloaded")
                 continue
             if state == "sale_entry":
-                if not semantic_click(page, sale_entry_labels()):
-                    record("result", {"status": "SALE_CONTROL_NOT_VERIFIED", "live_checkout_verified": False})
+                if not activate_selected_performance(page):
+                    record("result", {"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE", "reason": "ไม่พบปุ่มที่ตรงกับวัน/เวลาที่เลือก จึงไม่เลือกรอบอื่นแทน", "selected_performance": CONFIG.get("selectedPerformance"), "same_queue_session": True, "live_checkout_verified": False})
+                    record("input_required", {"field": "performance", "stage": "waiting_selected_performance", "prompt": "รอบที่เลือกยังไม่ปรากฏ ระบบค้าง session เดิมไว้ให้ตรวจและจะไม่เลือกรอบอื่นแทน", "secret": False})
+                    input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อปิด โดยไม่เปลี่ยนไปรอบอื่น: ")
                     context.close()
                     return 2
                 page.wait_for_timeout(1000)
@@ -1154,6 +1255,15 @@ class TicketStateMachineTests(unittest.TestCase):
 
     def test_sale_entry(self):
         self.assertEqual(self.state("รายละเอียดการซื้อบัตร", controls=["Buy Now ซื้อบัตร"])["state"], "sale_entry")
+
+    def test_round_and_ticket_type_control_is_sale_entry(self):
+        result = self.state("ON SALE NOW", controls=["เลือกรอบ/ประเภทบัตร"])
+        self.assertEqual(result["state"], "sale_entry")
+        self.assertEqual(next_action(result), "activate_verified_purchase_control")
+
+    def test_round_section_control_does_not_skip_pre_sale_queue_window(self):
+        result = self.state("COMING SOON เปิดขายวันพรุ่งนี้", controls=["เลือกรอบ/ประเภทบัตร"])
+        self.assertEqual(result["state"], "pre_sale")
 
     def test_purchase_instructions_without_visible_control_are_not_sale_entry(self):
         result = self.state("คลิกปุ่มซื้อบัตรในวันเปิดจำหน่าย")
@@ -1393,7 +1503,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "1.1.0-beta.22",
+        "generator_version": "1.1.0-beta.23",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),
@@ -1412,3 +1522,5 @@ print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":
 # alpha-beta22-visible-queue-evidence-v1
 
 # alpha-beta21-ticket-runtime-v1
+
+# alpha-beta23-visible-runtime-evidence-v1
