@@ -41,6 +41,8 @@
 
 เป้าหมายคือเพิ่มเมนู **Create Video** เข้า Web App เดิมที่ `localhost:3000` และพัฒนาให้เป็น local AI film studio โดยไม่สร้าง application ใหม่และไม่ทำลาย Chat Mode เดิม
 
+ผู้ใช้ยืนยันเพิ่มเติมว่า **Alpha ต้อง Generate Video เองแบบ Local** ไม่ใช่ให้ Copy Prompt ไปใช้ paid external video service
+
 ## Model / AI Configuration Guard
 
 ในงาน Create Video:
@@ -50,7 +52,9 @@
 - ห้ามเปลี่ยน main chat prompt/model profile ถ้าไม่เกี่ยวโดยตรง
 - GPT-5.6 Sol ทำหน้าที่ external reviewer/verifier จากนอก Alpha runtime ไม่ต้องเพิ่มเข้า Alpha config
 
-Create Video Director ตอนนี้ reuse `requestChatOnce()` และ `getSettings()` ของ Alpha เดิม จึงใช้ model/config ปัจจุบันโดยไม่แก้ `lib/ollama.ts`
+Create Video Director reuse `requestChatOnce()` และ `getSettings()` ของ Alpha เดิม จึงใช้ model/config ปัจจุบันโดยไม่แก้ `lib/ollama.ts`
+
+ก่อน Local Video inference Beta24 จะสั่ง `ollama stop <configured model>` เพื่อคืน Unified Memory และเมื่อ Director/Chat ถูกเรียกอีกครั้ง Ollama จะโหลด model กลับตาม flow เดิม
 
 ## Hardware Target
 
@@ -62,7 +66,7 @@ Create Video Director ตอนนี้ reuse `requestChatOnce()` และ `ge
 - Apple Silicon / Metal
 - Fanless
 
-Architecture ต้องใช้แนวคิด:
+Architecture ใช้:
 
 `LOAD -> WORK -> SAVE -> UNLOAD`
 
@@ -74,86 +78,160 @@ Architecture ต้องใช้แนวคิด:
 - Backend/API: route handlers ใต้ `app/api/**`
 - Local LLM: Ollama ผ่าน `lib/ollama.ts`
 - Settings: `lib/settings-store`
-- Persistent app data: D1 binding `DB` ถูกใช้อยู่แล้วใน stores เช่น memory
+- Persistent app data: D1 binding `DB`
 - Host capability plane: local Tool Service ที่ `127.0.0.1:4317`, เรียกผ่าน `lib/tool-client.ts`
 - Host hardware/dependency inspection: tool `system_capability`
 - Existing launcher ใช้ runtime patchers ตามลำดับ version
-- Current source branchก่อน Create Video อยู่ระดับ Beta22
+- Create Video source เริ่มจาก Beta22 และ Phase 1 เป็น Beta23
 
-## What Was Implemented — Create Video Phase 1 / Beta23
-
-งาน Phase 1 ถูกเพิ่มบน `feature/create-video-v1` โดยไม่แก้ Ticket Bot source โดยตั้งใจ
+## Implemented — Phase 1 / Beta23
 
 ### New files
 
 - `lib/create-video-store.ts`
   - Persistent project storage ใน D1
-  - Project fields: Story, Screenplay, target duration, mode, visual settings, plan, status
-  - Save/load/list project เพื่อเปิดกลับมาทำต่อหลัง browser refresh
+  - Story, Screenplay, duration, mode, visual settings, plan, status
+  - Save/load/list project
 
 - `lib/create-video-director.ts`
-  - Reuse Local Ollama model เดิม
+  - Local Ollama Director
   - PASS 1 Story Planner
   - PASS 2 Scene-scoped Shot Planner
-  - Layered context: global summary + current scene + relevant characters + location + previous shot summary
-  - Character Registry
-  - Location Registry
-  - Character states
-  - Continuity state inheritance
-  - JSON parsing + Repair Pass ถ้า structured output เสีย
-  - deterministic validation ของ Character/Location references
-  - แบ่ง shot สั้น 2–12 วินาที แทนการสร้าง long video inference เดียว
+  - Layered context
+  - Character Registry / Location Registry / Character states
+  - Continuity inheritance
+  - JSON parse + Repair Pass
+  - deterministic Character/Location validation
+  - shot 2–12 วินาที
 
 - `app/api/create-video/route.ts`
-  - `GET` list/load projects
-  - `POST action=create`
-  - `POST action=save`
-  - `POST action=plan`
-  - `POST action=hardware`
-  - hardware action ใช้ `system_capability` ตรวจ Mac/dependencies
-  - ไม่มีการ auto-install Video Model
-  - `generation_ready: false` จนกว่าจะทำ Phase 2 จริง
+  - project create/save/plan/hardware
 
 - `components/create-video-studio.tsx`
   - Project UI
   - Story / Full Screenplay
-  - Target Duration: 5s, 10s, 15s, 30s, 1m, 3m, 5m, custom
-  - Auto Director / Manual mode
-  - Style, aspect ratio, resolution, FPS, quality, seed, negative prompt
-  - Project list + resume
-  - Character Registry UI
-  - Location Registry UI
-  - Shot Cards และแก้ Action/Prompt/Duration ได้
-  - Save Edited Shot Plan
-  - Generate Shot button ถูก disable และระบุ Phase 2 อย่างชัดเจน
-  - UI ระบุว่า Video Model ยังไม่ถูกเลือก/ติดตั้งอัตโนมัติ
+  - Duration / Style / Ratio / Resolution / FPS / Quality / Seed / Negative Prompt
+  - Director/Shot Plan/Registries
+  - Shot editor + save
 
 - `scripts/apply-beta23-create-video.mjs`
-  - patch `app/page.tsx` แบบ idempotent
-  - เพิ่ม `Create Video` ใน sidebar โดยไม่ลบ Chat
-  - เพิ่ม topbar label และ render `CreateVideoStudio`
-  - append Create Video CSS ใน `app/globals.css`
-  - bump runtime version เป็น `1.1.0-beta.23`
+  - add Create Video to existing sidebar and CSS
+  - runtime beta23
 
 - `tests/beta23-create-video-phase1.test.mjs`
-  - regression สำหรับ persistence, Director multi-pass, JSON repair, continuity, truthful UI, scope separation
 
-- `.github/workflows/verify-beta23-create-video.yml`
-  - apply patch
-  - apply ซ้ำเพื่อเช็ก idempotency
-  - focused regression
-  - TypeScript typecheck
-  - production build
+## Implemented — Phase 2 Local Renderer / Beta24
 
-### Modified files
+Beta24 เปลี่ยน flow จาก
+
+`Director -> Video Prompt -> copy ไปที่อื่น`
+
+เป็น
+
+`Director -> Video Prompt -> Alpha Local Video Runtime -> MP4 Shot`
+
+### Local backend
+
+เลือก backend เริ่มต้นเป็น **Wan2.1 T2V 1.3B สำหรับ Mac/MPS** โดยใช้ Mac-oriented backend repository `HighDoping/Wan2.1-Mac`.
+
+เหตุผล:
+
+- เป็น local/open model ไม่ต้องใช้ paid API
+- รองรับ Apple Silicon/MPS
+- 1.3B เหมาะกว่า 14B สำหรับ M4 16GB
+- backend มี model offload, quantized T5 และ VAE tiling เพื่อลด memory pressure
+
+**หมายเหตุสำคัญ:** M4 16GB ถือเป็น experimental/minimum profile. การ render อาจช้ามากและใช้ swap โดยเฉพาะ quality profile. ห้ามรายงานว่าเร็วหรือรับประกันทุก prompt จนกว่าจะทดสอบ Mac จริง
+
+### New files Beta24
+
+- `tool-service/video-run-manager.mjs`
+  - async prepare/generate jobs
+  - one heavy local video job at a time
+  - progress/log/status/PID/output
+  - stop owned process group
+  - output path guard ใต้ `outputs/Alpha Outputs/Create Video`
+  - inspect Apple Silicon / RAM / free disk / runtime/model readiness
+  - requireประมาณ 25GB free disk ก่อน first model setup
+  - stop configured Ollama model before rendering
+  - `LOAD_WORK_SAVE_UNLOAD`
+
+- `tool-service/create-video-worker.mjs`
+  - first-time bootstrap แบบ local
+  - ตรวจ/ติดตั้ง Python 3.11 และ FFmpeg ด้วย Homebrew ถ้าขาดและ Homebrew มีอยู่
+  - clone `HighDoping/Wan2.1-Mac`
+  - สร้าง isolated venv ใต้ `work/create-video-runtime`
+  - install Python dependencies
+  - download `Wan-AI/Wan2.1-T2V-1.3B` ลง `models/create-video/...`
+  - run Wan through MPS
+  - render profiles:
+    - fast: 17 frames / 12 steps
+    - balanced: 33 frames / 20 steps
+    - quality: 49 frames / 30 steps
+  - save MP4 ใต้ Create Video output directory
+
+- `scripts/apply-beta24-create-video-local.mjs`
+  - patch Tool Service with `/v1/video-*` endpoints
+  - patch Create Video UI with Prepare Local Video / Copy Prompt / Generate Shot Local / Stop / preview
+  - patch CSS
+  - runtime version `1.1.0-beta.24`
+
+- `tests/beta24-create-video-local.test.mjs`
+
+- `.github/workflows/verify-beta24-create-video-local.yml`
+
+### Modified Beta24
+
+- `lib/tool-client.ts`
+  - `getVideoRuntimeStatus`
+  - `startVideoRun`
+  - `getVideoRun`
+  - `stopVideoRun`
+  - `videoRunFileResponse`
+
+- `app/api/create-video/route.ts`
+  - `runtime_status`
+  - `prepare_local_video`
+  - `generate_shot`
+  - `run_status`
+  - `run_stop`
+  - MP4 proxy preview
+  - passes configured Ollama model only for memory release; does not change model config
 
 - `start-alpha-v11.command`
-  - เพิ่ม `apply-beta23-create-video.mjs` หลัง Beta22
-  - เช็ก syntax patcher
-  - launcher รอ `app_version: 1.1.0-beta.23`
-  - final startup message ระบุ Create Video Phase 1
+  - apply Beta24 after Beta23
+  - syntax-check local video manager/worker
+  - waits for `1.1.0-beta.24`
 
-### Files intentionally NOT modified by Create Video work
+### UI flow Beta24
+
+1. ใส่บทเต็มใน Full Screenplay
+2. Create Project
+3. `AI Director: Generate Shot Plan`
+4. ครั้งแรกกด `Prepare Local Video — ฟรี`
+5. รอ backend + venv + Wan2.1 model download/prepare จบ
+6. แต่ละ Shot กด `Generate Shot · Local`
+7. Alpha unloads Ollama model -> runs Wan/MPS -> saves MP4 -> shows preview
+8. `Copy Prompt` ยังมีไว้สำหรับ debug/manual แต่ไม่ใช่ workflow หลัก
+
+## Still NOT Implemented
+
+Beta24 ทำ **single-shot local generation** แล้ว แต่ยังไม่ครบ final film pipeline:
+
+- Generate All Shots queue แบบอัตโนมัติ
+- persist mapping Shot -> generated clip หลัง restart
+- regenerate/variant history
+- image/reference conditioning เพื่อ character consistency สูงขึ้น
+- FFmpeg timeline assembly ของทุก shot เป็น final movie
+- dialogue/TTS
+- SFX/music generation/mix
+- subtitle/text overlay
+- final 5-minute export
+- pause/resume queue across Alpha restart
+
+สิ่งเหล่านี้เป็น Phase 3/4 ต่อไป
+
+## Files Intentionally NOT Modified by Create Video Work
 
 - `lib/ollama.ts`
 - `app/api/ticket-bot/**`
@@ -161,56 +239,51 @@ Architecture ต้องใช้แนวคิด:
 - `templates/concert-ticket-assistant.py`
 - `HANDOFF_TICKET_BOT_RUNTIME.md`
 
-## Current Verification State
+`tool-service/server.mjs` ถูก Beta24 patcher เพิ่มเฉพาะ `/v1/video-*` endpoints และ shutdown cleanup เท่านั้น ห้ามใช้โอกาสนี้ refactor Ticket Bot routes
 
-GitHub Actions workflow:
+## Verification
 
-`Verify Alpha Beta23 Create Video`
+### Beta23
 
-ถูกสร้างและ trigger บน `feature/create-video-v1`
+`Verify Alpha Beta23 Create Video` เคยผ่านสำหรับ Phase 1 ที่ commit `66d849bf912ba1c003bf6a391dcfaa8719ade01d`.
 
-อย่ารายงานว่า Phase 1 ผ่านเต็มจนกว่า workflow จะผ่าน และยังต้องมี real macOS preview validation หลัง pull ลง `/Volumes/petong/Disk/AI`
+### Beta24
 
-CI ตรวจได้: patching, regression, typecheck, production build
+Workflow: `Verify Alpha Beta24 Local Create Video`
 
-CI ตรวจไม่ได้แทนเครื่องจริง: Ollama planning จริง, D1 persistence ใน live app, `system_capability` บน M4, UI interaction บน localhost
+CI ตรวจได้:
 
-## Truthfulness / Verification Rules
+1. Beta23 -> Beta24 patch order
+2. patch idempotency
+3. Node syntax
+4. static/local runtime regression
+5. focused TypeScript errors
+6. production build
 
-ห้ามรายงานว่า video generation ใช้งานได้ใน Phase 1
+CI **ไม่สามารถ** ยืนยัน MPS/Wan render จริงเพราะ GitHub runner เป็น Linux
 
-Phase 1 ทำถึง:
+Mac E2E ที่ต้องทำหลัง CI ผ่าน:
 
-`Story -> Director -> Registries -> Scene Plan -> Shot Plan -> Edit/Save`
+1. pull `feature/create-video-v1`
+2. launch `start-alpha-v11.command`
+3. Create Video ต้องขึ้น Beta24
+4. hardware/runtime status ต้องเห็น Apple Silicon/M4
+5. `Prepare Local Video — ฟรี`
+6. model/backend ต้อง download จบและ `generation_ready=true`
+7. สร้าง Project + Director Shot Plan
+8. Generate Shot local 1 shot ด้วย `fast` ก่อน
+9. ต้องได้ MP4 จริงและเล่น preview ได้
+10. ตรวจ Activity Monitor ว่า Ollama ถูก unload ก่อน render และ process video คืน memory หลังเสร็จ
+11. ทดสอบ Stop ระหว่าง render
+12. ทดสอบ restart Alpha แล้ว runtime/model ไม่ download ซ้ำ
 
-ยังไม่ทำ:
+ห้ามอ้างว่า Mac local render ผ่านจริงจนกว่าจะทำรายการนี้บนเครื่องผู้ใช้
 
-`Video Model Adapter -> Local Video Backend -> Generate Clip -> FFmpeg -> Final Movie`
+## Truthfulness Rules
 
-หลังแต่ละ Phase ต้องตรวจอย่างน้อย:
-
-1. Build
-2. Typecheck
-3. Tests
-4. Run application บน Mac จริง
-5. Fix errors
-6. Report changed files
-7. Report remaining limitations
-
-ห้าม fake generation results หรือแสดงว่า model/backend พร้อมถ้ายังไม่ได้ติดตั้ง/ทดสอบจริง
-
-## Next Action
-
-1. รอ/ตรวจ `Verify Alpha Beta23 Create Video`
-2. ถ้า CI แดง ให้แก้เฉพาะ Create Video files/patcher; อย่าไหลไปแก้ Ticket Bot
-3. เมื่อ CI เขียว ให้ pull `feature/create-video-v1` ลง Mac และเปิดด้วย `start-alpha-v11.command`
-4. Real Mac smoke test:
-   - sidebar มี Create Video
-   - Chat เดิมยังเปิดได้
-   - create project และ refresh แล้ว project ยังอยู่
-   - hardware inspection แสดงผลจริง
-   - run AI Director ด้วย story 1 นาที
-   - ได้ Character/Location Registry และ 8–12 shots โดยประมาณ
-   - แก้ shot แล้ว Save/refresh ยังอยู่
-5. หลัง Phase 1 ผ่านจริง ค่อยเริ่ม Phase 2: Video Model Adapter + Resource Manager + Local Backend + Single Shot Generation
-6. ก่อนเลือก/ติดตั้ง Video Model ต้องตรวจ M4/16GB, available memory, disk, Metal และ backend compatibility ก่อน ห้าม auto-install model ใหญ่
+- ไม่มี paid video API ใน Beta24 generation path
+- ห้าม fake MP4/result
+- ถ้า Wan/MPS ติดตั้งหรือ render fail ให้แสดง error/log จริง
+- ห้าม fallback ไป cloud/paid API โดยอัตโนมัติ
+- ห้ามเปลี่ยน qwen/Ollama config เพื่อให้ video ทำงาน
+- ห้ามทำ Ticket Bot cleanup ใน branch นี้
