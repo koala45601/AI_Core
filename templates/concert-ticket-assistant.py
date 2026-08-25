@@ -109,6 +109,7 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
+        "generatorVersion": "1.1.0-beta.22",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -158,6 +159,16 @@ def _text(snapshot):
     return f"{snapshot.get('url', '')} {snapshot.get('title', '')} {snapshot.get('body', '')}".casefold()
 
 
+def _actionable_text(snapshot):
+    values = []
+    for item in snapshot.get("actionable_controls", []) or []:
+        if isinstance(item, dict):
+            values.append(str(item.get("label", "")))
+        else:
+            values.append(str(item))
+    return " ".join(values).casefold()
+
+
 def queue_position_from_text(text):
     patterns = [
         r"(?:queue\s*(?:number|position)|your\s*(?:number|position))\s*[:#]?\s*([\d,]+)",
@@ -176,8 +187,13 @@ def queue_position_from_text(text):
 
 def classify_snapshot(snapshot, now=None, sale_open_at=""):
     text = _text(snapshot)
+    actionable_text = _actionable_text(snapshot)
     url = str(snapshot.get("url", "")).casefold()
     body = str(snapshot.get("body", "")).casefold()
+    try:
+        seat_control_count = max(0, int(snapshot.get("seat_control_count") or 0))
+    except (TypeError, ValueError):
+        seat_control_count = 0
     queue_position = queue_position_from_text(text)
     evidence = []
     state = "unknown"
@@ -211,15 +227,17 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
     payment_evidence_count = sum(bool(item) for item in payment_signals)
     if http_status in {429, 500, 502, 503, 504}:
         state, evidence = "server_unavailable", [f"http status {http_status}"]
+    elif http_status in {401, 403} or re.search(r"access denied|you don'?t have permission to access|การเข้าถึงถูกปฏิเสธ", text):
+        state, evidence = "access_denied", [f"server denied browser access ({http_status or 'page marker'})"]
     elif re.search(r"captcha|recaptcha|hcaptcha|ยืนยันว่า.*มนุษย์", text):
         state, evidence = "captcha_handoff", ["captcha marker"]
     elif re.search(r"otp|one[ -]?time|รหัสยืนยัน", text):
         state, evidence = "otp_handoff", ["otp marker"]
     elif "close-sale" in url or re.search(r"ปิดจำหน่ายบัตรผ่านช่องทางออนไลน์|online\s+sale\s+is\s+closed", body):
         state, evidence = "sale_closed", ["server returned close-sale state"]
-    elif re.search(r"entry zone|join waiting room|join (?:the )?queue|เข้าห้องรอ|กดรับคิว|รับคิว", text):
-        state, evidence = "waiting_room_entry", ["waiting-room entry control"]
-    elif re.search(r"buying queue|you are (?:now )?in (?:the )?queue|place in line|status last updated|waiting room|อยู่ในคิว|กำลังเข้าคิว|คิวรอซื้อ", text):
+    elif re.search(r"join waiting room|join (?:the )?queue|เข้าห้องรอ|กดรับคิว|รับคิว", actionable_text):
+        state, evidence = "waiting_room_entry", ["visible and enabled waiting-room control"]
+    elif re.search(r"buying queue|you are (?:now )?in (?:the )?(?:buying )?queue|place in line|status last updated|อยู่ในคิว|กำลังเข้าคิว|คิวรอซื้อ", text):
         state, evidence = "queue", ["active queue marker"]
     elif payment_evidence_count >= 3 and ("payment_kbankqr.php" in url or "kpaymentframe" in text):
         state, evidence = "payment_handoff", [f"verified QR payment page ({payment_evidence_count}/5 signals)"]
@@ -235,11 +253,11 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         state, evidence = "quantity_selection", ["ticket quantity page"]
     elif "zones.php" in url or re.search(r"ขั้นตอนที่\s*1/4|เลือกโซน|select\s+(?:round|zone)", body):
         state, evidence = "zone_selection", ["round and zone page"]
-    elif re.search(r"select seat|seat map|available seat|เลือกที่นั่ง|จำนวนบัตร", text):
-        state, evidence = "ticket_selection", ["ticket-selection marker"]
-    elif re.search(r"buy now|book now|purchase|checkout|ซื้อบัตร|จองบัตร", text):
-        state, evidence = "sale_entry", ["purchase-entry marker"]
-    elif re.search(r"coming soon|เตรียมเปิดขาย|กำลังจะเปิด|เร็ว\s*ๆ\s*นี้", text) or (remaining_seconds is not None and remaining_seconds > 0):
+    elif seat_control_count > 0:
+        state, evidence = "ticket_selection", [f"visible selectable seat controls ({seat_control_count})"]
+    elif re.search(r"buy now|buy ticket|book now|purchase|checkout|ซื้อบัตร|จองบัตร", actionable_text):
+        state, evidence = "sale_entry", ["visible and enabled purchase control"]
+    elif re.search(r"coming soon|เตรียมเปิดขาย|กำลังจะเปิด|เร็ว\s*ๆ\s*นี้|นับถอยหลังเวลารับคิวซื้อบัตร", text) or (remaining_seconds is not None and remaining_seconds > 0):
         imminent = remaining_seconds is not None and 0 < remaining_seconds <= 30 * 60
         state = "armed_pre_sale" if imminent else "pre_sale"
         evidence = ["sale opens within 30 minutes" if imminent else "sale time is more than 30 minutes away"]
@@ -258,6 +276,8 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         "queue_position": queue_position,
         "queue_position_verified": queue_position is not None,
         "payment_evidence_count": payment_evidence_count,
+        "actionable_control_count": len(snapshot.get("actionable_controls", []) or []),
+        "seat_control_count": seat_control_count,
     }
 
 
@@ -274,6 +294,7 @@ def next_action(checkpoint):
         "sale_entry": "activate_verified_purchase_control",
         "queue": "keep_same_session_and_wait_retry_after",
         "server_unavailable": "keep_same_session_and_wait_retry_after",
+        "access_denied": "stop_and_report_server_access_denied",
         "sale_closed": "stop_and_report_sale_closed",
         "login": "fill_credentials_or_prompt_securely",
         "captcha_handoff": "user_handoff",
@@ -372,6 +393,8 @@ from state_machine import choose_seat_indices, classify_snapshot, next_action, v
 ROOT = Path(__file__).resolve().parent
 CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 REPORT = ROOT / "run-report.jsonl"
+ACTIONABLE_SELECTOR = "button, a[href], area[href], input[type=button], input[type=submit], input[type=image], [role=button], [role=link], [onclick]"
+SEAT_SELECTOR = "[data-seat][data-available='true'], [data-seat][data-status='available'], [role='button'][aria-label*='seat' i]"
 
 
 def record(kind, payload):
@@ -379,6 +402,52 @@ def record(kind, payload):
     with REPORT.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(item, ensure_ascii=False) + "\n")
     print(json.dumps(item, ensure_ascii=False), flush=True)
+
+
+def visible_actionable_controls(page):
+    controls = []
+    script = r"""els => els.slice(0, 300).map((el, index) => {
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const visible = style.display !== "none" && style.visibility !== "hidden"
+        && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+      const disabled = Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true";
+      const label = [
+        el.innerText,
+        el.getAttribute("aria-label"),
+        el.getAttribute("value"),
+        el.getAttribute("alt"),
+        el.getAttribute("title"),
+      ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+      return {index, label, visible, disabled, tag: el.tagName.toLowerCase()};
+    }).filter(item => item.visible && !item.disabled && item.label)"""
+    for frame_index, scope in enumerate([page, *page.frames]):
+        try:
+            rows = scope.locator(ACTIONABLE_SELECTOR).evaluate_all(script)
+        except Exception:
+            continue
+        for row in rows:
+            controls.append({
+                "label": str(row.get("label", ""))[:300],
+                "tag": str(row.get("tag", ""))[:40],
+                "frame_index": frame_index,
+                "control_index": int(row.get("index", 0)),
+            })
+    return controls
+
+
+def visible_seat_control_count(page):
+    total = 0
+    for scope in [page, *page.frames]:
+        try:
+            seats = scope.locator(SEAT_SELECTOR)
+            for index in range(min(seats.count(), 1000)):
+                seat = seats.nth(index)
+                if seat.is_visible(timeout=100) and seat.is_enabled(timeout=100):
+                    total += 1
+        except Exception:
+            continue
+    return total
 
 
 def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None):
@@ -398,6 +467,8 @@ def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None)
         "retry_after_seconds": retry_after_seconds,
         "http_status": http_status,
         "server_date": server_date,
+        "actionable_controls": visible_actionable_controls(page),
+        "seat_control_count": visible_seat_control_count(page),
     }
 
 
@@ -411,6 +482,30 @@ def semantic_click(page, labels):
                     label = locator.inner_text(timeout=500)
                     locator.click()
                     record("action", {"action": "click", "role": role, "label": label[:200], "frame_url": getattr(scope, "url", page.url)})
+                    return True
+            except Exception:
+                pass
+    for scope in [page, *page.frames]:
+        locator = scope.locator(ACTIONABLE_SELECTOR)
+        try:
+            count = min(locator.count(), 300)
+        except Exception:
+            continue
+        for index in range(count):
+            control = locator.nth(index)
+            try:
+                if not control.is_visible(timeout=150) or not control.is_enabled(timeout=150):
+                    continue
+                label = " ".join(filter(None, [
+                    control.inner_text(timeout=150),
+                    control.get_attribute("aria-label", timeout=150),
+                    control.get_attribute("value", timeout=150),
+                    control.get_attribute("alt", timeout=150),
+                    control.get_attribute("title", timeout=150),
+                ])).strip()
+                if label and pattern.search(label):
+                    control.click()
+                    record("action", {"action": "click", "label": label[:200], "frame_url": getattr(scope, "url", page.url), "evidence": "visible_actionable_control"})
                     return True
             except Exception:
                 pass
@@ -505,8 +600,10 @@ def fill_login(page):
     username = os.environ.get("TICKET_USERNAME", "").strip()
     password = os.environ.get("TICKET_PASSWORD", "")
     if not username:
+        record("input_required", {"field": "username", "stage": "waiting_username", "prompt": "กรอกอีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตร", "secret": False})
         username = input("อีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตรนี้: ").strip()
     if not password:
+        record("input_required", {"field": "password", "stage": "waiting_password", "prompt": "กรอกรหัสผ่านสำหรับเว็บขายบัตร", "secret": True})
         password = getpass.getpass("รหัสผ่าน (ไม่แสดงและไม่บันทึก): ")
     username_box = page.get_by_role("textbox", name=re.compile(r"ชื่อผู้ใช้|อีเมล|email|username", re.I)).first
     password_box = page.locator("input[type='password']").first
@@ -564,6 +661,7 @@ def select_preferred_zone(page):
     discovered_names = list(dict.fromkeys(zone for zone, _ in discovered))
     if not zones:
         print("โซนที่พบจากหน้าจริง: " + (", ".join(discovered_names) if discovered_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
+        record("input_required", {"field": "zone", "stage": "waiting_zone", "options": discovered_names, "prompt": "เลือกโซนก่อนให้บอททำต่อ", "secret": False})
         answer = input("เลือกโซนก่อนให้บอททำต่อ (เช่น A หรือ A1; หลายโซนคั่นด้วย comma): ").strip().upper()
         zones = [item.strip() for item in re.split(r"[,\n]", answer) if item.strip()]
         if not zones:
@@ -645,6 +743,7 @@ def fill_attendee_details(page):
             value = fallback
         else:
             prompt_label = descriptor or f"บัตรใบที่ {index + 1}"
+            record("input_required", {"field": "event_specific", "stage": "waiting_event_field", "prompt": f"หน้าเว็บคอนนี้ต้องการข้อมูล {prompt_label}", "secret": False})
             value = input(f"หน้าเว็บคอนนี้ต้องการข้อมูล '{prompt_label}': ").strip()
         if not value:
             return False
@@ -813,6 +912,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
         queue_rounds = 0
+        pre_sale_rounds = 0
+        discovery_rounds = 0
         workflow_steps = 0
         while True:
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
@@ -824,14 +925,50 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             if login_submitted and state not in {"login", "captcha_handoff", "otp_handoff", "unknown", "server_unavailable"} and not login_verified:
                 login_verified = True
                 record("authentication", {"status": "LOGIN_VERIFIED", "method": "successful_form_transition", "credentials_persisted": False})
-            if state not in {"queue", "server_unavailable"}:
+            if state not in {"pre_sale", "armed_pre_sale", "queue", "server_unavailable", "unknown"}:
                 workflow_steps += 1
                 if workflow_steps > 30:
                     record("result", {"status": "WORKFLOW_TRANSITION_LIMIT", "live_checkout_verified": False})
                     break
+            if state in {"pre_sale", "armed_pre_sale"}:
+                pre_sale_rounds += 1
+                wait_seconds = 10 if state == "armed_pre_sale" else 30
+                record("wait", {
+                    "state": state,
+                    "seconds": wait_seconds,
+                    "same_session": True,
+                    "reason": "waiting_for_visible_queue_or_sale_control",
+                    "sale_remaining_seconds": checkpoint.get("sale_remaining_seconds"),
+                    "page_refresh": pre_sale_rounds % 6 == 0,
+                })
+                page.wait_for_timeout(wait_seconds * 1000)
+                if pre_sale_rounds % 6 == 0:
+                    page.reload(wait_until="domcontentloaded")
+                continue
+            if state == "unknown" and CONFIG.get("runtimeDiscoveryRequired"):
+                discovery_rounds += 1
+                wait_seconds = 15
+                record("wait", {
+                    "state": "runtime_discovery",
+                    "seconds": wait_seconds,
+                    "same_session": True,
+                    "reason": "waiting_for_visible_queue_or_sale_control",
+                    "round": discovery_rounds,
+                    "page_refresh": discovery_rounds % 4 == 0,
+                })
+                page.wait_for_timeout(wait_seconds * 1000)
+                if discovery_rounds % 4 == 0:
+                    page.reload(wait_until="domcontentloaded")
+                continue
             if state == "waiting_room_entry":
                 if not semantic_click(page, ["Join waiting room", "Join the queue", "Join queue", "เข้าห้องรอ", "กดรับคิว", "รับคิว"]):
-                    record("result", {"status": "WAITING_ROOM_CONTROL_NOT_VERIFIED", "live_queue_observed": False, "live_checkout_verified": False})
+                    refreshed = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
+                    record("recovery", {"status": "WAITING_ROOM_CONTROL_CHANGED", "previous_state": state, "current_state": refreshed["state"], "actionable_control_count": refreshed.get("actionable_control_count", 0)})
+                    if refreshed["state"] != "waiting_room_entry":
+                        checkpoint = refreshed
+                        page.wait_for_timeout(500)
+                        continue
+                    record("result", {"status": "WAITING_ROOM_CONTROL_NOT_VERIFIED", "live_queue_observed": False, "live_checkout_verified": False, "reason": "visible control disappeared or could not be activated"})
                     context.close()
                     return 2
                 record("queue", {"status": "WAITING_ROOM_JOINED", "clicked_once": True, "same_session": True})
@@ -860,6 +997,10 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 record("result", {"status": "SALE_CLOSED_BY_SERVER", "live_checkout_verified": False, "url": page.url})
                 context.close()
                 return 4
+            if state == "access_denied":
+                record("result", {"status": "SERVER_ACCESS_DENIED", "reason": "เว็บไซต์ปฏิเสธ browser session นี้; ปิดหน้าต่างซ้ำและรอให้ session/IP ฟื้นก่อนลองใหม่", "live_checkout_verified": False, "url": page.url})
+                context.close()
+                return 5
             if state == "login":
                 if not fill_login(page):
                     record("result", {"status": "LOGIN_FORM_NOT_VERIFIED", "live_checkout_verified": False})
@@ -875,6 +1016,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 continue
             if state in {"captcha_handoff", "otp_handoff"}:
                 record("handoff", {"status": state.upper(), "resume_supported": True, "same_session": True})
+                record("input_required", {"field": "captcha" if state == "captcha_handoff" else "otp", "stage": "waiting_captcha" if state == "captcha_handoff" else "waiting_otp", "prompt": "รับช่วงใน Chrome แล้วกดทำต่อ", "secret": False})
                 input("รับช่วงในหน้าต่าง Chrome เฉพาะขั้นนี้ แล้วกลับมากด Enter; บอทจะทำงานต่อด้วย session เดิม: ")
                 page.wait_for_timeout(500)
                 continue
@@ -902,10 +1044,12 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             if state == "ticket_selection":
                 if not apply_ticket_preferences(page):
                     record("result", {"status": "TICKET_QUANTITY_NOT_COMPLETE", "wanted": CONFIG.get("quantity"), "live_checkout_verified": False})
+                    record("input_required", {"field": "ticket_selection", "stage": "waiting_ticket_selection", "prompt": "เลือกบัตรให้ครบใน Chrome แล้วกดทำต่อ", "secret": False})
                     input("เลือกบัตรให้ครบใน Chrome แล้วกลับมากด Enter เพื่อให้บอททำต่อ: ")
                     continue
                 if not semantic_click(page, ["ดำเนินการต่อ", "ถัดไป", "continue", "next", "ยืนยัน"]):
                     record("result", {"status": "CONTINUE_CONTROL_NOT_VERIFIED", "live_checkout_verified": False})
+                    record("input_required", {"field": "continue", "stage": "waiting_manual_continue", "prompt": "ตรวจรายการและกดดำเนินการต่อใน Chrome แล้วกดทำต่อ", "secret": False})
                     input("ตรวจรายการและกดดำเนินการต่อใน Chrome แล้วกลับมากด Enter: ")
                 page.wait_for_timeout(1000)
                 continue
@@ -923,6 +1067,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     return 2
                 checkout_result = select_checkout_options(page, confirm_order=confirm_order)
                 if checkout_result is None:
+                    record("input_required", {"field": "checkout_options", "stage": "waiting_checkout_options", "prompt": "เลือกวิธีรับบัตร/QR ใน Chrome แล้วกดทำต่อ", "secret": False})
                     input("เลือกวิธีรับบัตร/QR แล้ว ระบบหยุดก่อนสร้างคำสั่งซื้อ กด Enter เพื่อปิด หรือรันใหม่ด้วย --confirm-order: ")
                     context.close()
                     return 0
@@ -938,11 +1083,13 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     context.close()
                     return 2
                 record("result", {"status": "PAYMENT_HANDOFF", "login_verified": True, "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True, "payment_evidence_count": checkpoint.get("payment_evidence_count")})
+                record("input_required", {"field": "payment", "stage": "payment_handoff", "prompt": "ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย", "secret": False})
                 input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
                 context.close()
                 return 0
             break
         record("result", {"status": "STOPPED_WITHOUT_VERIFIED_PAYMENT_HANDOFF", "state": checkpoint["state"], "live_checkout_verified": False})
+        record("input_required", {"field": "review", "stage": "waiting_review", "prompt": "หลักฐานยังไม่พอ ตรวจใน Chrome แล้วกดทำต่อเพื่อปิด", "secret": False})
         input("หลักฐานยังไม่พอ ระบบหยุดไว้ให้ตรวจใน Chrome กด Enter เพื่อปิด: ")
         context.close()
         return 3
@@ -974,11 +1121,19 @@ from state_machine import choose_seat_indices, classify_snapshot, next_action, v
 
 
 class TicketStateMachineTests(unittest.TestCase):
-    def state(self, body, url="https://tickets.test/event", retry=None, status=None):
-        return classify_snapshot({"body": body, "url": url, "title": "Fixture", "retry_after_seconds": retry, "http_status": status})
+    def state(self, body, url="https://tickets.test/event", retry=None, status=None, controls=None, seat_controls=0):
+        return classify_snapshot({"body": body, "url": url, "title": "Fixture", "retry_after_seconds": retry, "http_status": status, "actionable_controls": controls or [], "seat_control_count": seat_controls})
 
     def test_pre_sale(self):
         self.assertEqual(self.state("COMING SOON เปิดขายเร็ว ๆ นี้")["state"], "pre_sale")
+
+    def test_queue_countdown_copy_is_pre_sale_without_join_control(self):
+        self.assertEqual(self.state("นับถอยหลังเวลารับคิวซื้อบัตร")["state"], "pre_sale")
+
+    def test_access_denied_is_reported_explicitly(self):
+        result = self.state("Access Denied You don't have permission to access this page", status=403)
+        self.assertEqual(result["state"], "access_denied")
+        self.assertEqual(next_action(result), "stop_and_report_server_access_denied")
 
     def test_sale_within_thirty_minutes_is_armed(self):
         result = classify_snapshot(
@@ -998,7 +1153,11 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(result["state"], "pre_sale")
 
     def test_sale_entry(self):
-        self.assertEqual(self.state("Buy Now ซื้อบัตร")["state"], "sale_entry")
+        self.assertEqual(self.state("รายละเอียดการซื้อบัตร", controls=["Buy Now ซื้อบัตร"])["state"], "sale_entry")
+
+    def test_purchase_instructions_without_visible_control_are_not_sale_entry(self):
+        result = self.state("คลิกปุ่มซื้อบัตรในวันเปิดจำหน่าย")
+        self.assertNotEqual(result["state"], "sale_entry")
 
     def test_queue_preserves_retry_after(self):
         result = self.state("You are in the buying queue. Status last updated", retry=17)
@@ -1007,9 +1166,17 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(next_action(result), "keep_same_session_and_wait_retry_after")
 
     def test_waiting_room_entry_is_not_active_queue(self):
-        result = self.state("YOU ARE NOW IN THE ENTRY ZONE Join waiting room")
+        result = self.state("YOU ARE NOW IN THE ENTRY ZONE", controls=["Join waiting room"])
         self.assertEqual(result["state"], "waiting_room_entry")
         self.assertEqual(next_action(result), "join_waiting_room_once")
+
+    def test_waiting_room_instructions_without_visible_control_are_not_entry(self):
+        result = self.state("โปรดกดรอรับคิวซื้อบัตร 1 ชั่วโมงก่อนเปิดจำหน่าย")
+        self.assertNotEqual(result["state"], "waiting_room_entry")
+
+    def test_generic_waiting_room_copy_is_not_an_active_queue(self):
+        result = self.state("Waiting room instructions: do not refresh this page")
+        self.assertNotEqual(result["state"], "queue")
 
     def test_queue_position_requires_explicit_number(self):
         unknown = self.state("You are in the buying queue. Status last updated")
@@ -1037,13 +1204,16 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(self.state("OTP รหัสยืนยัน")["state"], "otp_handoff")
 
     def test_reserved_selection(self):
-        self.assertEqual(self.state("Seat map เลือกที่นั่ง")["state"], "ticket_selection")
+        self.assertEqual(self.state("Seat map เลือกที่นั่ง", seat_controls=12)["state"], "ticket_selection")
+
+    def test_instructional_seat_text_is_not_a_selection_page(self):
+        self.assertNotEqual(self.state("อ่านข้อมูลผังที่นั่งและวิธีเลือกที่นั่ง จำนวนบัตร")["state"], "ticket_selection")
 
     def test_general_admission_selection(self):
         self.assertEqual(self.state("ขั้นตอนที่ 2/4 เลือกจำนวนบัตร General Admission", url="https://tickets.test/festival.php")["state"], "quantity_selection")
 
     def test_multiple_ticket_selection_state(self):
-        checkpoint = self.state("Seat map เลือกที่นั่ง จำนวนบัตร 4")
+        checkpoint = self.state("Seat map เลือกที่นั่ง จำนวนบัตร 4", seat_controls=20)
         self.assertEqual(checkpoint["state"], "ticket_selection")
 
     def test_terms_page_is_not_mistaken_for_payment(self):
@@ -1223,6 +1393,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
+        "generator_version": "1.1.0-beta.22",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),
@@ -1237,3 +1408,7 @@ output.joinpath("ticket-assistant-plan.md").write_text(
     encoding="utf-8",
 )
 print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+# alpha-beta22-visible-queue-evidence-v1
+
+# alpha-beta21-ticket-runtime-v1

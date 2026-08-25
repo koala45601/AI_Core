@@ -150,3 +150,35 @@ export async function skillsRequest(path = "", init: RequestInit = {}): Promise<
   const response = await toolFetch(`/v1/skills${path}`, init, 190_000);
   return payload(response);
 }
+
+// alpha-beta21-ticket-runtime-v1
+export interface TicketRunView extends Record<string, unknown> {
+  id: string;
+  project_path: string;
+  pid?: number | null;
+  status: string;
+  stage: string;
+  detail?: string;
+  logs?: Array<{ at: number; stream: string; text: string }>;
+  handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
+}
+
+export async function startTicketRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await toolFetch("/v1/ticket-runs", { method: "POST", body: JSON.stringify(input) }, 15_000);
+  return payload(response);
+}
+
+export async function getTicketRun(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}`, { method: "GET", headers: headers(false) }, 5_000);
+  return payload(response);
+}
+
+export async function sendTicketRunInput(id: string, value = ""): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}/input`, { method: "POST", body: JSON.stringify({ value }) }, 5_000);
+  return payload(response);
+}
+
+export async function stopTicketRun(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" }, 10_000);
+  return payload(response);
+}

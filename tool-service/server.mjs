@@ -9,6 +9,7 @@ import net from "node:net";
 import { chromium } from "playwright-core";
 import { WebSocketServer } from "ws";
 import { evaluateTicketPreflight, extractTicketPageFacts } from "../lib/ticket-workflow.js";
+import { createTicketRunManager } from "./ticket-run-manager.mjs"; // alpha-beta21-ticket-runtime-v1
 
 process.env.PATH = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", process.env.PATH || ""].join(":");
 
@@ -46,6 +47,7 @@ let storageError = "";
 let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
+const ticketRunManager = createTicketRunManager({ programCreateDir, requiredGeneratorVersion: "1.1.0-beta.22" });
 
 if (token.length < 32) {
   console.error("ALPHA_TOOL_TOKEN is missing or too short");
@@ -2489,6 +2491,11 @@ const server = http.createServer(async (request, response) => {
     if (!authenticated(request)) return json(response, 401, { error: "ไม่ได้รับอนุญาต" });
     if (url.pathname === "/v1/health" && request.method === "GET") return json(response, 200, await toolHealth());
     if (!await refreshStorageState() && url.pathname !== "/v1/shutdown") return json(response, 503, { error: storageError, storage_connected: false });
+    if (url.pathname === "/v1/ticket-runs" && request.method === "POST") return json(response, 200, await ticketRunManager.start(await readJson(request, 64 * 1024)));
+    const ticketRunMatch = url.pathname.match(/^\/v1\/ticket-runs\/([^/]+)(?:\/(input|stop))?$/);
+    if (ticketRunMatch && request.method === "GET" && !ticketRunMatch[2]) return json(response, 200, ticketRunManager.get(decodeURIComponent(ticketRunMatch[1])));
+    if (ticketRunMatch && request.method === "POST" && ticketRunMatch[2] === "input") { const body = await readJson(request, 16 * 1024); return json(response, 200, await ticketRunManager.input(decodeURIComponent(ticketRunMatch[1]), String(body.value ?? ""))); }
+    if (ticketRunMatch && request.method === "POST" && ticketRunMatch[2] === "stop") return json(response, 200, await ticketRunManager.stop(decodeURIComponent(ticketRunMatch[1])));
     if (url.pathname === "/v1/auto-learn/status" && request.method === "GET") return json(response, 200, { ok: true, job: publicAutoLearnJob() });
     if (url.pathname === "/v1/auto-learn/start" && request.method === "POST") return json(response, 200, await startAutoLearn(await readJson(request, 64 * 1024)));
     if (url.pathname === "/v1/auto-learn/stop" && request.method === "POST") return json(response, 200, await stopAutoLearn());
@@ -2558,6 +2565,7 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, { ok: true });
     }
     if (url.pathname === "/v1/shutdown" && request.method === "POST") {
+      await ticketRunManager.stopAll("alpha_shutdown").catch(() => {});
       if (autoLearnJob?.status === "running") {
         await stopAutoLearn();
         await finalizeAutoLearn("ปิดโปรแกรมอัลฟ่า");
@@ -2587,6 +2595,7 @@ server.listen(port, "127.0.0.1", () => console.log(`Alpha tool service listening
 
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, async () => {
+    await ticketRunManager.stopAll("alpha_shutdown").catch(() => {});
     if (autoLearnJob?.status === "running") await stopAutoLearn().catch(() => {});
     await cleanupOwnedSkillLabResources().catch(() => {});
     await stopHeavyTools().catch(() => {});

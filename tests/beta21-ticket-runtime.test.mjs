@@ -99,6 +99,27 @@ test("Ticket Run Manager stops only its owned process group", async () => {
   }
 });
 
+test("Ticket Run Manager rejects stale generators and reuses one active process for repeated Run clicks", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-version-"));
+  const root = join(temp, "Program_Create");
+  await mkdir(root);
+  const path = await project(root, "versioned", "#!/bin/bash\necho '{\"kind\":\"runtime\",\"stage\":\"running\"}'\nsleep 30\n");
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: "1.1.0-beta.22" });
+  try {
+    await assert.rejects(() => manager.start({ project_path: path }), /เวอร์ชันเก่า|สร้างใหม่/);
+    await writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: "1.1.0-beta.22" }), "utf8");
+    const first = await manager.start({ project_path: path });
+    const second = await manager.start({ project_path: path });
+    assert.equal(second.reused, true);
+    assert.equal(second.run.id, first.run.id);
+    assert.equal(second.run.pid, first.run.pid);
+    await manager.stop(first.run.id);
+  } finally {
+    await manager.stopAll();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("beta21 source wires local runtime endpoints, UI polling, handoff input and truthful fixture wording", async () => {
   const server = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
   const client = await readFile(new URL("../lib/tool-client.ts", import.meta.url), "utf8");
@@ -118,7 +139,7 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(page, /Live Ticket Run/);
   assert.match(page, /window\.setInterval\(\(\) => void poll\(\), 1_000\)/);
   assert.match(page, /ยังไม่ถือว่า Full Loop ผ่านจนมี runtime evidence/);
-  assert.match(template, /"kind": "input_required"/);
+  assert.match(template, /record\("input_required"/);
   assert.match(template, /"field": "captcha" if state == "captcha_handoff" else "otp"/);
-  assert.equal(pkg.version, "1.1.0-beta.21");
+  assert.equal(pkg.version, "1.1.0-beta.22");
 });

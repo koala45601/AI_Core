@@ -1,4 +1,4 @@
-name: Apply Alpha Beta21 Ticket Runtime
+name: Apply Alpha Beta22 Ticket Runtime Evidence
 
 on:
   push:
@@ -7,7 +7,10 @@ on:
     paths:
       - tool-service/ticket-run-manager.mjs
       - scripts/apply-beta21-ticket-runtime.mjs
+      - scripts/apply-beta22-ticket-visible-evidence.mjs
+      - templates/concert-ticket-assistant.py
       - tests/beta21-ticket-runtime.test.mjs
+      - tests/beta22-ticket-visible-evidence.test.mjs
       - start-alpha-v11.command
       - .github/workflows/apply-beta21-ticket-runtime.yml
 
@@ -15,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: alpha-beta21-ticket-runtime-${{ github.ref }}
+  group: alpha-beta22-ticket-runtime-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -33,23 +36,27 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm install --package-lock=false
-      - name: Apply beta21 Ticket Bot runtime
-        run: node scripts/apply-beta21-ticket-runtime.mjs .
-      - name: Verify beta21 patch idempotency
-        run: node scripts/apply-beta21-ticket-runtime.mjs .
+      - name: Apply beta21 runtime and beta22 visible-control evidence
+        run: |
+          node scripts/apply-beta21-ticket-runtime.mjs .
+          node scripts/apply-beta22-ticket-visible-evidence.mjs .
+      - name: Verify beta22 patch idempotency
+        run: node scripts/apply-beta22-ticket-visible-evidence.mjs .
       - name: Syntax check runtime
         run: |
           node --check tool-service/ticket-run-manager.mjs
           node --check tool-service/server.mjs
           node --check scripts/apply-beta21-ticket-runtime.mjs
+          node --check scripts/apply-beta22-ticket-visible-evidence.mjs
+          python3 -m py_compile templates/concert-ticket-assistant.py
       - name: Focused Ticket Bot regression tests
         run: |
-          node --test tests/beta14-auto-learn-recovery.test.mjs tests/beta18-ticket-discovery-and-seats.test.mjs tests/beta19-ticket-build-readiness.test.mjs tests/beta21-ticket-runtime.test.mjs
+          node --test tests/beta14-auto-learn-recovery.test.mjs tests/beta18-ticket-discovery-and-seats.test.mjs tests/beta19-ticket-build-readiness.test.mjs tests/beta21-ticket-runtime.test.mjs tests/beta22-ticket-visible-evidence.test.mjs
       - name: Production build
         run: npm run build
       - name: Restore generated build outputs
         run: git checkout -- .next dist 2>/dev/null || true
-      - name: Commit generated beta21 source patch
+      - name: Commit generated beta22 source patch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -63,12 +70,14 @@ jobs:
             package.json \
             CHANGELOG.md \
             scripts/apply-beta21-ticket-runtime.mjs \
+            scripts/apply-beta22-ticket-visible-evidence.mjs \
             tests/beta21-ticket-runtime.test.mjs \
+            tests/beta22-ticket-visible-evidence.test.mjs \
             start-alpha-v11.command \
             .github/workflows/apply-beta21-ticket-runtime.yml
           if git diff --cached --quiet; then
-            echo "Beta21 source already committed"
+            echo "Beta22 source already committed"
             exit 0
           fi
-          git commit -m "feat: wire Ticket Bot real runtime loop"
+          git commit -m "fix: require visible Ticket Bot queue controls"
           git push origin HEAD:fix/ticket-studio-build-readiness-v1

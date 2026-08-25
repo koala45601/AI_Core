@@ -196,6 +196,7 @@ interface TicketFormInspection {
 interface TicketBuildReport {
   ok: boolean;
   stage: string;
+  generator_version?: string;
   project_path: string;
   created_files: string[];
   verification?: {
@@ -214,6 +215,24 @@ interface TicketBuildReport {
   };
   live_facts?: TicketFormInspection["facts"];
   output?: Record<string, unknown>;
+}
+
+interface TicketRunView {
+  id: string;
+  project_path: string;
+  pid?: number | null;
+  status: "starting_runtime" | "runtime_running" | "waiting_handoff" | "completed" | "failed" | "stopped";
+  stage: string;
+  detail?: string;
+  started_at?: number;
+  updated_at?: number;
+  ended_at?: number | null;
+  exit_code?: number | null;
+  latest_url?: string;
+  full_loop_verified?: boolean;
+  payment_handoff_verified?: boolean;
+  handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
+  logs?: Array<{ at: number; stream: string; text: string }>;
 }
 
 const TOPICS = [
@@ -459,6 +478,12 @@ export default function Home() {
   const [ticketPayment, setTicketPayment] = useState<"qr" | "promptpay">("qr");
   const [ticketProjectName, setTicketProjectName] = useState("");
   const [ticketBuildReport, setTicketBuildReport] = useState<TicketBuildReport | null>(null);
+  const [ticketRun, setTicketRun] = useState<TicketRunView | null>(null); // alpha-beta21-ticket-runtime-v1
+  const [ticketUsername, setTicketUsername] = useState("");
+  const [ticketPassword, setTicketPassword] = useState("");
+  const [ticketRunInput, setTicketRunInput] = useState("");
+  const ticketInspectPendingRef = useRef(false);
+  const ticketRunPendingRef = useRef(false);
   const [showScrollLatest, setShowScrollLatest] = useState(false);
   const [pairingCode, setPairingCode] = useState("");
   const [feedbackMessageId, setFeedbackMessageId] = useState<string | null>(null);
@@ -489,6 +514,24 @@ export default function Home() {
     if (postprocessTimerRef.current !== null) window.clearTimeout(postprocessTimerRef.current);
     postprocessAbortRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    if (!ticketRun?.id || !["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status)) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_status", run_id: ticketRun.id }), cache: "no-store" });
+        const data = await response.json() as { run?: TicketRunView; error?: string };
+        if (response.ok && data.run && !stopped) {
+          setTicketRun(data.run);
+          setTicketStatus(data.run.detail || `Ticket Bot: ${data.run.stage}`);
+        }
+      } catch { /* next poll retries */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [ticketRun?.id, ticketRun?.status]);
 
   const loadChat = useCallback(async (id: string) => {
     try {
@@ -1306,7 +1349,8 @@ export default function Home() {
   }
 
   async function inspectTicketEvents() {
-    if (!ticketSourceUrl.trim() || ticketStage === "inspecting") return;
+    if (!ticketSourceUrl.trim() || ticketStage === "inspecting" || ticketInspectPendingRef.current) return;
+    ticketInspectPendingRef.current = true;
     setTicketStage("inspecting");
     setTicketStatus("กำลังอ่านสถานะช่วงขายจากหน้ารวม — ยังไม่สรุปว่ามีที่นั่งจนกว่าจะเข้า inventory จริง…");
     setTicketEvents([]);
@@ -1329,12 +1373,15 @@ export default function Home() {
     } catch (error) {
       setTicketStage("error");
       setTicketStatus(error instanceof Error ? error.message : "ตรวจรายการคอนเสิร์ตไม่สำเร็จ");
+    } finally {
+      ticketInspectPendingRef.current = false;
     }
   }
 
   async function inspectSelectedTicketEvent() {
     const selected = ticketEvents.find((event) => event.id === ticketSelectedId);
-    if (!selected || ticketStage === "form_inspecting") return;
+    if (!selected || ticketStage === "form_inspecting" || ticketInspectPendingRef.current) return;
+    ticketInspectPendingRef.current = true;
     setTicketStage("form_inspecting");
     setTicketStatus(`กำลังอ่านรอบ ฟอร์ม และ API แบบ passive ของ ${selected.name}…`);
     setTicketInspection(null);
@@ -1403,22 +1450,73 @@ export default function Home() {
       });
       setTicketStage("preferences");
       setTicketStatus(`หน้ารายละเอียดถูกเว็บไซต์ปฏิเสธ แต่สร้างบอทได้ — โปรแกรมจะอ่านรอบ โซน และฟอร์มจริงหลัง Login ตอนรัน (${warning})`);
+    } finally {
+      ticketInspectPendingRef.current = false;
     }
+  }
+
+  async function startTicketRuntime(projectPath: string) {
+    if (!projectPath) throw new Error("ไม่พบ project path สำหรับเริ่มบอท");
+    setTicketStatus("กำลังเริ่ม process ของ Ticket Bot จริง…");
+    const response = await fetch("/api/ticket-bot", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "run", project_path: projectPath, username: ticketUsername, password: ticketPassword }),
+    });
+    const data = await response.json() as { run?: TicketRunView; error?: string };
+    setTicketPassword("");
+    if (!response.ok || !data.run) throw new Error(data.error || "เริ่ม Ticket Bot process ไม่สำเร็จ");
+    setTicketRun(data.run);
+    setTicketRunInput("");
+    setTicketStatus(data.run.detail || "Ticket Bot process เริ่มทำงานแล้ว");
+    return data.run;
+  }
+
+  async function sendTicketRuntimeInput() {
+    if (!ticketRun?.id) return;
+    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_input", run_id: ticketRun.id, value: ticketRunInput }) });
+    const data = await response.json() as { run?: TicketRunView; error?: string };
+    setTicketRunInput("");
+    if (!response.ok || !data.run) { setTicketStatus(data.error || "ส่งข้อมูลให้ Ticket Bot ไม่สำเร็จ"); return; }
+    setTicketRun(data.run);
+    setTicketStatus(data.run.detail || "ส่งข้อมูลแล้ว กำลังทำต่อ");
+  }
+
+  async function stopTicketRuntime() {
+    if (!ticketRun?.id) return;
+    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_stop", run_id: ticketRun.id }) });
+    const data = await response.json() as { run?: TicketRunView; error?: string };
+    if (!response.ok || !data.run) { setTicketStatus(data.error || "หยุด Ticket Bot ไม่สำเร็จ"); return; }
+    setTicketRun(data.run);
+    setTicketStatus("ส่งคำสั่งหยุด Ticket Bot แล้ว");
   }
 
   async function buildTicketBot(event: FormEvent) {
     event.preventDefault();
     const selected = ticketEvents.find((item) => item.id === ticketSelectedId);
-    if (!selected || ticketStage === "building") return;
+    if (!selected || ticketStage === "building" || ticketRunPendingRef.current) return;
     if (ticketDelivery === "postal" && !ticketAddress.trim()) {
       setTicketStage("error");
       setTicketStatus("เลือกจัดส่งทางไปรษณีย์จึงต้องใส่ที่อยู่ก่อน");
       return;
     }
+    ticketRunPendingRef.current = true;
     setTicketStage("building");
-    setTicketStatus("กำลังเรียกสกิลที่ Verified แล้วเพื่อสร้างโปรเจกต์ Python และตรวจไฟล์…");
-    setTicketBuildReport(null);
     try {
+      const reusableCurrentProject = ticketBuildReport?.project_path
+        && ticketBuildReport.generator_version === "1.1.0-beta.22"
+        && ticketRun
+        && ["completed", "stopped"].includes(ticketRun.status);
+      if (reusableCurrentProject) {
+        setTicketStatus("กำลังเริ่มโปรเจกต์เวอร์ชันปัจจุบันอีกครั้ง…");
+        await startTicketRuntime(ticketBuildReport.project_path);
+        setTicketStage("ready");
+        return;
+      }
+
+      // Failed, missing-version and pre-beta22 projects are rebuilt instead of
+      // silently rerunning stale generated code.
+      setTicketStatus("กำลังสร้างโปรเจกต์ Ticket Bot เวอร์ชันปัจจุบันและตรวจไฟล์…");
+      setTicketBuildReport(null);
       const response = await fetch("/api/ticket-bot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1463,10 +1561,13 @@ export default function Home() {
       if (!response.ok || !data.ok) throw new Error(data.error || "สร้างหรือทดสอบโปรเจกต์ไม่ผ่าน");
       setTicketBuildReport(data);
       setTicketStage("ready");
-      setTicketStatus(`สร้างโปรเจกต์ ${data.created_files?.length ?? 0} ไฟล์ · fixture ${data.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · คิวจริง ${data.verification?.live_queue_observed ? "พบและตรวจแล้ว" : "ยังไม่ได้พบ"}`);
+      setTicketStatus(`สร้างโปรเจกต์ ${data.created_files?.length ?? 0} ไฟล์และ fixture ผ่านแล้ว · กำลังเริ่ม runtime จริง`);
+      await startTicketRuntime(data.project_path);
     } catch (error) {
       setTicketStage("error");
       setTicketStatus(error instanceof Error ? error.message : "สร้างโปรเจกต์ไม่สำเร็จ");
+    } finally {
+      ticketRunPendingRef.current = false;
     }
   }
 
@@ -1477,6 +1578,7 @@ export default function Home() {
   const selectedTicketEvent = ticketEvents.find((event) => event.id === ticketSelectedId);
   const generatedTicketProjectName = automaticTicketProjectName(selectedTicketEvent);
   const effectiveTicketProjectName = ticketProjectName.trim() || generatedTicketProjectName;
+  const ticketRunActive = Boolean(ticketRun && ["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status));
   const autoLearnProgress = autoLearnJob?.status === "running" && autoLearnJob.started_at && autoLearnJob.deadline
     ? Math.min(100, Math.max(1, ((Date.now() - autoLearnJob.started_at) / (autoLearnJob.deadline - autoLearnJob.started_at)) * 100))
     : autoLearnJob && ["completed", "stopped"].includes(autoLearnJob.status) ? 100 : 0;
@@ -1885,7 +1987,7 @@ export default function Home() {
             <section className="ticket-config-pane">
               <header className="ticket-config-header">
                 <div><span className="section-kicker">STEP 2–3 · CONFIGURE & BUILD</span><h2>ตั้งค่าบอทและวิธีชำระเงิน</h2><p>ระบบสร้าง Python+Playwright state machine และแยกผล fixture, หน้าจริง, คิวจริง และ checkout จริงออกจากกัน</p></div>
-                <div className="ticket-loop-steps"><span className={ticketEvents.length ? "done" : ""}>1 ตรวจงาน</span><span className={ticketInspection ? "done" : ""}>2 อ่านฟอร์ม</span><span className={ticketBuildReport?.ok ? "done" : ""}>3 สร้างโปรเจกต์</span></div>
+                <div className="ticket-loop-steps"><span className={ticketEvents.length ? "done" : ""}>1 ตรวจงาน</span><span className={ticketInspection ? "done" : ""}>2 อ่านฟอร์ม</span><span className={ticketBuildReport?.ok ? "done" : ""}>3 สร้างโปรเจกต์</span><span className={ticketRunActive ? "done" : ""}>4 รันจริง</span></div>
               </header>
               <div className="ticket-config-scroll">
                 {!ticketSelectedId ? <div className="ticket-config-empty"><span>←</span><strong>เลือกคอนเสิร์ตจากฝั่งซ้ายก่อน</strong><p>จากนั้นอัลฟ่าจะตรวจหน้าเว็บจริงและนำฟิลด์ที่พบมาใช้สร้าง config</p></div> : (
@@ -1937,10 +2039,10 @@ export default function Home() {
                     </section>
 
                     <section className="ticket-form-section">
-                      <div className="ticket-form-heading"><span>02</span><div><strong>ข้อมูลสำหรับกรอกฟอร์ม</strong><small>ถามเฉพาะฟิลด์ที่งานนั้นบังคับ; password รับจาก secure prompt และไม่บันทึก</small></div></div>
+                      <div className="ticket-form-heading"><span>02</span><div><strong>ข้อมูลสำหรับกรอกฟอร์ม</strong><small>ชื่อคนไม่ใช่โซน/เลขที่นั่ง; password ใช้เฉพาะตอน run และไม่บันทึก</small></div></div>
                       <div className="ticket-form-grid">
-                        <label className="field"><span>ชื่อผู้ซื้อ (ถ้าหน้าจริงถาม)</span><input value={ticketCustomerName} onChange={(event) => setTicketCustomerName(event.target.value)} placeholder="เว้นว่างให้บอทถามตอนพบฟิลด์" /></label>
-                        <label className="field ticket-field-wide"><span>ชื่อผู้เข้าชมแต่ละใบ (หนึ่งบรรทัดต่อคน)</span><textarea value={ticketAttendeeNames} onChange={(event) => setTicketAttendeeNames(event.target.value)} placeholder="กรอกเมื่อคอนนั้นพิมพ์ชื่อบนบัตร; เว้นว่างให้ถามเฉพาะตอนพบฟิลด์" /></label>
+                        <label className="field"><span>ชื่อผู้ซื้อ (ชื่อ-นามสกุลบุคคล)</span><input value={ticketCustomerName} onChange={(event) => setTicketCustomerName(event.target.value)} placeholder="ไม่ใช่โซนหรือเลขที่นั่ง; เว้นว่างได้" /><small>กรอกชื่อบุคคลจริงเฉพาะเมื่อหน้าเว็บถาม</small></label>
+                        <label className="field ticket-field-wide"><span>ชื่อผู้เข้าชมแต่ละใบ (หนึ่งคนต่อบรรทัด)</span><textarea value={ticketAttendeeNames} onChange={(event) => setTicketAttendeeNames(event.target.value)} placeholder="ชื่อบุคคลเท่านั้น — ใช้เมื่อคอนบังคับพิมพ์ชื่อบนบัตร" /><small>โซน/แถว/เลขที่นั่งให้กรอกในส่วนเลือกบัตรด้านบน</small></label>
                         <label className="field"><span>วิธีรับบัตร</span><select value={ticketDelivery} onChange={(event) => setTicketDelivery(event.target.value as typeof ticketDelivery)}><option value="pickup">รับบัตรด้วยตนเอง</option><option value="postal">จัดส่งทางไปรษณีย์</option></select></label>
                         {ticketDelivery === "postal" && <><label className="field ticket-field-wide"><span>ที่อยู่</span><input value={ticketAddress} onChange={(event) => setTicketAddress(event.target.value)} placeholder="บ้านเลขที่ ถนน แขวง/ตำบล เขต/อำเภอ" /></label><label className="field"><span>เมือง/อำเภอ</span><input value={ticketCity} onChange={(event) => setTicketCity(event.target.value)} /></label><label className="field"><span>จังหวัด</span><input value={ticketProvince} onChange={(event) => setTicketProvince(event.target.value)} /></label><label className="field"><span>รหัสไปรษณีย์</span><input value={ticketPostalCode} onChange={(event) => setTicketPostalCode(event.target.value)} inputMode="numeric" /></label></>}
                         <label className="field"><span>Ticket Protect</span><select value={ticketProtect ? "on" : "off"} onChange={(event) => setTicketProtect(event.target.value === "on")}><option value="off">ไม่เพิ่ม (ค่าเริ่มต้น)</option><option value="on">เพิ่ม Ticket Protect</option></select></label>
@@ -1955,15 +2057,35 @@ export default function Home() {
                       </div>
                     </section>
 
+                    <section className="ticket-form-section">
+                      <div className="ticket-form-heading"><span>04</span><div><strong>Login สำหรับ run จริง</strong><small>ส่งเข้า process แบบ ephemeral เท่านั้น ไม่เขียน config/localStorage/database</small></div></div>
+                      <div className="ticket-form-grid">
+                        <label className="field"><span>Email / username</span><input autoComplete="username" value={ticketUsername} onChange={(event) => setTicketUsername(event.target.value)} placeholder="เว้นว่างได้ถ้ามี session อยู่แล้ว" /></label>
+                        <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={ticketPassword} onChange={(event) => setTicketPassword(event.target.value)} placeholder="ใช้เฉพาะตอนเริ่ม run" /></label>
+                      </div>
+                    </section>
+
                     <section className="ticket-handoff-note"><strong>ทำงานเบื้องหลังโดยไม่ยึดเมาส์</strong><span>Login อัตโนมัติจาก session/secure prompt · รับช่วงเฉพาะ CAPTCHA · OTP · Payment</span><p>บอทใช้ DOM ในโปรไฟล์แยก รองรับ image-map ของโซนและไม่ขยับเมาส์ระบบ รหัสผ่านไม่ถูกเขียนลง config ส่วนการจ่ายเงินจริงจะหยุดที่หน้า QR ให้พี่ตรวจเสมอ</p></section>
 
                     {ticketBuildReport && <section className="ticket-result-card">
-                      <div><span>✓</span><div><strong>สร้าง state machine และผ่านชุดทดสอบภายใน</strong><p>{ticketBuildReport.project_path}</p></div></div>
+                      <div><span>✓</span><div><strong>สร้างโปรเจกต์และ fixture ผ่าน — ยังไม่ถือว่า Full Loop ผ่านจนมี runtime evidence</strong><p>{ticketBuildReport.project_path}</p></div></div>
                       <div className="ticket-result-files">{ticketBuildReport.created_files.map((file) => <span key={file}>{file}</span>)}</div>
-                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · State fixtures: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · คิวจริง: {ticketBuildReport.verification?.live_queue_observed ? "พบแล้ว" : "ยังไม่พบ"} · Checkout จริง: {ticketBuildReport.verification?.live_checkout_verified ? "ยืนยันแล้ว" : "รอรันโปรเจกต์"} · รันด้วย run-full-loop.command</small>
+                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · Fixture: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · Runtime: {ticketRun ? ticketRun.stage : "ยังไม่เริ่ม"} · PAYMENT_HANDOFF: {ticketRun?.payment_handoff_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</small>
                     </section>}
 
-                    <div className="ticket-build-actions"><span className="ticket-build-hint">จำเป็น: เลือกคอนเสิร์ต + จำนวนบัตร · งบและการตรวจรายละเอียดไม่บังคับ</span><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting"}>ตรวจเพิ่ม</button><button className="save-button" type="submit" disabled={!["open", "upcoming"].includes(ticketEvents.find((event) => event.id === ticketSelectedId)?.sale_status || "unknown") || ticketStage === "building"}>{ticketStage === "building" ? "กำลังสร้างและทดสอบ…" : ticketInspection?.functional_preflight?.runtime_discovery_required || !ticketInspection ? "สร้างบอท — ค้นข้อมูลจริงตอนรัน" : "สร้างและทดสอบบอท"}</button></div>
+                    {ticketRun && <section className="ticket-result-card">
+                      <div><span>{ticketRun.status === "failed" ? "!" : ticketRun.status === "stopped" ? "■" : "▶"}</span><div><strong>Live Ticket Run · {ticketRun.status}</strong><p>Run {ticketRun.id} · PID {ticketRun.pid || "—"} · Stage {ticketRun.stage}</p></div></div>
+                      <small>{ticketRun.detail || "กำลังรอ event จาก process"}{ticketRun.latest_url ? ` · ${ticketRun.latest_url}` : ""}</small>
+                      {ticketRun.logs?.length ? <pre>{ticketRun.logs.slice(-8).map((item) => item.text).join("\n")}</pre> : null}
+                      {ticketRun.status === "waiting_handoff" && <div className="confirm-row">
+                        <span>{ticketRun.handoff?.prompt || "ต้องให้ผู้ใช้รับช่วง"}</span>
+                        {!["captcha", "otp", "payment", "continue", "ticket_selection", "checkout_options", "review"].includes(ticketRun.handoff?.field || "") && <input type={ticketRun.handoff?.secret ? "password" : "text"} value={ticketRunInput} onChange={(event) => setTicketRunInput(event.target.value)} placeholder={ticketRun.handoff?.options?.join(", ") || "กรอกข้อมูลที่บอทรอ"} />}
+                        <button type="button" onClick={() => void sendTicketRuntimeInput()}>ทำต่อ</button>
+                      </div>}
+                      {ticketRunActive && <button type="button" className="secondary-action" onClick={() => void stopTicketRuntime()}>หยุดบอท</button>}
+                    </section>}
+
+                    <div className="ticket-build-actions"><span className="ticket-build-hint">Fixture ผ่านไม่เท่ากับ runtime ผ่าน · run-full-loop.command · สร้างบอท — ค้นข้อมูลจริงตอนรัน</span><button type="button" className="secondary-action" onClick={() => void inspectSelectedTicketEvent()} disabled={ticketStage === "form_inspecting" || ticketRunActive}>ตรวจเพิ่ม</button><button className="save-button" type="submit" disabled={!["open", "upcoming"].includes(ticketEvents.find((event) => event.id === ticketSelectedId)?.sale_status || "unknown") || ticketStage === "building" || ticketRunActive}>{ticketRunActive ? "บอทกำลังทำงาน" : ticketStage === "building" ? "กำลังเริ่ม…" : ticketBuildReport?.project_path ? "เริ่มบอทจริง" : "สร้างและเริ่มบอท"}</button></div>
                   </form>
                 )}
               </div>

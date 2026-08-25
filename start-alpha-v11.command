@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.21..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.22..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -39,6 +39,7 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.21..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-auto-learn-recovery.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta21-ticket-runtime.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta22-ticket-visible-evidence.mjs" "$ALPHA_DIR"
 
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ticket-workflow.js"
@@ -61,6 +62,7 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.21..."
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta14-auto-learn-recovery.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta21-ticket-runtime.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta22-ticket-visible-evidence.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/install-security-skills.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ollama.ts" >/dev/null 2>&1 || true
 
@@ -86,7 +88,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta21 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta22 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -109,7 +111,7 @@ for _ in {1..120}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta21 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta22 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
@@ -149,7 +151,7 @@ fi
 WEB_READY=false
 for _ in {1..120}; do
   WEB_HEALTH="$(curl --max-time 2 -fsS http://localhost:3000/api/health 2>/dev/null || true)"
-  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.21"'* ]]; then
+  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.22"'* ]]; then
     WEB_READY=true
     break
   fi
@@ -161,5 +163,5 @@ if [[ "$WEB_READY" != true ]]; then
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.21 พร้อม: Ticket Bot Runtime มี Run ID · สถานะสด · Handoff · Stop; Full Loop ต้องยืนยันจาก run-report.jsonl ถึง PAYMENT_HANDOFF"
+echo "Alpha v1.1.0-beta.22 พร้อม: Ticket Bot ใช้หลักฐานปุ่มที่มองเห็นจริงสำหรับคิวและซื้อบัตร; Full Loop ต้องยืนยันจาก run-report.jsonl ถึง PAYMENT_HANDOFF"
 open "http://localhost:3000" >/dev/null 2>&1 || true

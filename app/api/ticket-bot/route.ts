@@ -1,9 +1,9 @@
 import { domainAllowed } from "@/lib/policy.js";
 import { getSettings } from "@/lib/settings-store";
-import { executeTool, ToolExecutionResult } from "@/lib/tool-client";
+import { executeTool, getTicketRun, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult } from "@/lib/tool-client"; // alpha-beta21-ticket-runtime-v1
 import { AppSettings } from "@/lib/types";
 
-type TicketAction = "inspect" | "inspect_form" | "build";
+type TicketAction = "inspect" | "inspect_form" | "build" | "run" | "run_status" | "run_input" | "run_stop";
 type TicketSaleStatus = "open" | "upcoming" | "sold_out" | "closed" | "ended" | "cancelled" | "unknown";
 
 interface TicketEvent {
@@ -170,9 +170,15 @@ function inspectionBlocked(result: ToolExecutionResult): boolean {
     || /access\s*denied|permission\s+to\s+access|errors\.edgesuite\.net/i.test(`${asText(result.title, 500)} ${asText(result.content, 5_000)}`);
 }
 
-async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form"): Promise<ToolExecutionResult & { requested_url: string; inspection_url: string; used_public_fallback: boolean }> {
+type TicketInspectionResult = ToolExecutionResult & { requested_url: string; inspection_url: string; used_public_fallback: boolean };
+
+const inspectionFlights = new Map<string, { expires_at: number; promise: Promise<TicketInspectionResult> }>();
+
+async function inspectPageOnce(url: string, settings: AppSettings, mode: "events" | "form"): Promise<TicketInspectionResult> {
   const inspectAction = mode === "events" ? "inspect_events" : "inspect_form";
-  await executeTool("browser_action", { action: "open", url, fresh_page: true, public_inspection: true }, settings);
+  // Passive discovery owns one reusable background page. Opening a new page on
+  // every click caused parallel navigations and avoidable CDN Access Denied.
+  await executeTool("browser_action", { action: "open", url, fresh_page: false, public_inspection: true }, settings);
   let result = await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
   let inspectionUrl = url;
   let usedPublicFallback = false;
@@ -180,7 +186,7 @@ async function inspectPage(url: string, settings: AppSettings, mode: "events" | 
     const fallback = publicInspectionFallback(url);
     if (!fallback || fallback === url) throw new Error(`หน้า public ถูกเว็บไซต์ปฏิเสธ (${asText(result.block_reason, 500) || "Access Denied"})`);
     assertInternetAndDomain(fallback, settings);
-    await executeTool("browser_action", { action: "open", url: fallback, fresh_page: true, public_inspection: true }, settings);
+    await executeTool("browser_action", { action: "open", url: fallback, fresh_page: false, public_inspection: true }, settings);
     result = await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
     inspectionUrl = fallback;
     usedPublicFallback = true;
@@ -189,11 +195,54 @@ async function inspectPage(url: string, settings: AppSettings, mode: "events" | 
   return Object.assign({}, result, { requested_url: url, inspection_url: inspectionUrl, used_public_fallback: usedPublicFallback });
 }
 
+async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form"): Promise<TicketInspectionResult> {
+  const key = `${mode}:${url}`;
+  const current = inspectionFlights.get(key);
+  if (current && current.expires_at > Date.now()) return current.promise;
+
+  const promise = inspectPageOnce(url, settings, mode);
+  inspectionFlights.set(key, { expires_at: Date.now() + 15_000, promise });
+  try {
+    return await promise;
+  } catch (error) {
+    inspectionFlights.delete(key);
+    throw error;
+  }
+}
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { action?: unknown; url?: unknown; input?: TicketBuildInput; discover_api?: unknown };
+    const body = await request.json() as { action?: unknown; url?: unknown; input?: TicketBuildInput; discover_api?: unknown; run_id?: unknown; project_path?: unknown; username?: unknown; password?: unknown; value?: unknown; inspect_only?: unknown };
     const action = asText(body.action, 30) as TicketAction;
     const settings = await getSettings();
+
+    // alpha-beta21-ticket-runtime-v1
+    if (action === "run") {
+      const projectPath = asText(body.project_path, 2_000);
+      if (!projectPath) throw new Error("ไม่พบ project_path สำหรับเริ่ม Ticket Bot");
+      const result = await startTicketRun({
+        project_path: projectPath,
+        username: asText(body.username, 500),
+        password: typeof body.password === "string" ? body.password : "",
+        inspect_only: body.inspect_only === true,
+      });
+      return Response.json(result);
+    }
+    if (action === "run_status") {
+      const runId = asText(body.run_id, 200);
+      if (!runId) throw new Error("ไม่พบ run_id");
+      return Response.json(await getTicketRun(runId));
+    }
+    if (action === "run_input") {
+      const runId = asText(body.run_id, 200);
+      if (!runId) throw new Error("ไม่พบ run_id");
+      return Response.json(await sendTicketRunInput(runId, typeof body.value === "string" ? body.value : ""));
+    }
+    if (action === "run_stop") {
+      const runId = asText(body.run_id, 200);
+      if (!runId) throw new Error("ไม่พบ run_id");
+      return Response.json(await stopTicketRun(runId));
+    }
 
     if (action === "inspect") {
       const url = publicHttpUrl(body.url);
@@ -223,7 +272,41 @@ export async function POST(request: Request) {
     if (action === "inspect_form") {
       const url = publicHttpUrl(body.url);
       assertInternetAndDomain(url, settings);
-      const inspected = await inspectPage(url, settings, "form");
+      let inspected: TicketInspectionResult | null = null;
+      let inspectionWarning = "";
+      try {
+        inspected = await inspectPage(url, settings, "form");
+      } catch (error) {
+        inspectionWarning = error instanceof Error ? error.message : "หน้าเว็บไม่อนุญาตให้ตรวจแบบ passive";
+      }
+      if (!inspected) {
+        return Response.json({
+          ok: true,
+          stage: "runtime_discovery_required",
+          page: { requested_url: url, inspection_url: url, used_public_fallback: false },
+          controls: [],
+          candidates: {},
+          ambiguous_roles: [],
+          facts: {
+            event_url: url,
+            sale_status: "unknown",
+            evidence: [{ field: "inspection", text: inspectionWarning, source: "public_inspection" }],
+          },
+          functional_preflight: {
+            passed: false,
+            public_page_verified: false,
+            purchase_controls_ready: false,
+            workflow_state: "runtime_discovery",
+            unresolved: ["schedule", "sale_open_at", "form_controls"],
+            can_build: true,
+            can_run_live_selection: false,
+            runtime_discovery_required: true,
+            inspection_warning: inspectionWarning,
+          },
+          api_calls: [],
+          api_warning: inspectionWarning,
+        });
+      }
       let apiCalls: Array<Record<string, unknown>> = [];
       let apiWarning = "";
       if (body.discover_api === true && settings.browser_mode === "alpha") {
@@ -358,6 +441,7 @@ export async function POST(request: Request) {
       return Response.json({
         ok: verified,
         stage: verified ? "project_fixture_verified" : structuralPass ? "project_unverified" : "project_incomplete",
+        generator_version: asText(output.generator_version, 80),
         output,
         project_path: projectPath,
         created_files: createdFiles,

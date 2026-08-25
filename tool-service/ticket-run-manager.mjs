@@ -93,6 +93,8 @@ function mapEvent(run, event) {
     run.detail = run.handoff.prompt;
   } else if (kind === "result") {
     const upper = status.toUpperCase();
+    run.result_status = upper;
+    run.result_reason = safeText(event.reason, 500);
     if (upper === "PAYMENT_HANDOFF") {
       run.status = "waiting_handoff";
       run.stage = "payment_handoff";
@@ -108,21 +110,26 @@ function mapEvent(run, event) {
   run.updated_at = now();
 }
 
-export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh", logLimit = MAX_LOG_LINES } = {}) {
+export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh", logLimit = MAX_LOG_LINES, requiredGeneratorVersion = "" } = {}) {
   if (!programCreateDir) throw new Error("programCreateDir is required");
   const runs = new Map();
 
   async function validateProject(projectPath) {
     const rootReal = await fs.realpath(resolve(programCreateDir));
     const requested = resolve(String(projectPath || ""));
-    if (!pathInside(requested, rootReal)) throw new Error("project_path อยู่นอก Program_Create");
     const projectReal = await fs.realpath(requested);
-    if (!pathInside(projectReal, rootReal)) throw new Error("project_path หลุดออกจาก Program_Create ผ่าน symlink");
+    if (!pathInside(projectReal, rootReal)) throw new Error("project_path อยู่นอก Program_Create หรือหลุดออกผ่าน symlink");
     for (const name of REQUIRED_FILES) {
       const file = resolve(projectReal, name);
       if (!pathInside(file, projectReal)) throw new Error("พาธไฟล์ runtime ไม่ปลอดภัย");
       const stat = await fs.lstat(file);
       if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${name} ต้องเป็นไฟล์จริงและห้ามเป็น symlink`);
+    }
+    if (requiredGeneratorVersion) {
+      const config = JSON.parse(await fs.readFile(resolve(projectReal, "config.json"), "utf8"));
+      if (safeText(config?.generatorVersion, 80) !== requiredGeneratorVersion) {
+        throw new Error(`โปรเจกต์ Ticket Bot เป็นเวอร์ชันเก่าหรือไม่ทราบเวอร์ชัน กรุณาสร้างใหม่ด้วย ${requiredGeneratorVersion}`);
+      }
     }
     return projectReal;
   }
@@ -196,6 +203,8 @@ export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh
       latest_url: "",
       full_loop_verified: false,
       payment_handoff_verified: false,
+      result_status: "",
+      result_reason: "",
       stop_requested: false,
       child,
     };
@@ -228,8 +237,10 @@ export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh
         run.detail = "ผู้ใช้หยุด Ticket Bot แล้ว";
       } else if ((code ?? 1) !== 0) {
         run.status = "failed";
-        run.stage = "process_failed";
-        run.detail = `Ticket Bot จบด้วย exit code ${code ?? 1}`;
+        run.stage = run.result_status ? run.result_status.toLowerCase() : "process_failed";
+        run.detail = run.result_status
+          ? `${run.result_status}${run.result_reason ? ` · ${run.result_reason}` : ""} (exit code ${code ?? 1})`
+          : `Ticket Bot จบด้วย exit code ${code ?? 1}`;
       } else {
         run.status = "completed";
         run.stage = run.payment_handoff_verified ? "completed_payment_handoff" : "completed_without_payment_handoff";

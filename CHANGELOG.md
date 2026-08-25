@@ -1,5 +1,26 @@
 # Alpha changelog
 
+## 1.1.0-beta.21 — 2026-08-25
+
+- Added a real Ticket Run Manager: build success can start the generated Ticket Bot process instead of stopping at fixture verification.
+- Added local-only start/status/input/stop runtime endpoints with Program_Create realpath validation, symlink protection, single-active-run reuse, bounded redacted logs, and owned process-group cleanup.
+- Ticket Bot Studio now accepts ephemeral login credentials, starts the real runtime after build, polls live run status every second, surfaces CAPTCHA/OTP/manual input handoffs, and can stop the owned run.
+- Generated bots emit structured input_required JSONL before blocking on stdin so the UI can explain exactly what the process is waiting for.
+- Fixture success is no longer presented as Full Loop success; PAYMENT_HANDOFF requires runtime evidence.
+
+## 1.1.0-beta.22 — 2026-08-25
+
+- Repeated concert inspection and build/run clicks are serialized immediately in the UI, while the API reuses the same passive browser page and in-flight inspection instead of opening duplicate tabs or processes.
+- Passive inspection blocked by the public site now returns a truthful `runtime_discovery_required` result instead of surfacing an unhandled 500 error.
+- The launcher synchronizes the installed learned Ticket skill with the beta.22 generator, generated projects record their generator version, and stale/failed projects are rebuilt instead of silently rerun.
+- Repeated Run requests for the same active project reuse one run id and PID; stopped or failed runs retain their real result and reason.
+- Ticket Bot queue entry now requires a visible, enabled control; instructional copy containing “รับคิว” can no longer produce a false waiting-room state.
+- Active queue detection now requires explicit queue-progress evidence and no longer treats generic waiting-room wording as proof.
+- Purchase entry requires a visible, enabled control instead of incidental “ซื้อบัตร” text in event instructions.
+- Ticket-selection state now requires visible seat/zone/quantity controls; event copy containing “เลือกที่นั่ง” is not accepted as live seat inventory evidence.
+- Generated bots keep the same browser session alive before queue/sale opening, use bounded waits, and recover if a verified control disappears before click.
+- Added generated fixture coverage for hidden/instructional queue and purchase copy.
+
 ## 1.1.0-beta.20 — 2026-08-25
 
 - ตั้งชื่อโฟลเดอร์โปรเจกต์บอทให้อัตโนมัติจาก URL ของคอนเสิร์ต ผู้ใช้ไม่ต้องคิดชื่อเอง
