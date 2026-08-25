@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-echo "กำลังเตรียม Alpha v1.1.0-beta.23..."
+echo "กำลังเตรียม Alpha v1.1.0-beta.24..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta3-runtime-patch.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/recover-beta3-approvals.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta4-shell-artifacts.mjs" "$ALPHA_DIR"
@@ -41,10 +41,13 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.23..."
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta21-ticket-runtime.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta22-ticket-visible-evidence.mjs" "$ALPHA_DIR"
 "$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta23-create-video.mjs" "$ALPHA_DIR"
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta24-create-video-local.mjs" "$ALPHA_DIR"
 
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ticket-workflow.js"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/ticket-run-manager.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/video-run-manager.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/create-video-worker.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/server-wrapper-beta3.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta4-batch-install-v2.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta4-chat-runtime-v2.mjs"
@@ -65,6 +68,7 @@ echo "กำลังเตรียม Alpha v1.1.0-beta.23..."
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta21-ticket-runtime.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta22-ticket-visible-evidence.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta23-create-video.mjs"
+"$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/apply-beta24-create-video-local.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/scripts/install-security-skills.mjs"
 "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/lib/ollama.ts" >/dev/null 2>&1 || true
 
@@ -90,7 +94,7 @@ for PORT in 4317 4318; do
 done
 sleep 0.4
 
-echo "กำลังเปิด Alpha beta23 Host Tool Controller..."
+echo "กำลังเปิด Alpha beta24 Host Tool Controller..."
 launchctl submit -l "$ALPHA_TOOL_SERVICE" \
   -o "$ALPHA_TOOL_LOG_FILE" \
   -e "$ALPHA_TOOL_ERROR_LOG_FILE" \
@@ -113,7 +117,7 @@ for _ in {1..120}; do
 done
 
 if [[ "$READY" != true ]]; then
-  echo "Alpha beta23 Host Tool Controller เปิดไม่สำเร็จ"
+  echo "Alpha beta24 Host Tool Controller เปิดไม่สำเร็จ"
   echo "ดู log: $ALPHA_TOOL_ERROR_LOG_FILE"
   exit 1
 fi
@@ -153,7 +157,7 @@ fi
 WEB_READY=false
 for _ in {1..120}; do
   WEB_HEALTH="$(curl --max-time 2 -fsS http://localhost:3000/api/health 2>/dev/null || true)"
-  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.23"'* ]]; then
+  if [[ "$WEB_HEALTH" == *'"app_version":"1.1.0-beta.24"'* ]]; then
     WEB_READY=true
     break
   fi
@@ -165,5 +169,5 @@ if [[ "$WEB_READY" != true ]]; then
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.23 พร้อม: Create Video Phase 1 เพิ่ม Project Storage · AI Director · Character/Location Registry · Continuity · Shot Planner; ยังไม่ติดตั้ง Video Model อัตโนมัติ"
+echo "Alpha v1.1.0-beta.24 พร้อม: Create Video ใช้ Local Wan2.1 1.3B/MPS สำหรับ Generate Shot ฟรี; ครั้งแรกกด Prepare Local Video เพื่อดาวน์โหลด runtime/model"
 open "http://localhost:3000" >/dev/null 2>&1 || true
