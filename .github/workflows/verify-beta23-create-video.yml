@@ -1,0 +1,51 @@
+name: Verify Alpha Beta23 Create Video
+
+on:
+  push:
+    branches:
+      - feature/create-video-v1
+    paths:
+      - "app/api/create-video/**"
+      - "components/create-video-studio.tsx"
+      - "lib/create-video-*.ts"
+      - "scripts/apply-beta23-create-video.mjs"
+      - "tests/beta23-create-video-phase1.test.mjs"
+      - "start-alpha-v11.command"
+      - "package.json"
+      - ".github/workflows/verify-beta23-create-video.yml"
+  workflow_dispatch:
+
+jobs:
+  verify-create-video-phase1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply beta23 Create Video patch
+        run: node scripts/apply-beta23-create-video.mjs "$PWD"
+
+      - name: Verify beta23 patch idempotency
+        run: node scripts/apply-beta23-create-video.mjs "$PWD"
+
+      - name: Syntax check patcher
+        run: node --check scripts/apply-beta23-create-video.mjs
+
+      - name: Focused Create Video regression tests
+        run: node --test tests/beta23-create-video-phase1.test.mjs
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Production build
+        run: npm run build
