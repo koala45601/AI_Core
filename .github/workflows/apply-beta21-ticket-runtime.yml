@@ -1,0 +1,70 @@
+name: Apply Alpha Beta21 Ticket Runtime
+
+on:
+  push:
+    branches:
+      - fix/ticket-studio-build-readiness-v1
+    paths:
+      - tool-service/ticket-run-manager.mjs
+      - scripts/apply-beta21-ticket-runtime.mjs
+      - tests/beta21-ticket-runtime.test.mjs
+      - .github/workflows/apply-beta21-ticket-runtime.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: alpha-beta21-ticket-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  patch-test-build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/ticket-studio-build-readiness-v1
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm install --package-lock=false
+      - name: Apply beta21 Ticket Bot runtime
+        run: node scripts/apply-beta21-ticket-runtime.mjs .
+      - name: Syntax check runtime
+        run: |
+          node --check tool-service/ticket-run-manager.mjs
+          node --check tool-service/server.mjs
+          node --check scripts/apply-beta21-ticket-runtime.mjs
+      - name: Focused Ticket Bot regression tests
+        run: |
+          node --test tests/beta14-auto-learn-recovery.test.mjs tests/beta18-ticket-discovery-and-seats.test.mjs tests/beta19-ticket-build-readiness.test.mjs tests/beta21-ticket-runtime.test.mjs
+      - name: Production build
+        run: npm run build
+      - name: Restore generated build outputs
+        run: git checkout -- .next dist 2>/dev/null || true
+      - name: Commit generated beta21 source patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            tool-service/server.mjs \
+            tool-service/ticket-run-manager.mjs \
+            lib/tool-client.ts \
+            app/api/ticket-bot/route.ts \
+            templates/concert-ticket-assistant.py \
+            app/page.tsx \
+            package.json \
+            CHANGELOG.md \
+            scripts/apply-beta21-ticket-runtime.mjs \
+            tests/beta21-ticket-runtime.test.mjs \
+            .github/workflows/apply-beta21-ticket-runtime.yml
+          if git diff --cached --quiet; then
+            echo "Beta21 source already committed"
+            exit 0
+          fi
+          git commit -m "feat: wire Ticket Bot real runtime loop"
+          git push origin HEAD:fix/ticket-studio-build-readiness-v1
