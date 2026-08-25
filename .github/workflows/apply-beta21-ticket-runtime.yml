@@ -8,6 +8,7 @@ on:
       - tool-service/ticket-run-manager.mjs
       - scripts/apply-beta21-ticket-runtime.mjs
       - tests/beta21-ticket-runtime.test.mjs
+      - start-alpha-v11.command
       - .github/workflows/apply-beta21-ticket-runtime.yml
 
 permissions:
@@ -33,6 +34,8 @@ jobs:
       - name: Install dependencies
         run: npm install --package-lock=false
       - name: Apply beta21 Ticket Bot runtime
+        run: node scripts/apply-beta21-ticket-runtime.mjs .
+      - name: Verify beta21 patch idempotency
         run: node scripts/apply-beta21-ticket-runtime.mjs .
       - name: Syntax check runtime
         run: |
@@ -61,6 +64,7 @@ jobs:
             CHANGELOG.md \
             scripts/apply-beta21-ticket-runtime.mjs \
             tests/beta21-ticket-runtime.test.mjs \
+            start-alpha-v11.command \
             .github/workflows/apply-beta21-ticket-runtime.yml
           if git diff --cached --quiet; then
             echo "Beta21 source already committed"
