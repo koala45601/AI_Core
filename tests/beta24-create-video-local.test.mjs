@@ -54,7 +54,9 @@ test("launcher applies beta24 after beta23 and preserves ticket beta22 wiring", 
   assert.match(launcher, /app_version.*1\.1\.0-beta\.24/);
 });
 
-test("Create Video handoff keeps Ticket Bot out of beta24 scope", async () => {
+test("Create Video handoff keeps Ticket Bot out of beta24 scope and requires local generation", async () => {
   const handoff = await read("HANDOFF_CREATE_VIDEO_V1.md");
   assert.match(handoff, /DO NOT TOUCH TICKET BOT/);
+  assert.match(handoff, /Alpha ต้อง Generate Video เองแบบ Local/);
+  assert.match(handoff, /ไม่มี paid video API/);
 });
