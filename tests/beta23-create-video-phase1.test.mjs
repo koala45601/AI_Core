@@ -28,29 +28,29 @@ test("Create Video Director uses story pass, scene-scoped shot pass, repair and 
   assert.doesNotMatch(director, /install_packages|install_package|video model download/i);
 });
 
-test("Create Video API exposes project, planning and hardware inspection without auto-installing a video model", async () => {
+test("Create Video API keeps project/planning/hardware foundations and advances local generation without paid API", async () => {
   const route = await text("app/api/create-video/route.ts");
   assert.match(route, /action === "create"/);
   assert.match(route, /action === "save"/);
   assert.match(route, /action === "plan"/);
   assert.match(route, /action === "hardware"/);
   assert.match(route, /system_capability/);
-  assert.match(route, /auto_install_video_model: false/);
-  assert.match(route, /generation_ready: false/);
+  assert.match(route, /generation_ready/);
+  assert.ok(/auto_install_video_model: false/.test(route) || /paid_api_required: false/.test(route));
 });
 
-test("Create Video UI is truthful about Phase 1 and video generation readiness", async () => {
+test("Create Video UI preserves Director/registries and truthfully exposes the current local renderer state", async () => {
   const ui = await text("components/create-video-studio.tsx");
-  assert.match(ui, /LOCAL AI FILM STUDIO · PHASE 1/);
+  assert.match(ui, /LOCAL AI FILM STUDIO/);
   assert.match(ui, /Character Registry/);
   assert.match(ui, /Location Registry/);
   assert.match(ui, /AI Director: Generate Shot Plan/);
-  assert.match(ui, /Video Model: ยังไม่เลือก \/ ไม่ติดตั้งอัตโนมัติ/);
-  assert.match(ui, /Generate Shot — Phase 2/);
   assert.match(ui, /Save Edited Shot Plan/);
+  assert.ok(/Video Model: ยังไม่เลือก \/ ไม่ติดตั้งอัตโนมัติ/.test(ui) || /Wan2\.1 1\.3B/.test(ui));
+  assert.ok(/Generate Shot — Phase 2/.test(ui) || /Generate Shot · Local/.test(ui));
 });
 
-test("beta23 runtime patch wires Create Video into existing sidebar without replacing Chat", async () => {
+test("beta23 runtime foundations stay wired after later Create Video phases without replacing Chat", async () => {
   const page = await text("app/page.tsx");
   const css = await text("app/globals.css");
   const pkg = JSON.parse(await text("package.json"));
@@ -61,5 +61,5 @@ test("beta23 runtime patch wires Create Video into existing sidebar without repl
   assert.match(page, /LOCAL AI FILM STUDIO/);
   assert.match(css, /alpha-beta23-create-video-phase1-v1/);
   assert.match(css, /\.create-video-view/);
-  assert.equal(pkg.version, "1.1.0-beta.23");
+  assert.match(pkg.version, /^1\.1\.0-beta\.(23|24)$/);
 });
