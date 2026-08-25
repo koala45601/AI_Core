@@ -1,0 +1,124 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createTicketRunManager } from "../tool-service/ticket-run-manager.mjs";
+
+async function waitFor(check, timeout = 5_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const value = await check();
+    if (value) return value;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+  }
+  throw new Error("timeout waiting for ticket runtime state");
+}
+
+async function project(root, name, script) {
+  const path = join(root, name);
+  await mkdir(path, { recursive: true });
+  await Promise.all([
+    writeFile(join(path, "start.command"), script, "utf8"),
+    writeFile(join(path, "run-full-loop.command"), "#!/bin/bash\nexit 0\n", "utf8"),
+    writeFile(join(path, "bot.py"), "print('fixture')\n", "utf8"),
+    writeFile(join(path, "config.json"), "{}\n", "utf8"),
+  ]);
+  return path;
+}
+
+test("Ticket Run Manager validates Program_Create, streams handoff, redacts credentials and completes only with runtime evidence", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-runtime-"));
+  const root = join(temp, "Program_Create");
+  await mkdir(root);
+  const path = await project(root, "demo", `#!/bin/bash\necho '{"kind":"runtime","stage":"starting_browser"}'\necho "password=$TICKET_PASSWORD" >&2\necho '{"kind":"input_required","field":"zone","stage":"waiting_zone","options":["A1","A2"],"prompt":"เลือกโซน"}'\nIFS= read -r zone\necho '{"kind":"wait","state":"queue"}'\necho '{"kind":"result","status":"PAYMENT_HANDOFF","live_checkout_verified":true}'\necho '{"kind":"input_required","field":"payment","stage":"payment_handoff","prompt":"หยุดก่อนจ่าย"}'\nIFS= read -r done\nexit 0\n`);
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
+  try {
+    const started = await manager.start({ project_path: path, username: "demo@example.com", password: "super-secret-value" });
+    assert.equal(started.ok, true);
+    assert.ok(started.run.id);
+    assert.ok(started.run.pid);
+
+    const waitingZone = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.status === "waiting_handoff" && run.handoff?.field === "zone" ? run : null;
+    });
+    assert.deepEqual(waitingZone.handoff.options, ["A1", "A2"]);
+    assert.equal(JSON.stringify(waitingZone).includes("super-secret-value"), false);
+    assert.ok(waitingZone.logs.some((item) => item.text.includes("password=[REDACTED]")));
+
+    await manager.input(started.run.id, "A1");
+    const payment = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.status === "waiting_handoff" && run.stage === "payment_handoff" ? run : null;
+    });
+    assert.equal(payment.payment_handoff_verified, true);
+    assert.equal(payment.full_loop_verified, true);
+    await manager.input(started.run.id, "");
+    const completed = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.status === "completed" ? run : null;
+    });
+    assert.equal(completed.stage, "completed_payment_handoff");
+  } finally {
+    await manager.stopAll();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Ticket Run Manager rejects paths outside Program_Create and symlink escape", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-scope-"));
+  const root = join(temp, "Program_Create");
+  const outside = join(temp, "outside");
+  await mkdir(root);
+  await project(temp, "outside", "#!/bin/bash\nexit 0\n");
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
+  try {
+    await assert.rejects(() => manager.start({ project_path: outside }), /นอก Program_Create/);
+    await symlink(outside, join(root, "escape"));
+    await assert.rejects(() => manager.start({ project_path: join(root, "escape") }), /symlink|หลุดออก/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Ticket Run Manager stops only its owned process group", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-stop-"));
+  const root = join(temp, "Program_Create");
+  await mkdir(root);
+  const path = await project(root, "slow", "#!/bin/bash\necho '{\"kind\":\"runtime\",\"stage\":\"running\"}'\nsleep 30\n");
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
+  try {
+    const started = await manager.start({ project_path: path });
+    await manager.stop(started.run.id);
+    const stopped = await waitFor(() => manager.get(started.run.id).run.status === "stopped" ? manager.get(started.run.id).run : null);
+    assert.equal(stopped.stage, "stopped");
+  } finally {
+    await manager.stopAll();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("beta21 source wires local runtime endpoints, UI polling, handoff input and truthful fixture wording", async () => {
+  const server = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
+  const client = await readFile(new URL("../lib/tool-client.ts", import.meta.url), "utf8");
+  const route = await readFile(new URL("../app/api/ticket-bot/route.ts", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const template = await readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  assert.match(server, /createTicketRunManager/);
+  assert.match(server, /\/v1\/ticket-runs/);
+  assert.match(server, /ticketRunManager\.stopAll\("alpha_shutdown"\)/);
+  assert.match(client, /startTicketRun/);
+  assert.match(client, /sendTicketRunInput/);
+  assert.match(route, /"run_status"/);
+  assert.match(route, /"run_stop"/);
+  assert.match(page, /สร้างและเริ่มบอท/);
+  assert.match(page, /Live Ticket Run/);
+  assert.match(page, /window\.setInterval\(\(\) => void poll\(\), 1_000\)/);
+  assert.match(page, /ยังไม่ถือว่า Full Loop ผ่านจนมี runtime evidence/);
+  assert.match(template, /"kind": "input_required"/);
+  assert.match(template, /"field": "captcha" if state == "captcha_handoff" else "otp"/);
+  assert.equal(pkg.version, "1.1.0-beta.21");
+});
