@@ -182,3 +182,41 @@ export async function stopTicketRun(id: string): Promise<Record<string, unknown>
   const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" }, 10_000);
   return payload(response);
 }
+
+// alpha-beta24-create-video-local-v1
+export interface VideoRunView extends Record<string, unknown> {
+  id: string;
+  kind: "prepare" | "generate";
+  status: string;
+  stage: string;
+  detail?: string;
+  progress?: number;
+  pid?: number | null;
+  output_path?: string | null;
+  output_name?: string | null;
+  logs?: Array<{ at: number; stream: string; text: string }>;
+}
+
+export async function getVideoRuntimeStatus(): Promise<Record<string, unknown>> {
+  const response = await toolFetch("/v1/video-runtime/status", { method: "GET", headers: headers(false) }, 5000);
+  return payload(response);
+}
+
+export async function startVideoRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await toolFetch("/v1/video-runs", { method: "POST", body: JSON.stringify(input) }, 15_000);
+  return payload(response);
+}
+
+export async function getVideoRun(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v1/video-runs/${encodeURIComponent(id)}`, { method: "GET", headers: headers(false) }, 5000);
+  return payload(response);
+}
+
+export async function stopVideoRun(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v1/video-runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" }, 10_000);
+  return payload(response);
+}
+
+export async function videoRunFileResponse(id: string): Promise<Response> {
+  return toolFetch(`/v1/video-runs/${encodeURIComponent(id)}/file`, { method: "GET", headers: headers(false) }, 30_000);
+}
