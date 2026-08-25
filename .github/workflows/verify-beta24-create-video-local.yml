@@ -1,0 +1,76 @@
+name: Verify Alpha Beta24 Local Create Video
+
+on:
+  push:
+    branches:
+      - feature/create-video-v1
+    paths:
+      - "app/api/create-video/**"
+      - "components/create-video-studio.tsx"
+      - "lib/create-video-*.ts"
+      - "lib/tool-client.ts"
+      - "tool-service/video-run-manager.mjs"
+      - "tool-service/create-video-worker.mjs"
+      - "scripts/apply-beta24-create-video-local.mjs"
+      - "tests/beta24-create-video-local.test.mjs"
+      - "start-alpha-v11.command"
+      - "HANDOFF_CREATE_VIDEO_V1.md"
+      - ".github/workflows/verify-beta24-create-video-local.yml"
+  workflow_dispatch:
+
+jobs:
+  verify-local-create-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Apply beta23 base
+        run: node scripts/apply-beta23-create-video.mjs "$PWD"
+
+      - name: Apply beta24 local video
+        run: node scripts/apply-beta24-create-video-local.mjs "$PWD"
+
+      - name: Verify beta24 idempotency
+        run: node scripts/apply-beta24-create-video-local.mjs "$PWD"
+
+      - name: Syntax checks
+        run: |
+          node --check scripts/apply-beta24-create-video-local.mjs
+          node --check tool-service/video-run-manager.mjs
+          node --check tool-service/create-video-worker.mjs
+          node --check tool-service/server.mjs
+
+      - name: Focused regression tests
+        run: node --test tests/beta23-create-video-phase1.test.mjs tests/beta24-create-video-local.test.mjs
+
+      - name: Focused TypeScript check
+        shell: bash
+        run: |
+          set +e
+          TYPECHECK_OUTPUT="$(npx tsc --noEmit 2>&1)"
+          TYPECHECK_STATUS=$?
+          set -e
+          printf '%s\n' "$TYPECHECK_OUTPUT"
+          CREATE_VIDEO_ERRORS="$(printf '%s\n' "$TYPECHECK_OUTPUT" | grep -E '(^|/)(app/api/create-video|components/create-video|lib/create-video)[^:]*\.(ts|tsx)\(' | grep -v "Cannot find module 'cloudflare:workers'" | grep -v "Cannot find name 'D1Database'" | grep -v "Did you mean 'IDBDatabase'" || true)"
+          if [[ -n "$CREATE_VIDEO_ERRORS" ]]; then
+            echo "Create Video TypeScript errors detected"
+            printf '%s\n' "$CREATE_VIDEO_ERRORS"
+            exit 1
+          fi
+          if [[ $TYPECHECK_STATUS -ne 0 ]]; then
+            echo "Repository has shared baseline TypeScript errors outside focused Create Video gate."
+          fi
+
+      - name: Production build
+        run: npm run build
