@@ -7,7 +7,7 @@ interface RuntimeEnv {
 export type CreateVideoMode = "auto" | "manual";
 export type CreateVideoProjectStatus = "DRAFT" | "PLANNING" | "STORYBOARD" | "WAITING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
-export interface CreateVideoVisualSettings {
+export interface CreateVideoVisualSettings extends Record<string, unknown> {
   style: string;
   aspect_ratio: string;
   resolution: string;
@@ -193,6 +193,6 @@ export async function updateCreateVideoProject(id: string, patch: Record<string,
   return project;
 }
 
-export async function saveCreateVideoPlan(id: string, plan: Record<string, unknown>, status: CreateVideoProjectStatus = "WAITING") {
+export async function saveCreateVideoPlan(id: string, plan: object, status: CreateVideoProjectStatus = "WAITING") {
   return updateCreateVideoProject(id, { plan, status });
 }
