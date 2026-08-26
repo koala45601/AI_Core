@@ -41,6 +41,7 @@ interface UiMessage {
   confirmationUserId?: string;
   permission?: { confirmationId: string; summary: string; tool: string };
   artifacts?: ArtifactRecord[];
+  ticketRun?: TicketRunView;
   error?: boolean;
 }
 
@@ -303,7 +304,17 @@ function ticketPerformanceValue(option: TicketPerformanceOption) {
 }
 
 function ticketPerformanceLabel(option: TicketPerformanceOption) {
-  const performance = String(option?.context_text || option?.label || option?.schedule || "")
+  const schedule = String(option?.schedule || "").trim();
+  let exactSchedule = "";
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(schedule)) {
+    const parsed = new Date(schedule);
+    if (!Number.isNaN(parsed.getTime())) {
+      exactSchedule = new Intl.DateTimeFormat("th-TH", {
+        day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Bangkok",
+      }).format(parsed);
+    }
+  }
+  const performance = String(exactSchedule || option?.context_text || option?.label || schedule)
     .replace(/\s*(?:ซื้อบัตร|จองบัตร|buy\s*(?:now|ticket))\s*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -602,6 +613,7 @@ export default function Home() {
         const data = await response.json() as { run?: TicketRunView; error?: string };
         if (response.ok && data.run && !stopped) {
           setTicketRun(data.run);
+          setMessages((current) => current.map((message) => message.ticketRun?.id === data.run!.id ? { ...message, ticketRun: data.run } : message));
           setTicketStatus(data.run.detail || `Ticket Bot: ${data.run.stage}`);
         }
       } catch { /* next poll retries */ }
@@ -616,7 +628,7 @@ export default function Home() {
       const response = await fetch(`/api/chats/${encodeURIComponent(id)}/messages`, { cache: "no-store" });
       if (!response.ok) return;
       const data = await response.json() as {
-        messages: Array<{ id: string; role: "user" | "assistant"; content: string; metadata?: { sources?: SearchResult[]; artifacts?: ArtifactRecord[]; error?: boolean; tool_events?: Array<Record<string, unknown>> } }>;
+        messages: Array<{ id: string; role: "user" | "assistant"; content: string; metadata?: { sources?: SearchResult[]; artifacts?: ArtifactRecord[]; ticket_run?: TicketRunView; error?: boolean; tool_events?: Array<Record<string, unknown>> } }>;
       };
       setMessages(data.messages.map((message) => {
         const permissionEvent = [...(message.metadata?.tool_events ?? [])].reverse().find((item) =>
@@ -628,6 +640,7 @@ export default function Home() {
           content: message.content,
           sources: message.metadata?.sources,
           artifacts: message.metadata?.artifacts,
+          ticketRun: message.metadata?.ticket_run,
           error: message.metadata?.error,
           permission: permissionEvent ? {
             confirmationId: String(permissionEvent.confirmation_id),
@@ -1029,6 +1042,11 @@ export default function Home() {
             setMessages((current) => current.map((message) => message.id === assistantId
               ? { ...message, artifacts: [...(message.artifacts ?? []), ...(event.artifacts as ArtifactRecord[])], content: message.content || "สร้างไฟล์จริงเรียบร้อยแล้ว" }
               : message));
+          }
+          if (event.type === "ticket_run" && event.run && typeof event.run === "object") {
+            const run = event.run as unknown as TicketRunView;
+            setTicketRun(run);
+            setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, ticketRun: run } : message));
           }
           if (event.type === "permission_required" && typeof event.confirmation_id === "string") {
             setMessages((current) => current.map((message) => message.id === assistantId
@@ -1560,9 +1578,9 @@ export default function Home() {
     return data.run;
   }
 
-  async function sendTicketRuntimeInput() {
-    if (!ticketRun?.id) return;
-    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_input", run_id: ticketRun.id, value: ticketRunInput }) });
+  async function sendTicketRuntimeInput(runId = ticketRun?.id, value = ticketRunInput) {
+    if (!runId) return;
+    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_input", run_id: runId, value }) });
     const data = await response.json() as { run?: TicketRunView; error?: string };
     setTicketRunInput("");
     if (!response.ok || !data.run) { setTicketStatus(data.error || "ส่งข้อมูลให้ Ticket Bot ไม่สำเร็จ"); return; }
@@ -1570,9 +1588,9 @@ export default function Home() {
     setTicketStatus(data.run.detail || "ส่งข้อมูลแล้ว กำลังทำต่อ");
   }
 
-  async function stopTicketRuntime() {
-    if (!ticketRun?.id) return;
-    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_stop", run_id: ticketRun.id }) });
+  async function stopTicketRuntime(runId = ticketRun?.id) {
+    if (!runId) return;
+    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_stop", run_id: runId }) });
     const data = await response.json() as { run?: TicketRunView; error?: string };
     if (!response.ok || !data.run) { setTicketStatus(data.error || "หยุด Ticket Bot ไม่สำเร็จ"); return; }
     setTicketRun(data.run);
@@ -1592,14 +1610,14 @@ export default function Home() {
     const selectedPerformance = performanceOptions.find((option) => ticketPerformanceValue(option) === ticketSchedule);
     if (performanceOptions.length > 1 && !selectedPerformance) {
       setTicketStage("error");
-      setTicketStatus("คอนเสิร์ตนี้มีหลายวัน กรุณาเลือกรอบก่อนเริ่มบอท ระบบจะจำรอบนี้ไว้ตลอดคิว");
+      setTicketStatus("คอนเสิร์ตนี้มีหลายรอบ กรุณาเลือกวันและเวลาที่แน่นอนก่อนเริ่มบอท ระบบจะล็อกรอบนี้ไว้ตลอดคิว");
       return;
     }
     ticketRunPendingRef.current = true;
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "1.1.0-beta.24"
+        && ticketBuildReport.generator_version === "1.1.0-beta.25"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -1807,6 +1825,17 @@ export default function Home() {
                               />
                             ))}
                           </div>
+                        )}
+                        {message.ticketRun && (
+                          <section className="ticket-result-card chat-ticket-run">
+                            <div><span>{message.ticketRun.status === "failed" ? "!" : message.ticketRun.status === "completed" ? "✓" : "▶"}</span><div><strong>Ticket Full Loop · {message.ticketRun.status}</strong><p>Stage: {message.ticketRun.stage}</p></div></div>
+                            <small>{message.ticketRun.detail || "AI กำลังควบคุม Ticket Browser เบื้องหลัง"}</small>
+                            {message.ticketRun.latest_url ? <code>{message.ticketRun.latest_url}</code> : null}
+                            {message.ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{message.ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
+                            {message.ticketRun.logs?.length ? <ol className="ticket-run-timeline">{message.ticketRun.logs.slice(-8).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
+                            {message.ticketRun.status === "waiting_handoff" && <div className="confirm-row"><span>{message.ticketRun.handoff?.prompt || "ทำขั้นตอนที่แสดงใน Ticket Browser แล้วกดทำต่อ"}</span><button type="button" onClick={() => void sendTicketRuntimeInput(message.ticketRun!.id, ticketRunInput)}>ทำต่อ</button></div>}
+                            {["starting_runtime", "runtime_running", "waiting_handoff"].includes(message.ticketRun.status) && <button type="button" className="secondary-action" onClick={() => void stopTicketRuntime(message.ticketRun!.id)}>หยุดบอท</button>}
+                          </section>
                         )}
                         {message.sources && message.sources.length > 0 && (
                           <div className="source-list">
@@ -2120,7 +2149,7 @@ export default function Home() {
                     <section className="ticket-form-section">
                       <div className="ticket-form-heading"><span>01</span><div><strong>รอบและประเภทบัตร</strong><small>รองรับทั้งเลือกที่นั่งและบัตรยืน/ไม่ระบุที่นั่ง</small></div></div>
                       <div className="ticket-form-grid">
-                        <label className="field"><span>รอบ/วันแสดง</span>{currentTicketPerformanceOptions.length ? <select value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)}><option value="">{currentTicketPerformanceOptions.length > 1 ? "กรุณาเลือกวันแสดงก่อนเข้าคิว" : "เลือกรอบ"}</option>{currentTicketPerformanceOptions.map((option, index) => <option key={`${ticketPerformanceValue(option)}-${index}`} value={ticketPerformanceValue(option)} disabled={["sold_out", "closed"].includes(option.status || "")}>{ticketPerformanceLabel(option)}</option>)}</select> : <input value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)} placeholder="ยังไม่พบรอบอัตโนมัติ — ระบุวันที่/เวลาที่ประกาศไว้" />}<small>{currentTicketPerformanceOptions.length ? "ระบบจะแสดงประเภทสินค้าและสถานะรายรอบ ล็อกรอบที่เลือกก่อนเข้าคิว และไม่ถามใหม่หลังผ่านคิว" : "ถ้ายังไม่มีปุ่มซื้อ ระบบจะจับคู่วันที่นี้กับปุ่มที่ปรากฏภายหลังโดยไม่ออกจากคิว"}</small></label>
+                        <label className="field"><span>รอบการแสดง (วันและเวลา)</span>{currentTicketPerformanceOptions.length ? <select value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)}><option value="">{currentTicketPerformanceOptions.length > 1 ? "กรุณาเลือกวันและเวลาก่อนเข้าคิว" : "เลือกรอบ"}</option>{currentTicketPerformanceOptions.map((option, index) => <option key={`${ticketPerformanceValue(option)}-${index}`} value={ticketPerformanceValue(option)} disabled={["sold_out", "closed"].includes(option.status || "")}>{ticketPerformanceLabel(option)}</option>)}</select> : <input value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)} placeholder="ยังไม่พบรอบอัตโนมัติ — ระบุวันและเวลาที่ประกาศไว้" />}<small>{currentTicketPerformanceOptions.length ? "ระบบแยกวันเดียวหลายเวลาเป็นคนละรอบ ล็อกรอบที่เลือกก่อนเข้าคิว และไม่ถามใหม่หลังผ่านคิว" : "ถ้ายังไม่มีปุ่มซื้อ ระบบจะจับคู่วันและเวลานี้กับปุ่มที่ปรากฏภายหลังโดยไม่ออกจากคิว"}</small></label>
                         <label className="field"><span>เวลาเริ่มรับคิว (ถ้ามี)</span><input value={ticketQueueOpenAt} onChange={(event) => setTicketQueueOpenAt(event.target.value)} placeholder="เช่น 2026-08-29T09:00:00+07:00" /></label>
                         <label className="field"><span>ประเภทบัตร</span><select value={ticketSeatMode} onChange={(event) => setTicketSeatMode(event.target.value as typeof ticketSeatMode)}><option value="reserved">เลือกที่นั่ง</option><option value="standing">บัตรยืน</option><option value="general_admission">ไม่ระบุที่นั่ง</option></select></label>
                         {ticketSeatMode === "reserved" && <label className="field"><span>การจัดที่นั่งหลายใบ</span><select value={ticketSeatGrouping} onChange={(event) => setTicketSeatGrouping(event.target.value as typeof ticketSeatGrouping)}><option value="adjacent">ต้องติดกันในโซนเดียว</option><option value="same_zone">ไม่ติดกันได้ แต่โซนเดียวกัน</option><option value="any">ใบไหนก็ได้ในโซนเดียวกัน</option></select></label>}
@@ -2208,10 +2237,10 @@ export default function Home() {
             <section className="settings-card">
               <div className="section-heading"><div><span className="section-kicker">MODEL & LIMITS</span><h2>โมเดลและการใช้ทรัพยากร</h2></div><span className={`health-badge ${runtimeReady ? "ready" : ""}`}>{runtimeReady ? "พร้อม" : "ต้องตั้งค่า"}</span></div>
               <div className="model-grid">
-                {(["qwen3:4b-instruct", "qwen3.5:9b"] as const).map((model) => (
+                {(["qwen3:4b-instruct", "qwen3.5:9b", "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M"] as const).map((model) => (
                   <button key={model} type="button" className={settings.model === model ? "selected" : ""} onClick={() => updateSettings({ model })}>
-                    <strong>{model === "qwen3:4b-instruct" ? "Qwen3 4B Instruct" : "Qwen3.5 9B"}</strong>
-                    <span>{model === "qwen3:4b-instruct" ? "ตอบตรง เร็ว และประหยัด RAM" : "ฉลาดขึ้น เหมาะกับโหมดคุณภาพสูง"}</span>
+                    <strong>{model === "qwen3:4b-instruct" ? "Qwen3 4B Instruct" : model === "qwen3.5:9b" ? "Qwen3.5 9B" : "Qwen3 14B Abliterated Q4"}</strong>
+                    <span>{model === "qwen3:4b-instruct" ? "ตอบตรง เร็ว และประหยัด RAM" : model === "qwen3.5:9b" ? "ค่าเริ่มต้นที่แนะนำ · benchmark 85/100 เท่ากับ 14B แต่เร็วกว่าและใช้ RAM น้อยกว่า" : "ตัวเลือกทดลอง 14B · benchmark 85/100 ใช้ RAM ราว 9.7GB และตอบช้ากว่า 9B มาก"}</span>
                   </button>
                 ))}
               </div>

@@ -75,7 +75,9 @@ function adaptiveReasoningProfile(
   purpose: "chat" | "single" | "tool",
 ): AlphaReasoningProfile {
   const text = lastUserText(messages);
-  const baseCtx = Math.max(4096, settings.max_context_tokens || 6144);
+  const largeLocalModel = settings.model === "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
+  const configuredCtx = Math.max(4096, settings.max_context_tokens || 6144);
+  const baseCtx = largeLocalModel ? Math.min(6144, configuredCtx) : configuredCtx;
   const basePredict = Math.max(768, settings.max_output_tokens || 1536);
   const deepIntent = /(วิเคราะห์|วางแผน|ออกแบบ|architecture|debug|bug|แก้โค้ด|เขียนโค้ด|โปรแกรม|security|cyber|pentest|wifi|wi-fi|wireless|audit|docker|api|database|incident|root cause|rca|reason|logic|หลายขั้น|workflow|agent|tool|ทดสอบ|ตรวจสอบ|เปรียบเทียบ|optimi[sz]e)/i.test(text);
   const mediumIntent = deepIntent || text.length > 700 || /(?:ทำไม|อย่างไร|ยังไง|อธิบาย|คิด|ประเมิน|recommend|แนะนำ)/i.test(text);
@@ -83,10 +85,10 @@ function adaptiveReasoningProfile(
   if (purpose === "tool") {
     return {
       tier: "deep",
-      think: true,
-      numCtx: Math.min(24_576, Math.max(baseCtx, 16_384)),
-      numPredict: Math.min(3_072, Math.max(basePredict, 2_048)),
-      timeoutMs: 300_000,
+      think: !largeLocalModel,
+      numCtx: largeLocalModel ? baseCtx : Math.min(24_576, Math.max(baseCtx, 16_384)),
+      numPredict: largeLocalModel ? Math.min(1_536, basePredict) : Math.min(3_072, Math.max(basePredict, 2_048)),
+      timeoutMs: largeLocalModel ? 240_000 : 300_000,
     };
   }
 
@@ -97,20 +99,20 @@ function adaptiveReasoningProfile(
   if (deepIntent) {
     return {
       tier: "deep",
-      think: true,
-      numCtx: Math.min(24_576, Math.max(baseCtx, 16_384)),
-      numPredict: Math.min(3_072, Math.max(basePredict, 2_048)),
-      timeoutMs: 300_000,
+      think: !largeLocalModel,
+      numCtx: largeLocalModel ? baseCtx : Math.min(24_576, Math.max(baseCtx, 16_384)),
+      numPredict: largeLocalModel ? Math.min(1_536, basePredict) : Math.min(3_072, Math.max(basePredict, 2_048)),
+      timeoutMs: largeLocalModel ? 240_000 : 300_000,
     };
   }
 
   if (mediumIntent || purpose === "single") {
     return {
       tier: "balanced",
-      think: true,
-      numCtx: Math.min(16_384, Math.max(baseCtx, 8_192)),
-      numPredict: Math.min(2_048, Math.max(basePredict, 1_536)),
-      timeoutMs: 240_000,
+      think: !largeLocalModel,
+      numCtx: largeLocalModel ? baseCtx : Math.min(16_384, Math.max(baseCtx, 8_192)),
+      numPredict: largeLocalModel ? Math.min(1_536, basePredict) : Math.min(2_048, Math.max(basePredict, 1_536)),
+      timeoutMs: largeLocalModel ? 210_000 : 240_000,
     };
   }
 
@@ -118,11 +120,12 @@ function adaptiveReasoningProfile(
 }
 
 function deepWorkerOptions(settings: AppSettings, requestedPredict: number) {
+  const largeLocalModel = settings.model === "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
   return {
-    think: true,
-    numCtx: Math.min(24_576, Math.max(settings.max_context_tokens || 6144, 16_384)),
-    numPredict: Math.min(4_096, Math.max(requestedPredict, settings.max_output_tokens || 1536)),
-    timeoutMs: 300_000,
+    think: !largeLocalModel,
+    numCtx: largeLocalModel ? Math.min(6144, Math.max(4096, settings.max_context_tokens || 6144)) : Math.min(24_576, Math.max(settings.max_context_tokens || 6144, 16_384)),
+    numPredict: largeLocalModel ? Math.min(1_536, Math.max(requestedPredict, settings.max_output_tokens || 1536)) : Math.min(4_096, Math.max(requestedPredict, settings.max_output_tokens || 1536)),
+    timeoutMs: largeLocalModel ? 240_000 : 300_000,
   };
 }
 

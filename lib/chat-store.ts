@@ -27,6 +27,8 @@ export interface MessageMetadata {
   inspected_url?: string;
   pending_ticket_events?: Array<Record<string, unknown>>;
   pending_ticket_build?: Record<string, unknown>;
+  ticket_run?: Record<string, unknown>;
+  ticket_workflow?: Record<string, unknown>;
 }
 
 export interface StoredChatMessage {

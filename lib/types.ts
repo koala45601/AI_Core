@@ -4,6 +4,7 @@ export type BrowserMode = "off" | "alpha" | "chrome";
 export type PersonalityPreset = "professional_warm";
 export type EmojiStyle = "none" | "low" | "normal";
 export type ResponseStyle = "concise" | "balanced" | "detailed";
+export type AlphaModel = "qwen3:4b-instruct" | "qwen3.5:9b" | "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
 
 export type ChatRole = "user" | "assistant";
 
@@ -17,7 +18,7 @@ export interface ChatMessage {
 
 export interface AppSettings {
   settings_version: number;
-  model: "qwen3:4b-instruct" | "qwen3.5:9b";
+  model: AlphaModel;
   web_search_enabled: boolean;
   search_mode: SearchMode;
   image_search_enabled: boolean;
@@ -273,7 +274,7 @@ export function sanitizeSettings(value: unknown, fallback = DEFAULT_SETTINGS): A
   const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const previousVersion = typeof input.settings_version === "number" ? input.settings_version : 1;
   const topics = (Array.isArray(input.blocked_topics) ? cleanList(input.blocked_topics) : fallback.blocked_topics).filter((topic) => TOPIC_IDS.has(topic));
-  const model = input.model === "qwen3.5:9b" || input.model === "qwen3:4b-instruct" ? input.model : fallback.model;
+  const model = enumValue(input.model, ["qwen3:4b-instruct", "qwen3.5:9b", "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M"] as const, fallback.model);
   const fileAccessMode: FileAccessMode = ["off", "ask", "alpha_outputs", "selected_folders", "full_user_files"].includes(String(input.file_access_mode))
     ? input.file_access_mode as FileAccessMode
     : fallback.file_access_mode;

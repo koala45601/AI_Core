@@ -206,7 +206,9 @@ function safePerformanceOptions(value: unknown): TicketPerformanceOption[] {
     const time = text.match(/\b\d{1,2}:\d{2}\b/)?.[0] || "";
     const dated = /^\d{4}-\d{2}-\d{2}T/.test(option.schedule) || /\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}/.test(text);
     if (!dated && time && datedTimes.has(time)) return false;
-    const key = option.data_button ? `button:${option.data_button}` : option.target_url ? `url:${option.target_url}` : `${option.schedule}\u0000${option.context_text}\u0000${option.label}`;
+    const key = /^\d{4}-\d{2}-\d{2}T/.test(option.schedule)
+      ? `schedule:${option.product_type}\u0000${option.product_name}\u0000${option.schedule}`
+      : option.data_button ? `button:${option.data_button}\u0000${option.schedule}` : option.target_url ? `url:${option.target_url}\u0000${option.schedule}` : `${option.schedule}\u0000${option.context_text}\u0000${option.label}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return Boolean(option.schedule || option.context_text || option.label);
@@ -314,7 +316,13 @@ async function inspectPublicDetailText(url: string, settings: AppSettings): Prom
   if (read.ok === false || !content) throw new Error(asText(read.error, 500) || "ตัวอ่าน HTML ไม่พบเนื้อหาหน้าเว็บ");
   const finalUrl = asText(read.url, 2_000) || url;
   const title = asText(read.title, 500);
-  const facts = extractTicketPageFacts({ url: finalUrl, title, body_text: content, controls: [] }) as Record<string, unknown>;
+  const facts = extractTicketPageFacts({
+    url: finalUrl,
+    title,
+    body_text: content,
+    controls: [],
+    announced_performances: Array.isArray(read.ticket_performances) ? read.ticket_performances : [],
+  }) as Record<string, unknown>;
   const preflight = evaluateTicketPreflight(facts) as Record<string, unknown>;
   return Object.assign({}, read, {
     requested_url: url,
@@ -593,7 +601,7 @@ export async function POST(request: Request) {
       const budget = Math.max(0, Number(input.budget || 0));
       const selectedPerformance = safeSelectedPerformance(input.selected_performance);
       const announcedPerformances = Array.isArray(eventFacts.performance_options) ? eventFacts.performance_options : [];
-      if (announcedPerformances.length > 1 && !selectedPerformance) throw new Error("คอนเสิร์ตนี้มีหลายวัน กรุณาเลือกรอบก่อนเริ่มบอท เพื่อไม่ให้เลือกรอบผิดหลังผ่านคิว");
+      if (announcedPerformances.length > 1 && !selectedPerformance) throw new Error("คอนเสิร์ตนี้มีหลายรอบ กรุณาเลือกวันและเวลาที่แน่นอนก่อนเริ่มบอท เพื่อไม่ให้เลือกรอบผิดหลังผ่านคิว");
       if (selectedPerformance && ["sold_out", "closed"].includes(selectedPerformance.status)) throw new Error("รอบที่เลือกขายหมดหรือปิดขายแล้ว จึงไม่เริ่มบอทซื้อบัตร");
       if (selectedPerformance?.target_url) {
         const performanceUrl = publicHttpUrl(selectedPerformance.target_url);

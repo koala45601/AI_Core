@@ -38,6 +38,20 @@ test("Ticket Studio distinguishes sale states and disables unavailable events", 
   assert.match(service, /selectable: false/);
 });
 
+test("Ticket Studio requires an exact date and time when a day has multiple rounds", async () => {
+  const [page, route, service] = await Promise.all([
+    source("app/page.tsx"),
+    source("app/api/ticket-bot/route.ts"),
+    source("tool-service/server.mjs"),
+  ]);
+  assert.match(page, /รอบการแสดง \(วันและเวลา\)/);
+  assert.match(page, /กรุณาเลือกวันและเวลาก่อนเข้าคิว/);
+  assert.match(page, /ระบบแยกวันเดียวหลายเวลาเป็นคนละรอบ/);
+  assert.match(route, /กรุณาเลือกวันและเวลาที่แน่นอนก่อนเริ่มบอท/);
+  assert.match(service, /announced_performances:[\s\S]*flatMap\(\(row\)/);
+  assert.match(service, /querySelectorAll\("a\[data-button\]/);
+});
+
 test("seat inspection exposes discovered zone and row names", () => {
   const facts = extractTicketPageFacts({
     url: "https://tickets.test/zone",
@@ -90,10 +104,15 @@ test("generated reserved-seat bot can defer zone choice and requires verified lo
     assert.deepEqual(config.preferredRows, ["K"]);
     assert.deepEqual(config.preferredSeatNumbers, ["10"]);
     assert.equal(config.seatFallbackMode, "exact");
-    assert.match(bot, /เลือกโซนก่อนให้บอททำต่อ/);
+    assert.match(bot, /"strategy": "auto_first_available"/);
+    assert.match(bot, /"reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"/);
     assert.match(bot, /LOGIN_REQUIRED_BEFORE_CHECKOUT/);
     assert.match(bot, /successful_form_transition/);
     assert.match(bot, /credentials_persisted.*False/);
+    assert.match(bot, /def wait_for_seat_controls/);
+    assert.match(bot, /frame for frame in page\.frames if frame != page\.main_frame/);
+    assert.match(bot, /seat_locators\[index\]\.click\(\)/);
+    assert.match(bot, /candidate_count/);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

@@ -128,6 +128,54 @@ COMING SOON
   assert.equal(evaluateTicketPreflight(facts).workflow_state, "pre_sale");
 });
 
+test("same-day performances are split and locked by exact time instead of choosing the first control", () => {
+  const facts = extractTicketPageFacts({
+    url: "https://www.thaiticketmajor.com/concert/same-day-two-rounds.html",
+    title: "Same-day two-round fixture",
+    body_text: `วันที่แสดง\n19 ธันวาคม 2569\nวันเปิดจำหน่าย\n1 กันยายน 2569\nTicket Status\nON SALE NOW`,
+    announced_performances: [
+      { label: "14:00 ซื้อบัตร", context_text: "วันเสาร์ที่ 19 ธันวาคม 2569 14:00 / 19:00", data_button: "round-1400", status: "open", selectable: true },
+      { label: "19:00 ซื้อบัตร", context_text: "วันเสาร์ที่ 19 ธันวาคม 2569 14:00 / 19:00", data_button: "round-1900", status: "open", selectable: true },
+    ],
+    controls: [],
+  });
+  assert.deepEqual(facts.performance_options.map((item) => item.schedule), [
+    "2026-12-19T14:00:00+07:00",
+    "2026-12-19T19:00:00+07:00",
+  ]);
+  assert.deepEqual(facts.performance_options.map((item) => item.data_button), ["round-1400", "round-1900"]);
+});
+
+test("combined same-day schedule text expands into separate exact choices as a fallback", () => {
+  const facts = extractTicketPageFacts({
+    url: "https://www.thaiticketmajor.com/concert/combined-round-label.html",
+    title: "Combined round label fixture",
+    body_text: `วันที่แสดง\n19 ธันวาคม 2569\nวันเปิดจำหน่าย\n1 กันยายน 2569\nTicket Status\nCOMING SOON`,
+    announced_performances: [
+      { label: "14:00 / 19:00", context_text: "วันเสาร์ที่ 19 ธันวาคม 2569 14:00 / 19:00", status: "upcoming", selectable: false },
+    ],
+    controls: [],
+  });
+  assert.deepEqual(facts.performance_options.map((item) => item.schedule), [
+    "2026-12-19T14:00:00+07:00",
+    "2026-12-19T19:00:00+07:00",
+  ]);
+});
+
+test("public detail text extracts exact same-day rounds before entering the buying flow", () => {
+  const facts = extractTicketPageFacts({
+    url: "https://www.thaiticketmajor.com/concert/dreaming-fixture.html",
+    title: "DREAMING fixture",
+    body_text: `DREAMING TOMOHISA วันที่แสดง วันเสาร์ที่ 19 ธันวาคม 2569 วันเปิดจำหน่าย วันเสาร์ที่ 18 กรกฎาคม 2569, 10:00 น. Ticket Status ON SALE NOW ผังการแสดง & รอบการแสดง ราคาบัตร 6,500 / 5,000 วันที่แสดง เวลา วันเสาร์ที่ 19 ธันวาคม 2569 14:00 19:00 รายละเอียด การเปิดจำหน่ายบัตร`,
+    controls: [],
+  });
+  assert.deepEqual(facts.performance_options.map((item) => item.schedule), [
+    "2026-12-19T14:00:00+07:00",
+    "2026-12-19T19:00:00+07:00",
+  ]);
+  assert.ok(facts.performance_options.every((item) => item.status === "open"));
+});
+
 test("mixed physical, streaming and sold-out rounds keep product and per-round status", () => {
   const facts = extractTicketPageFacts({
     url: "https://www.thaiticketmajor.com/concert/mixed.html",

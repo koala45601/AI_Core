@@ -8,6 +8,33 @@ const HANDLED_TERMINAL_RESULTS = new Set(["SOLD_OUT_BY_SERVER", "SALE_CLOSED_BY_
 const REQUIRED_FILES = ["run-full-loop.command", "start.command", "bot.py", "config.json"];
 const MAX_LOG_LINES = 350;
 
+export function ownedBrowserPidsFromPs(psOutput, profileDir) {
+  const marker = resolve(String(profileDir || ""));
+  if (!profileDir || !marker) return [];
+  return String(psOutput || "").split(/\r?\n/).flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!match) return [];
+    const pid = Number(match[1]);
+    const command = match[2];
+    const ownsProfile = command.includes(`--user-data-dir=${marker}`)
+      || command.includes(`--user-data-dir="${marker}"`)
+      || command.includes(`--user-data-dir '${marker}'`);
+    return Number.isSafeInteger(pid) && pid > 1 && ownsProfile ? [pid] : [];
+  });
+}
+
+async function processTable() {
+  return await new Promise((resolveOutput, reject) => {
+    const child = spawn("/bin/ps", ["-axo", "pid=,command="], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolveOutput(stdout) : reject(new Error(stderr || `ps exited ${code}`)));
+  });
+}
+
 function pathInside(child, parent) {
   const rel = relative(resolve(parent), resolve(child));
   return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep));
@@ -53,6 +80,8 @@ function publicRun(run) {
     result_status: run.result_status,
     result_reason: run.result_reason,
     evidence_paths: [...(run.evidence_paths || [])],
+    browser_pid: run.browser_pid || null,
+    browser_cleanup: run.browser_cleanup || "pending",
   };
 }
 
@@ -62,6 +91,11 @@ function mapEvent(run, event) {
   const status = safeText(event.status, 120);
   const url = safeText(event.url, 2_000);
   if (url) run.latest_url = url;
+
+  if (kind === "browser_window") {
+    const browserPid = Number(event.browser_pid || 0);
+    if (Number.isSafeInteger(browserPid) && browserPid > 1) run.browser_pid = browserPid;
+  }
 
   if (kind === "runtime") {
     run.status = "runtime_running";
@@ -122,6 +156,37 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
   if (!programCreateDir) throw new Error("programCreateDir is required");
   const runs = new Map();
 
+  async function cleanupOwnedBrowser(run = null) {
+    if (!ticketBrowserProfileDir) {
+      if (run) run.browser_cleanup = "not_configured";
+      return [];
+    }
+    let pids = [];
+    try {
+      pids = ownedBrowserPidsFromPs(await processTable(), ticketBrowserProfileDir)
+        .filter((pid) => pid !== process.pid && pid !== Number(run?.pid || 0));
+      for (const pid of pids) {
+        try { process.kill(pid, "SIGTERM"); } catch { /* already closed */ }
+      }
+      if (pids.length) await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+      for (const pid of pids) {
+        try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch { /* exited after SIGTERM */ }
+      }
+      if (run) {
+        run.browser_cleanup = pids.length ? "closed" : "already_closed";
+        run.updated_at = now();
+      }
+      return pids;
+    } catch (error) {
+      if (run) {
+        run.browser_cleanup = "failed";
+        run.detail = `${run.detail || "Ticket Bot จบแล้ว"} · ปิด Chrome ของบอทไม่สำเร็จ: ${safeText(error?.message, 300)}`;
+        run.updated_at = now();
+      }
+      return [];
+    }
+  }
+
   async function validateProject(projectPath) {
     const rootReal = await fs.realpath(resolve(programCreateDir));
     const requested = resolve(String(projectPath || ""));
@@ -175,6 +240,7 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
     const activeRun = [...runs.values()].find((run) => ACTIVE.has(run.status));
     if (activeRun?.project_path === projectPath) return { ok: true, reused: true, run: publicRun(activeRun) };
     if (activeRun) throw new Error("มี Ticket Bot อีกงานกำลังใช้ browser session อยู่ กรุณาหยุดหรือทำงานเดิมให้จบก่อนเริ่มโปรเจกต์ใหม่");
+    await cleanupOwnedBrowser();
 
     const username = safeText(input.username, 500);
     const password = typeof input.password === "string" ? input.password : "";
@@ -216,6 +282,8 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
       result_status: "",
       result_reason: "",
       evidence_paths: [],
+      browser_pid: null,
+      browser_cleanup: "pending",
       stop_requested: false,
       child,
     };
@@ -268,6 +336,7 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
           : "process จบโดยยังไม่มีหลักฐาน PAYMENT_HANDOFF — ไม่ถือว่าผ่าน";
       }
       run.child = null;
+      void cleanupOwnedBrowser(run);
     });
     return { ok: true, reused: false, run: publicRun(run) };
   }
@@ -296,7 +365,10 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
   async function stop(id, reason = "user_stop") {
     const run = runs.get(String(id || ""));
     if (!run) throw new Error("ไม่พบ Ticket Run");
-    if (!run.child || !ACTIVE.has(run.status)) return { ok: true, run: publicRun(run) };
+    if (!run.child || !ACTIVE.has(run.status)) {
+      await cleanupOwnedBrowser(run);
+      return { ok: true, run: publicRun(run) };
+    }
     run.stop_requested = true;
     run.stage = "stopping";
     run.detail = reason === "alpha_shutdown" ? "กำลังหยุดก่อนปิด Alpha" : "กำลังหยุด Ticket Bot";
@@ -307,6 +379,7 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
     if (run.child && !run.child.killed) {
       try { if (pid > 0) process.kill(-pid, "SIGKILL"); else run.child.kill("SIGKILL"); } catch { run.child.kill("SIGKILL"); }
     }
+    await cleanupOwnedBrowser(run);
     return { ok: true, run: publicRun(run) };
   }
 
@@ -316,5 +389,5 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
     return { ok: true, stopped: active.length };
   }
 
-  return { start, get, input, stop, stopAll, publicRun, validateProject };
+  return { start, get, input, stop, stopAll, publicRun, validateProject, cleanupOwnedBrowser };
 }

@@ -142,7 +142,7 @@ test("requested security skills are verified dual-runtime installers", async () 
   assert.match(tools, /inspect_events/);
   assert.match(tools, /inspect_form/);
   assert.match(chat, /const ticketBuilderIntent =/);
-  assert.match(chat, /action: "inspect_events"/);
+  assert.match(chat, /ticketBotAction\(\{ action: "inspect", url \}\)/);
   assert.match(chat, /pending_ticket_events/);
   assert.match(tools, /ไม่จำกัดภาษา เฟรมเวิร์ก library runtime/);
 });
@@ -175,7 +175,7 @@ test("Beta14 launcher applies every runtime patch and installs missing core skil
     text("start-alpha-v11.command"),
     text("CHANGELOG.md"),
   ]);
-  assert.equal(JSON.parse(pkg).version, "1.1.0-beta.24");
+  assert.equal(JSON.parse(pkg).version, "1.1.0-beta.25");
   const beta13 = launcher.indexOf("apply-beta13-nonblocking-post-response.mjs");
   const beta14 = launcher.indexOf("apply-beta14-auto-learn-recovery.mjs");
   const ticket = launcher.indexOf('"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs" "$ALPHA_DIR"');

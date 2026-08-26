@@ -16,6 +16,7 @@ import { executeTool } from "@/lib/tool-client";
 import { AppSettings, ArtifactRecord, ChatMessage, SearchResult } from "@/lib/types";
 import { classifyConversationTurn, instantConversationReply } from "@/lib/conversation-router.js";
 import { redactCredentials, resolveWifiTurnIntent } from "@/lib/context-routing.js";
+import { POST as ticketBotActionPost } from "@/app/api/ticket-bot/route";
 
 interface ChatBody {
   chat_id?: string;
@@ -46,6 +47,70 @@ function immediateStream(events: ToolEvent[], status = 200) {
     status,
     headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" },
   });
+}
+
+async function ticketBotAction(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await ticketBotActionPost(new Request("http://alpha.local/api/ticket-bot", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }));
+  const result = await response.json() as Record<string, unknown>;
+  if (!response.ok || result.ok === false) throw new Error(String(result.error || `Ticket Bot ตอบสถานะ ${response.status}`));
+  return result;
+}
+
+function ticketIntent(message: string): boolean {
+  return /(?:ซื้อ|จอง|กด|สร้าง|ทำ|รัน|เริ่ม).{0,35}(?:บัตร|ticket|คอนเสิร์ต|concert)|(?:บอท|bot).{0,35}(?:บัตร|ticket|คอนเสิร์ต|concert)/i.test(message);
+}
+
+function ticketPreferences(message: string, pending: Record<string, unknown>) {
+  const quantity = Math.min(10, Math.max(1, Number(message.match(/(\d{1,2})\s*(?:ใบ|บัตร|ที่นั่ง|tickets?)/i)?.[1] || 1)));
+  const budget = Number(message.match(/(?:งบ|ไม่เกิน|สูงสุด|max(?:imum)?)[^\d]{0,12}([\d,]+)/i)?.[1]?.replace(/,/g, "") || 0);
+  const preferredZones = [...message.matchAll(/(?:โซน|zone)\s*([A-Z][A-Z0-9-]{0,12})/gi)].map((match) => match[1].toUpperCase());
+  const eventFacts = pending.event_facts && typeof pending.event_facts === "object" && !Array.isArray(pending.event_facts)
+    ? pending.event_facts as Record<string, unknown> : {};
+  const performances = Array.isArray(eventFacts.performance_options)
+    ? eventFacts.performance_options.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const normalized = message.normalize("NFKC").toLowerCase();
+  const numberedPerformance = Number(message.match(/^\s*(\d{1,2})\s*$/)?.[1] || 0);
+  const selectedPerformance = (numberedPerformance > 0 ? performances[numberedPerformance - 1] : null) || performances.find((option) => {
+    const candidate = `${String(option.schedule || "")} ${String(option.label || "")} ${String(option.context_text || "")}`.normalize("NFKC").toLowerCase();
+    const times = candidate.match(/\b\d{1,2}:\d{2}\b/g) || [];
+    const dates = candidate.match(/\b\d{4}-\d{2}-\d{2}\b/g) || [];
+    return [...times, ...dates].some((value) => normalized.includes(value));
+  }) || (performances.length === 1 ? performances[0] : null);
+  return {
+    performances,
+    selectedPerformance,
+    input: {
+      event_url: pending.event_url,
+      event_candidates: pending.event_candidates,
+      selected_event_id: pending.selected_event_id,
+      selected_event_name: pending.selected_event_name,
+      schedule: String(selectedPerformance?.schedule || pending.schedule || ""),
+      selected_performance: selectedPerformance,
+      sale_open_at: pending.sale_open_at,
+      queue_open_at: String(pending.queue_open_at || ""),
+      seat_mode: /(?:บัตรยืน|ยืน|ไม่มีที่นั่ง|general admission|standing)/i.test(message) ? "standing" : "reserved",
+      seat_grouping: /(?:คละ|ไม่ต้องติด)/i.test(message) ? "same_zone" : /(?:ใบไหนก็ได้|อะไรก็ได้)/i.test(message) ? "any" : "adjacent",
+      preferred_zones: preferredZones,
+      preferred_rows: [],
+      preferred_seat_numbers: [],
+      seat_fallback_mode: /(?:ตรงเท่านั้น|ห้ามเปลี่ยน|exact)/i.test(message) ? "exact" : preferredZones.length ? "nearest" : "zone_any",
+      quantity,
+      budget: Number.isFinite(budget) ? budget : 0,
+      customer_name: "",
+      attendee_names: [],
+      shipping_address: {},
+      delivery_method: /(?:ส่งไปรษณีย์|postal)/i.test(message) ? "postal" : "pickup",
+      ticket_protect: /(?:เพิ่ม|เอา|ใช้).{0,12}ticket protect/i.test(message),
+      payment_method: /promptpay/i.test(message) ? "promptpay" : "qr",
+      event_facts: eventFacts,
+      functional_preflight: pending.functional_preflight,
+    },
+  };
 }
 
 function validMessages(input: unknown): ChatMessage[] {
@@ -363,8 +428,19 @@ export async function POST(request: Request) {
   const settings = await getSettings();
   const policy = evaluatePolicy(message, settings);
   const conversationRoute = classifyConversationTurn(message, { forceSearch: body.force_search === true });
-  const fastPath = conversationRoute.route === "instant";
-  const localPath = conversationRoute.route === "local";
+  const routingRecentStored = await listRecentChatMessages(chat.id, 12);
+  const routingLatestAssistant = [...routingRecentStored].reverse().find((item) => item.role === "assistant");
+  const routingTicketWorkflow = routingLatestAssistant
+    && (Array.isArray(routingLatestAssistant.metadata.pending_ticket_events)
+      || Boolean(routingLatestAssistant.metadata.pending_ticket_build)
+      || Boolean(routingLatestAssistant.metadata.ticket_run))
+    ? routingLatestAssistant
+    : null;
+  const ticketRoute = ticketIntent(message) || Boolean(routingTicketWorkflow
+    && (Array.isArray(routingTicketWorkflow.metadata.pending_ticket_events)
+      || Boolean(routingTicketWorkflow.metadata.pending_ticket_build)));
+  const fastPath = conversationRoute.route === "instant" && !ticketRoute;
+  const localPath = conversationRoute.route === "local" && !ticketRoute;
   const runId = typeof body.message_id === "string" ? body.message_id : savedUser?.id || crypto.randomUUID();
   await startAgentRun(runId, chat.id, localPath ? "กำลังตอบคำถามทั่วไป" : "กำลังวิเคราะห์คำขอ");
   const baseEvents: ToolEvent[] = [
@@ -402,9 +478,14 @@ export async function POST(request: Request) {
     ]);
   }
 
-  const recentStored = await listRecentChatMessages(chat.id, 12);
-  const latestTicketWorkflow = [...recentStored].reverse().find((item) => item.role === "assistant"
-    && (Array.isArray(item.metadata.pending_ticket_events) || Boolean(item.metadata.pending_ticket_build)));
+  const recentStored = routingRecentStored;
+  const latestAssistant = [...recentStored].reverse().find((item) => item.role === "assistant");
+  const latestTicketWorkflow = latestAssistant
+    && (Array.isArray(latestAssistant.metadata.pending_ticket_events)
+      || Boolean(latestAssistant.metadata.pending_ticket_build)
+      || Boolean(latestAssistant.metadata.ticket_run))
+    ? latestAssistant
+    : null;
   const pendingTicketEvents = latestTicketWorkflow && !latestTicketWorkflow.metadata.pending_ticket_build
     && Array.isArray(latestTicketWorkflow.metadata.pending_ticket_events)
     ? latestTicketWorkflow.metadata.pending_ticket_events
@@ -460,7 +541,7 @@ export async function POST(request: Request) {
   const recentMessages = recentMessagesAll;
   const modelRecentMessages = recentMessages.map((item) => ({ ...item, content: redactCredentials(item.content) }));
   const directSkillInput = directLearnedSkillInput(matchedLearnedSkill, message, recentMessages, settings);
-  if (!localPath && matchedLearnedSkill && directSkillInput) {
+  if (!localPath && matchedLearnedSkill && matchedLearnedSkill.id !== "concert-ticket-purchase-assistant" && directSkillInput) {
     const toolStatus: ToolEvent = { type: "tool_status", payload: { tool: "run_learned_skill", label: `กำลังใช้ทักษะ ${matchedLearnedSkill.name}` } };
     try {
       const result = await executeTool("run_learned_skill", { skill_id: matchedLearnedSkill.id, input: directSkillInput }, settings);
@@ -503,8 +584,13 @@ export async function POST(request: Request) {
     const selectedUrl = String(selectedEvent.url || latestTicketWorkflow?.metadata.inspected_url || "");
     const browserEvents: ToolEvent[] = [{ type: "tool_status", payload: { tool: "browser_action", label: "กำลังตรวจรอบ โซน ที่นั่ง และฟอร์มของคอนที่เลือก" } }];
     try {
-      if (selectedUrl) await executeTool("browser_action", { action: "open", url: selectedUrl }, settings);
-      const form = await executeTool("browser_action", { action: "inspect_form" }, settings);
+      const form = await ticketBotAction({
+        action: "inspect_form",
+        url: selectedUrl,
+        source_url: latestTicketWorkflow?.metadata.inspected_url,
+        event_id: selectedEvent.id,
+        event_name: selectedEvent.name,
+      });
       const candidates = form.candidates && typeof form.candidates === "object" ? form.candidates as Record<string, Array<Record<string, unknown>>> : {};
       const facts = form.facts && typeof form.facts === "object" ? form.facts as Record<string, unknown> : {};
       const functionalPreflight = form.functional_preflight && typeof form.functional_preflight === "object" ? form.functional_preflight as Record<string, unknown> : {};
@@ -541,6 +627,46 @@ export async function POST(request: Request) {
       return immediateStream([...baseEvents, ...browserEvents, { type: "tool_error", payload: { tool: "browser_action", message: failure } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
     }
   }
+  if (pendingTicketBuild) {
+    const preferences = ticketPreferences(message, pendingTicketBuild);
+    const availablePerformances = preferences.performances.filter((option) => !["sold_out", "closed"].includes(String(option.status || "")));
+    if (availablePerformances.length > 1 && !preferences.selectedPerformance) {
+      const choices = availablePerformances.slice(0, 12).map((option, index) => `${index + 1}. ${String(option.schedule || option.label || option.context_text || "รอบไม่ระบุชื่อ")}`).join("\n");
+      const reply = `คอนนี้มีหลายรอบ เพื่อไม่ให้ AI เลือกผิดหลังผ่านคิว กรุณาเลือกรอบวันและเวลาที่แน่นอนหนึ่งรายการครับ (พิมพ์หมายเลขได้)\n\n${choices}`;
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { pending_ticket_build: pendingTicketBuild, inspected_url: String(pendingTicketBuild.event_url || "") } });
+      return immediateStream([...baseEvents, { type: "status", payload: { stage: "ticket_performance_selection", label: "รอเลือกรอบก่อนเริ่ม Full Loop" } }, { type: "token", payload: { text: reply } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+    const runtimeEvents: ToolEvent[] = [
+      { type: "tool_status", payload: { tool: "concert-ticket-purchase-assistant", label: "กำลังสร้าง Ticket Bot จากข้อมูลที่เลือก" } },
+    ];
+    try {
+      const built = await ticketBotAction({ action: "build", input: preferences.input as Record<string, unknown> });
+      const projectPath = String(built.project_path || "");
+      if (!projectPath) throw new Error("สร้างโปรเจกต์แล้วแต่ไม่พบ project_path");
+      const started = await ticketBotAction({ action: "run", project_path: projectPath, inspect_only: false });
+      const ticketRun = started.run && typeof started.run === "object" ? started.run as Record<string, unknown> : {};
+      const artifacts = Array.isArray(built.artifacts) ? built.artifacts as ArtifactRecord[] : [];
+      runtimeEvents.push({ type: "ticket_run", payload: { run: ticketRun } });
+      const reply = `เริ่ม Full Loop จริงสำหรับ “${String(pendingTicketBuild.selected_event_name || "คอนเสิร์ตที่เลือก")}” แล้วครับ\n\nAI จะใช้ session ของ Ticket Browser เดิม เลือกรอบและโซนตามข้อมูลจริง ทำต่อจนถึงหน้าชำระเงิน แล้วหยุดให้พี่ตรวจ/ชำระเอง หากเจอ CAPTCHA หรือ OTP จะแสดงจุดรับช่วงในสถานะด้านล่าง`;
+      await finishAgentRun(runId, "completed", "เริ่ม Ticket Run จริงแล้ว");
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { artifacts, ticket_run: ticketRun, ticket_workflow: { project_path: projectPath, selected_event_name: pendingTicketBuild.selected_event_name }, tool_events: runtimeEvents.map(({ type, payload }) => ({ type, ...payload })) } });
+      return immediateStream([
+        ...baseEvents,
+        { type: "status", payload: { stage: "ticket_runtime", label: "Ticket Bot ทำงานเบื้องหลังแล้ว" } },
+        ...runtimeEvents,
+        ...(artifacts.length ? [{ type: "artifact", payload: { artifacts } }] : []),
+        { type: "token", payload: { text: reply } },
+        ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []),
+        { type: "done", payload: {} },
+      ]);
+    } catch (error) {
+      const failure = error instanceof Error ? error.message : "เริ่ม Full Loop ไม่สำเร็จ";
+      await finishAgentRun(runId, "failed", "เริ่ม Ticket Run ไม่สำเร็จ", failure);
+      const reply = `ยังเริ่มซื้อบัตรจริงไม่สำเร็จ: ${failure}`;
+      const assistant = await appendMessage({ chatId: chat.id, role: "assistant", content: reply, metadata: { error: true, pending_ticket_build: pendingTicketBuild } });
+      return immediateStream([...baseEvents, ...runtimeEvents, { type: "tool_error", payload: { tool: "ticket_runtime", message: failure } }, { type: "token", payload: { text: reply } }, ...(assistant ? [{ type: "message_saved", payload: { message: assistant } }] : []), { type: "done", payload: {} }]);
+    }
+  }
   const ticketBuilderIntent = Boolean(pendingTicketBuild) || matchedLearnedSkill?.id === "concert-ticket-purchase-assistant"
     || /(?:สร้าง|ทำ|เขียน).{0,30}(?:บอท|bot).{0,40}(?:บัตร|ticket|คอนเสิร์ต|concert)|(?:บอท|bot).{0,30}(?:กด|ซื้อ|จอง).{0,20}(?:บัตร|ticket)/i.test(message);
   if (ticketBuilderIntent && urls.length) {
@@ -559,9 +685,8 @@ export async function POST(request: Request) {
       { type: "tool_status", payload: { tool: "browser_action", label: "กำลังตรวจคอนเสิร์ตที่เปิดขายและกำลังจะเปิด" } },
     ];
     try {
-      const opened = await executeTool("browser_action", { action: "open", url, new_tab: true }, settings);
-      browserEvents.push({ type: "browser_state", payload: { url: opened.url ?? url, title: opened.title ?? "", handoff_required: opened.handoff_required ?? false, reason: opened.reason ?? "" } });
-      const inspected = await executeTool("browser_action", { action: "inspect_events" }, settings);
+      const inspected = await ticketBotAction({ action: "inspect", url });
+      browserEvents.push({ type: "browser_state", payload: { url, title: "Ticket discovery", handoff_required: false, reason: "" } });
       const events = (Array.isArray(inspected.events) ? inspected.events : []).filter((item): item is Record<string, unknown> => {
         if (!item || typeof item !== "object") return false;
         return ["open", "upcoming"].includes(String((item as Record<string, unknown>).sale_status || ""));

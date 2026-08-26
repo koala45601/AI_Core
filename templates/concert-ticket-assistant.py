@@ -110,7 +110,7 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "1.1.0-beta.24",
+        "generatorVersion": "1.1.0-beta.25",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -425,7 +425,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 REPORT = ROOT / "run-report.jsonl"
 ACTIONABLE_SELECTOR = "button, a[href], area[href], input[type=button], input[type=submit], input[type=image], [role=button], [role=link], [onclick]"
-SEAT_SELECTOR = ".seatuncheck[data-seat][data-seatk], [data-seat][data-available='true'], [data-seat][data-status='available'], [role='button'][aria-label*='seat' i]"
+SEAT_SELECTOR = ".seatuncheck, [data-seat][data-seatk], [data-seat][data-available='true'], [data-seat][data-status='available'], [data-seat-number], [role='button'][aria-label*='seat' i]"
 OWNED_BROWSER_PROCESS = None
 
 
@@ -653,6 +653,18 @@ def visible_seat_control_count(page):
         except Exception:
             continue
     return total
+
+
+def wait_for_seat_controls(page, timeout_ms=12000):
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000
+    while time.monotonic() < deadline:
+        count = visible_seat_control_count(page)
+        if count:
+            record("seat_map", {"status": "READY", "visible_seat_control_count": count, "frame_urls": [frame.url for frame in page.frames if frame != page.main_frame]})
+            return count
+        page.wait_for_timeout(250)
+    record("seat_map", {"status": "CONTROLS_NOT_FOUND", "visible_seat_control_count": 0, "frame_urls": [frame.url for frame in page.frames if frame != page.main_frame]})
+    return 0
 
 
 def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None):
@@ -1039,10 +1051,10 @@ def select_preferred_zone(page):
     discovered_names = list(dict.fromkeys(zone for zone, _ in discovered))
     if not zones:
         print("โซนที่พบจากหน้าจริง: " + (", ".join(discovered_names) if discovered_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
-        record("input_required", {"field": "zone", "stage": "waiting_zone", "options": discovered_names, "prompt": "เลือกโซนก่อนให้บอททำต่อ", "secret": False})
-        answer = input("เลือกโซนก่อนให้บอททำต่อ (เช่น A หรือ A1; หลายโซนคั่นด้วย comma): ").strip().upper()
-        zones = [item.strip() for item in re.split(r"[,\n]", answer) if item.strip()]
-        if not zones:
+        if discovered_names:
+            zones = [discovered_names[0]]
+            record("selection", {"mode": "zone", "strategy": "auto_first_available", "selected": zones[0], "discovered": discovered_names, "complete": True, "reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"})
+        else:
             record("selection", {"mode": "zone", "preferred": [], "discovered": discovered_names, "complete": False, "reason": "USER_ZONE_REQUIRED"})
             return False
     ordered = zones
@@ -1052,12 +1064,14 @@ def select_preferred_zone(page):
                 continue
             locator.evaluate("element => element.click()")
             record("action", {"action": "select_image_map_zone", "zone": zone, "selector": f"area[href$='#{zone}']"})
+            wait_for_seat_controls(page)
             return True
         locator = page.get_by_text(zone, exact=True).first
         try:
             if locator.count() and locator.is_visible(timeout=500) and locator.is_enabled():
                 locator.click()
                 record("action", {"action": "select_zone", "zone": zone})
+                wait_for_seat_controls(page)
                 return True
         except Exception:
             pass
@@ -1193,29 +1207,45 @@ def apply_ticket_preferences(page):
         except Exception:
             pass
     if CONFIG.get("seatMode") == "reserved":
-        seats = page.locator(SEAT_SELECTOR)
+        wait_for_seat_controls(page, timeout_ms=3000)
         zone_match = re.search(r"[?&]zone=([^&#]+)", page.url, re.I)
         current_zone = (zone_match.group(1) if zone_match else "") or (zones[0] if zones else "")
         metadata = []
-        for index in range(min(seats.count(), 1000)):
-            seat = seats.nth(index)
-            try:
-                raw_seat = seat.get_attribute("data-seat") or ""
-                parsed = re.match(r"^([A-Za-z]+)-(\d+)(?:-|$)", raw_seat)
-                metadata.append({
-                    "zone": seat.get_attribute("data-zone") or seat.get_attribute("data-section") or current_zone,
-                    "row": seat.get_attribute("data-row") or (parsed.group(1) if parsed else ""),
-                    "number": seat.get_attribute("data-seat-number") or (parsed.group(2) if parsed else raw_seat),
-                    "available": seat.is_visible() and seat.is_enabled(),
-                })
-            except Exception:
-                metadata.append({"available": False})
+        seat_locators = []
+        scopes = [page, *[frame for frame in page.frames if frame != page.main_frame]]
+        for scope_index, scope in enumerate(scopes):
+            seats = scope.locator(SEAT_SELECTOR)
+            for index in range(min(seats.count(), 1000 - len(seat_locators))):
+                seat = seats.nth(index)
+                seat_locators.append(seat)
+                try:
+                    raw_seat = (
+                        seat.get_attribute("data-seat")
+                        or seat.get_attribute("data-seat-number")
+                        or seat.get_attribute("data-seatk")
+                        or seat.get_attribute("aria-label")
+                        or seat.get_attribute("title")
+                        or seat.get_attribute("id")
+                        or ""
+                    )
+                    parsed = re.search(r"(?:^|\b)([A-Za-z]+)[-_ ]?(\d+)(?:\b|$)", raw_seat)
+                    class_tokens = set((seat.get_attribute("class") or "").lower().split())
+                    blocked_tokens = {"seatcheck", "seatsold", "sold", "occupied", "reserved", "unavailable", "disabled"}
+                    metadata.append({
+                        "zone": seat.get_attribute("data-zone") or seat.get_attribute("data-section") or current_zone,
+                        "row": seat.get_attribute("data-row") or (parsed.group(1) if parsed else ""),
+                        "number": seat.get_attribute("data-seat-number") or (parsed.group(2) if parsed else raw_seat),
+                        "available": seat.is_visible() and seat.is_enabled() and class_tokens.isdisjoint(blocked_tokens),
+                        "scope_index": scope_index,
+                    })
+                except Exception:
+                    metadata.append({"available": False, "scope_index": scope_index})
         grouping = str(CONFIG.get("seatGrouping", "adjacent"))
         selected_indices = choose_seat_indices(metadata, wanted, grouping, zones, rows, seat_numbers, fallback_mode)
         for index in selected_indices:
-            seats.nth(index).click()
+            seat_locators[index].click()
         selected = len(selected_indices)
-        record("selection", {"mode": "reserved", "grouping": grouping, "wanted": wanted, "selected": selected, "indices": selected_indices, "preferred_zones": zones, "preferred_rows": rows, "preferred_seat_numbers": seat_numbers, "fallback_mode": fallback_mode, "complete": selected == wanted})
+        record("selection", {"mode": "reserved", "grouping": grouping, "wanted": wanted, "selected": selected, "indices": selected_indices, "candidate_count": len(seat_locators), "scope_count": len(scopes), "preferred_zones": zones, "preferred_rows": rows, "preferred_seat_numbers": seat_numbers, "fallback_mode": fallback_mode, "complete": selected == wanted})
         return selected == wanted
     label_pattern = re.compile(r"quantity|qty|จำนวน", re.I)
     locator = page.get_by_label(label_pattern).first
@@ -1564,7 +1594,11 @@ def main():
     args = parser.parse_args()
     if args.dry_run:
         raise SystemExit(verify_fixtures())
-    raise SystemExit(run_live(args.inspect_only, args.wait_for_window, args.confirm_order))
+    try:
+        exit_code = run_live(args.inspect_only, args.wait_for_window, args.confirm_order)
+    finally:
+        stop_owned_browser()
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
@@ -1843,7 +1877,7 @@ Fixture verification does not mean a live queue or checkout was observed. `CHECK
 
 Public inspection does not require Login. A real run must verify either an existing member session or a successful Login-form transition before Checkout. Set `TICKET_USERNAME` and `TICKET_PASSWORD` in the Terminal session or enter them at the secure prompt; the password is never written to config, reports, or memory.
 
-`preferredZones` may be empty when the zone map is not public yet. At runtime the bot reads A/A1/A2-style zones from the authenticated page and asks before selecting; it never silently chooses the first zone. `preferredRows`, `preferredSeatNumbers`, and `seatFallbackMode` control exact/nearest selection while keeping all tickets in the chosen zone.
+`preferredZones` may be empty when the zone map is not public yet. At runtime the bot reads A/A1/A2-style zones from the authenticated page and automatically chooses the first currently available zone in the site's own ordering. The selection and discovered alternatives are written to `run-report.jsonl`. `preferredRows`, `preferredSeatNumbers`, and `seatFallbackMode` override that fallback and control exact/nearest selection while keeping all tickets in the chosen zone.
 
 ## Start on macOS
 
@@ -1895,7 +1929,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "1.1.0-beta.24",
+        "generator_version": "1.1.0-beta.25",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

@@ -50,7 +50,7 @@ let storageError = "";
 let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
-const ticketRunManager = createTicketRunManager({ programCreateDir, ticketBrowserProfileDir, requiredGeneratorVersion: "1.1.0-beta.24" });
+const ticketRunManager = createTicketRunManager({ programCreateDir, ticketBrowserProfileDir, requiredGeneratorVersion: "1.1.0-beta.25" });
 
 if (token.length < 32) {
   console.error("ALPHA_TOOL_TOKEN is missing or too short");
@@ -605,6 +605,48 @@ function htmlToText(html) {
     .replace(/\s+/g, " ").trim();
 }
 
+function htmlAttribute(source, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(source || "").match(new RegExp(`\\b${escaped}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"));
+  return decodeEntities(match?.[2] || "");
+}
+
+function ticketPerformanceLinksFromHtml(html) {
+  const anchors = String(html || "").match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || [];
+  const results = [];
+  for (const anchor of anchors.slice(0, 2_000)) {
+    const opening = anchor.match(/^<a\b[^>]*>/i)?.[0] || "";
+    const dataButton = htmlAttribute(opening, "data-button");
+    const onclick = htmlAttribute(opening, "onclick");
+    const href = htmlAttribute(opening, "href");
+    const label = stripHtml(anchor).slice(0, 200);
+    if (!dataButton && !/zones\.php|popup\.signin|rdId/i.test(`${onclick} ${href}`)) continue;
+    if (!/\b\d{1,2}:\d{2}\b/.test(label)) continue;
+    const target = `${onclick} ${href}`.match(/https?:\/\/[^'"\s)]+/i)?.[0] || "";
+    const disabled = /\bdisabled\b|aria-disabled\s*=\s*["']true/i.test(opening);
+    const status = /sold\s*out|ขายหมด/i.test(label) ? "sold_out"
+      : /ปิดขาย|sale\s*ended|closed/i.test(label) ? "closed"
+        : disabled ? "upcoming" : "open";
+    results.push({
+      label,
+      context_text: label,
+      status,
+      selectable: status === "open",
+      selector: dataButton ? `[data-button="${dataButton.replace(/["\\]/g, "\\$&")}"]` : "",
+      data_button: dataButton.slice(0, 120),
+      target_url: target.slice(0, 2_000),
+      disabled,
+    });
+  }
+  const seen = new Set();
+  return results.filter((item) => {
+    const key = `${item.data_button}\u0000${item.label}\u0000${item.target_url}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 60);
+}
+
 async function readWebPage(rawUrl) {
   let url = await assertPublicUrl(rawUrl);
   let response;
@@ -624,6 +666,7 @@ async function readWebPage(rawUrl) {
   const contentType = response.headers.get("content-type") || "";
   let text = "";
   let title = "";
+  let ticketPerformances = [];
   if (contentType.includes("pdf") || url.pathname.toLowerCase().endsWith(".pdf")) {
     const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const pdf = await getDocument({ data: bytes, useWorkerFetch: false, isEvalSupported: false, useSystemFonts: true }).promise;
@@ -639,12 +682,18 @@ async function readWebPage(rawUrl) {
     const raw = new TextDecoder().decode(bytes);
     if (contentType.includes("html")) {
       title = htmlToText(raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").slice(0, 160);
-      text = htmlToText(raw);
+      ticketPerformances = ticketPerformanceLinksFromHtml(raw);
+      const fullText = htmlToText(raw);
+      const scheduleIndex = fullText.search(/ผังการแสดง\s*(?:&|และ)\s*รอบการแสดง|รอบการแสดง\s*(?:&|และ)\s*ผังการแสดง/i);
+      const scheduleExcerpt = scheduleIndex >= 0 ? fullText.slice(scheduleIndex, scheduleIndex + 12_000) : "";
+      // Keep the public metadata first so date/sale parsing remains stable,
+      // then inject the performance table before the global 60k response cap.
+      text = scheduleExcerpt ? `${fullText.slice(0, 16_000)}\n${scheduleExcerpt}\n${fullText}` : fullText;
     } else {
       text = raw;
     }
   }
-  return { ok: true, url: url.toString(), title: title || url.hostname, content: text.slice(0, 60_000) };
+  return { ok: true, url: url.toString(), title: title || url.hostname, content: text.slice(0, 60_000), ticket_performances: ticketPerformances };
 }
 
 async function ensureAlphaBrowser() {
@@ -817,8 +866,9 @@ async function inspectBrowserForm(page) {
       title: document.title,
       body_text: String(document.body?.innerText || "").slice(0, 60_000),
       structured_events: structured_events.slice(0, 30),
-      announced_performances: [...document.querySelectorAll(".box-event-list .row")].map((row) => {
-        const control = row.querySelector("a[data-button], button[data-button], a[onclick*='zones.php'], a[onclick*='rdId'], a, button");
+      announced_performances: [...document.querySelectorAll(".box-event-list .row")].flatMap((row) => {
+        const controls = [...row.querySelectorAll("a[data-button], button[data-button], a[onclick*='zones.php'], a[onclick*='rdId'], a[href*='zones.php'], a[href*='rdId'], button")];
+        const candidates = controls.length ? controls : [null];
         const product = row.closest(".event-detail-item");
         const productText = String(product?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 2_000);
         const productBase = productText.split(/ราคาบัตร|ticket\s*price|วันที่แสดง/i)[0].trim();
@@ -827,31 +877,45 @@ async function inspectBrowserForm(page) {
         const productType = /rerun/i.test(productName) ? "rerun"
           : /live\s*stream|ttm\s*live/i.test(productName) ? "live_stream"
             : "in_person";
-        const onclick = control?.getAttribute("onclick") || "";
-        const targetMatch = onclick.match(/https?:\/\/[^'"\s)]+/i);
-        const dataButton = control?.getAttribute("data-button") || "";
-        const text = String(row.textContent || "").trim().replace(/\s+/g, " ").slice(0, 300);
-        const label = String(control?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
-        // Some TTM product rows do not expose the historical `row-enable`
-        // class even though their visible control is active. Treat only an
-        // actually absent/disabled control as unavailable.
-        const disabled = !control || Boolean(control.disabled) || control.getAttribute("aria-disabled") === "true" || control.classList.contains("disabled");
-        const status = /sold\s*out|ขายหมด/i.test(text) ? "sold_out"
-          : /ปิดขาย|sale\s*ended|closed/i.test(text) ? "closed"
-            : !disabled && /ซื้อบัตร|จองบัตร|buy\s*(?:now|ticket)|book\s*now/i.test(`${label} ${text}`) ? "open"
-              : "upcoming";
-        return {
-          label,
-          context_text: text,
-          product_name: productName,
-          product_type: productType,
-          status,
-          selectable: status === "open",
-          selector: dataButton ? `[data-button="${CSS.escape(dataButton)}"]` : "",
-          data_button: dataButton,
-          target_url: String(targetMatch?.[0] || "").slice(0, 2_000),
-          disabled,
-        };
+        const rowText = String(row.textContent || "").trim().replace(/\s+/g, " ").slice(0, 1_000);
+        const sharedDate = rowText.match(/(?:วัน[^\s-]{0,16}ที่\s*)?\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}/i)?.[0] || "";
+        return candidates.map((control) => {
+          const onclick = control?.getAttribute("onclick") || "";
+          const href = control?.getAttribute("href") || "";
+          const targetMatch = onclick.match(/https?:\/\/[^'"\s)]+/i);
+          const dataButton = control?.getAttribute("data-button") || "";
+          const id = control?.getAttribute("id") || "";
+          const label = String(control?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
+          let branch = control;
+          while (branch?.parentElement && branch.parentElement !== row) branch = branch.parentElement;
+          const localText = String(branch?.textContent || label).trim().replace(/\s+/g, " ").slice(0, 300);
+          const contextText = `${sharedDate && !localText.includes(sharedDate) ? sharedDate : ""} ${localText || rowText}`.trim().slice(0, 300);
+          // Some TTM product rows do not expose the historical `row-enable`
+          // class even though their visible control is active. Treat only an
+          // actually absent/disabled control as unavailable.
+          const disabled = !control || Boolean(control.disabled) || control.getAttribute("aria-disabled") === "true" || control.classList.contains("disabled");
+          const statusText = localText || rowText;
+          const status = /sold\s*out|ขายหมด/i.test(statusText) ? "sold_out"
+            : /ปิดขาย|sale\s*ended|closed/i.test(statusText) ? "closed"
+              : !disabled && /ซื้อบัตร|จองบัตร|buy\s*(?:now|ticket)|book\s*now/i.test(`${label} ${statusText}`) ? "open"
+                : "upcoming";
+          const targetUrl = targetMatch?.[0] || (/^(?:https?:)?\/\//i.test(href) || href.startsWith("/") ? new URL(href, location.href).href : "");
+          const selector = dataButton ? `[data-button="${CSS.escape(dataButton)}"]`
+            : id ? `#${CSS.escape(id)}`
+              : href && !href.toLowerCase().startsWith("javascript:") ? `a[href="${CSS.escape(href)}"]` : "";
+          return {
+            label,
+            context_text: contextText,
+            product_name: productName,
+            product_type: productType,
+            status,
+            selectable: status === "open",
+            selector,
+            data_button: dataButton,
+            target_url: String(targetUrl || "").slice(0, 2_000),
+            disabled,
+          };
+        });
       }).filter((item) => /(?:\d{1,2}:\d{2}|\d{1,2}\s*(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s*\d{4})/.test(`${item.label} ${item.context_text}`)).slice(0, 50),
       discovered_zones: [...new Set([...document.querySelectorAll("area[href*='#'], [data-zone], [data-section]")].map((element) => {
         const href = String(element.getAttribute("href") || "");
