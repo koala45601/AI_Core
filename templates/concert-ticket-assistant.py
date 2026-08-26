@@ -400,6 +400,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from state_machine import choose_seat_indices, classify_snapshot, next_action, verified_payment_handoff
 
@@ -541,12 +542,19 @@ def _performance_match_text(value):
     return re.sub(r"\s+", " ", re.sub(r"(?:ซื้อบัตร|จองบัตร|buy\s*(?:now|ticket))\s*$", "", str(value or ""), flags=re.I)).strip()
 
 
-def activate_selected_performance(page):
+def activate_selected_performance(page, prefer_target_navigation=False):
     selected = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
     if not selected:
         return semantic_click(page, sale_entry_labels())
 
     selector = str(selected.get("selector", "")).strip()
+    target_url = str(selected.get("targetUrl", "")).strip()
+    current_host = urlsplit(page.url).netloc.casefold()
+    event_host = urlsplit(str(CONFIG.get("eventUrl", ""))).netloc.casefold()
+    if prefer_target_navigation and target_url.startswith(("https://", "http://")) and current_host == event_host and page.url != target_url:
+        page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+        record("action", {"action": "navigate_selected_booking_target", "url": target_url.split("?", 1)[0], "schedule": selected.get("schedule"), "same_queue_session": True, "reason": "verified_target_avoids_javascript_popup"})
+        return True
     wanted_context = _performance_match_text(selected.get("contextText") or selected.get("label") or selected.get("schedule"))
     wanted_time = re.search(r"\b\d{1,2}:\d{2}\b", wanted_context or str(selected.get("schedule", "")))
     wanted_date = re.search(r"(?:วัน[^\s-]{0,16}ที่\s*)?\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}", wanted_context)
@@ -598,9 +606,6 @@ def activate_selected_performance(page):
                 return True
     except Exception:
         pass
-    target_url = str(selected.get("targetUrl", "")).strip()
-    current_host = urlsplit(page.url).netloc.casefold()
-    event_host = urlsplit(str(CONFIG.get("eventUrl", ""))).netloc.casefold()
     if target_url.startswith(("https://", "http://")) and current_host == event_host and page.url != target_url:
         page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
         record("action", {"action": "navigate_selected_booking_target", "url": target_url.split("?", 1)[0], "schedule": selected.get("schedule"), "same_queue_session": True})
@@ -1089,7 +1094,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     page.reload(wait_until="domcontentloaded")
                 continue
             if state == "sale_entry":
-                if not activate_selected_performance(page):
+                if not activate_selected_performance(page, prefer_target_navigation=True):
                     record("result", {"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE", "reason": "ไม่พบปุ่มที่ตรงกับวัน/เวลาที่เลือก จึงไม่เลือกรอบอื่นแทน", "selected_performance": CONFIG.get("selectedPerformance"), "same_queue_session": True, "live_checkout_verified": False})
                     record("input_required", {"field": "performance", "stage": "waiting_selected_performance", "prompt": "รอบที่เลือกยังไม่ปรากฏ ระบบค้าง session เดิมไว้ให้ตรวจและจะไม่เลือกรอบอื่นแทน", "secret": False})
                     input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อปิด โดยไม่เปลี่ยนไปรอบอื่น: ")
