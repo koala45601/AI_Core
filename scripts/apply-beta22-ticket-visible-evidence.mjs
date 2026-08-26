@@ -23,13 +23,15 @@ async function verifyAndMarkTemplate() {
     '"status": "WAITING_ROOM_CONTROL_CHANGED"',
     '"status": "SERVER_ACCESS_DENIED"',
     'state == "unknown" and CONFIG.get("runtimeDiscoveryRequired")',
-    '"generatorVersion": "1.1.0-beta.23"',
-    '"generator_version": "1.1.0-beta.23"',
+    '"generatorVersion": "',
+    '"generator_version": "',
     'เลือกรอบ\\s*/\\s*ประเภทบัตร',
     '"status": "INSPECTION_ONLY_NOT_FULL_LOOP"',
     '"browser_visible": True',
     'seat_control_count > 0',
-    "def activate_selected_performance(page):",
+    // beta.24 adds an optional navigation strategy argument while retaining
+    // the same selected-performance activation contract.
+    "def activate_selected_performance(page",
     '"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE"',
     '"selectedPerformance": {',
   ];

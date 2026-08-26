@@ -10,14 +10,16 @@ async function source(path) {
 
 test("Ticket Bot Studio is a fixed workspace with all user preference fields", async () => {
   const [page, css] = await Promise.all([source("app/page.tsx"), source("app/globals.css")]);
-  assert.match(page, /type View = "chat" \| "memory" \| "skills" \| "tickets" \| "settings"/);
+  assert.match(page, /type View = "chat" \| "video" \| "memory" \| "skills" \| "tickets" \| "settings"/);
   assert.match(page, /TICKET BOT STUDIO/);
   assert.match(page, /ตรวจคอนเสิร์ต/);
   assert.match(page, /ประเภทบัตร/);
   assert.match(page, /QR Payment/);
   assert.match(page, /PromptPay/);
   assert.match(page, /Login อัตโนมัติจาก session\/secure prompt/);
-  assert.doesNotMatch(page, /type="password"/);
+  assert.match(page, /type="password"/);
+  assert.match(page, /password ใช้เฉพาะตอน run และไม่บันทึก/);
+  assert.match(page, /setTicketPassword\(""\)/);
   assert.match(css, /\.ticket-workspace \{[^}]*overflow: hidden/);
   assert.match(css, /\.ticket-event-list \{[^}]*overflow-y: auto/);
   assert.match(css, /\.ticket-config-scroll \{[^}]*overflow-y: auto/);

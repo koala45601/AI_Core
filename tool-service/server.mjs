@@ -32,13 +32,15 @@ const autoLearnLastJobFile = resolve(workDir, "auto-learn-last-job.json");
 const autoLearnRunsDir = resolve(workDir, "auto-learn-runs");
 const skillsIndexFile = resolve(workDir, "skills-index.json");
 const browserProfileDir = resolve(workDir, "alpha-browser-profile");
+const publicInspectionProfileDir = resolve(workDir, "public-inspection-profile");
+const ticketBrowserProfileDir = resolve(workDir, "ticket-browser-profile");
 const composeFile = resolve(appDir, "infra", "searxng", "docker-compose.yml");
 const artifacts = new Map();
 const pending = new Map();
 const extensionClients = new Set();
 let alphaContext = null;
 let publicInspectionContext = null;
-let publicInspectionProfile = "";
+const publicInspectionNavigationAt = new Map();
 let lastHeavyUse = 0;
 let idleSeconds = 300;
 let dockerOpenedByAlpha = false;
@@ -48,7 +50,7 @@ let storageError = "";
 let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
-const ticketRunManager = createTicketRunManager({ programCreateDir, requiredGeneratorVersion: "1.1.0-beta.23" });
+const ticketRunManager = createTicketRunManager({ programCreateDir, ticketBrowserProfileDir, requiredGeneratorVersion: "1.1.0-beta.24" });
 
 if (token.length < 32) {
   console.error("ALPHA_TOOL_TOKEN is missing or too short");
@@ -652,6 +654,10 @@ async function ensureAlphaBrowser() {
   alphaContext = await chromium.launchPersistentContext(browserProfileDir, {
     channel: "chrome",
     headless: false,
+    // Chrome on macOS has its own sandbox. Playwright's Linux-oriented
+    // --no-sandbox default both weakens isolation and makes the window look
+    // abnormal to strict CDNs.
+    ignoreDefaultArgs: ["--no-sandbox", "--enable-automation"],
     acceptDownloads: true,
     downloadsPath: outputsDir,
     viewport: { width: 1280, height: 820 },
@@ -663,23 +669,29 @@ async function ensureAlphaBrowser() {
 async function ensurePublicInspectionBrowser() {
   lastHeavyUse = Date.now();
   if (publicInspectionContext) return publicInspectionContext;
-  const profile = await fs.mkdtemp(join(tmpdir(), "alpha-public-inspection-"));
-  publicInspectionProfile = profile;
-  publicInspectionContext = await chromium.launchPersistentContext(profile, {
+  await fs.mkdir(publicInspectionProfileDir, { recursive: true });
+  publicInspectionContext = await chromium.launchPersistentContext(publicInspectionProfileDir, {
     channel: "chrome",
     // ThaiTicketMajor's CDN rejects Chrome's headless transport even for public
     // event pages. A normal isolated Chrome window can read the same public
     // page without moving the user's system pointer or using their profile.
     headless: false,
+    ignoreDefaultArgs: ["--no-sandbox", "--enable-automation"],
     acceptDownloads: false,
     viewport: { width: 1280, height: 820 },
   });
   publicInspectionContext.on("close", () => {
     publicInspectionContext = null;
-    if (publicInspectionProfile === profile) publicInspectionProfile = "";
-    void fs.rm(profile, { recursive: true, force: true }).catch(() => {});
   });
   return publicInspectionContext;
+}
+
+async function throttlePublicInspectionNavigation(rawUrl) {
+  const hostname = new URL(rawUrl).hostname.toLowerCase();
+  const previous = Number(publicInspectionNavigationAt.get(hostname) || 0);
+  const remaining = 2_500 - (Date.now() - previous);
+  if (remaining > 0) await new Promise((resolveWait) => setTimeout(resolveWait, remaining));
+  publicInspectionNavigationAt.set(hostname, Date.now());
 }
 
 async function browserRisk(page) {
@@ -1099,7 +1111,28 @@ async function alphaBrowserAction(action, args) {
         }
       }
     }
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (args.public_inspection === true) await throttlePublicInspectionNavigation(url);
+    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (args.public_inspection === true) {
+      const status = response?.status() || 0;
+      const body = (await page.locator("body").innerText({ timeout: 3000 }).catch(() => "")).slice(0, 5000);
+      const accessBlocked = [401, 403].includes(status)
+        || /access\s*denied|permission\s+to\s+access|errors\.edgesuite\.net/i.test(`${await page.title().catch(() => "")} ${body}`);
+      if (accessBlocked) {
+        const blockedUrl = page.url();
+        // Do not leave a raw CDN error window in front of the user. The API
+        // reports the exact denial and can use an official listing fallback.
+        await page.close().catch(() => {});
+        return {
+          ok: false,
+          access_blocked: true,
+          block_reason: status ? `HTTP ${status} Access Denied` : "Access Denied",
+          url: blockedUrl,
+          title: "Access Denied",
+          content: body,
+        };
+      }
+    }
   } else if (action === "inspect_form") {
     return inspectBrowserForm(page);
   } else if (action === "inspect_events") {
@@ -1240,6 +1273,34 @@ async function apiDiscovery(args, settings) {
   }
 
   const target = await assertSecurityTarget(args.url, settings, false);
+  if (action === "observe_existing") {
+    const page = context.pages().at(-1);
+    if (!page || !/^https?:/i.test(page.url())) throw new Error("ไม่มีหน้าปัจจุบันสำหรับอ่าน Network แบบ passive");
+    const current = await assertSecurityTarget(page.url(), settings, false);
+    if (current.hostname !== target.hostname) throw new Error("หน้าปัจจุบันไม่ตรงกับโดเมนที่ขอตรวจ API");
+    const accessBlock = await browserAccessBlock(page);
+    if (accessBlock.blocked) return { ok: false, action, access_blocked: true, block_reason: accessBlock.reason, page: { url: page.url(), title: accessBlock.title }, api_calls: [], forms: [], options: [], secrets_redacted: true };
+    const forms = await page.locator("form").evaluateAll((items) => items.slice(0, 30).map((form) => ({
+      action: (form instanceof HTMLFormElement ? form.action : ""),
+      method: (form instanceof HTMLFormElement ? form.method : "GET").toUpperCase(),
+      fields: [...form.querySelectorAll("input, textarea, select")].slice(0, 50).map((field) => ({
+        name: field.getAttribute("name") || "", type: field.getAttribute("type") || field.tagName.toLowerCase(), required: field.hasAttribute("required"),
+      })).filter((field) => field.name && !/pass|secret|token|otp|card|cvv/i.test(field.name)),
+    })));
+    const resources = await page.evaluate(() => performance.getEntriesByType("resource").slice(-250).flatMap((entry) => {
+      const resource = entry;
+      const initiator = String(resource.initiatorType || "").toLowerCase();
+      if (!new Set(["fetch", "xmlhttprequest"]).has(initiator)) return [];
+      return [{ url: resource.name, method: "", resource_type: initiator === "xmlhttprequest" ? "xhr" : "fetch", status: null, content_type: "", response_content_type: "" }];
+    }));
+    const apiCalls = resources.flatMap((item) => {
+      try {
+        const resourceUrl = new URL(item.url);
+        return [{ ...item, same_origin: resourceUrl.origin === target.origin }];
+      } catch { return []; }
+    }).slice(0, 100);
+    return { ok: true, action, page: { url: page.url(), title: await page.title() }, api_calls: apiCalls, forms, options: [], passive_existing_page: true, secrets_redacted: true };
+  }
   const page = await context.newPage();
   const calls = new Map();
   const onRequest = (request) => {

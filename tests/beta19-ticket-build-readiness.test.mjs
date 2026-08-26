@@ -47,14 +47,16 @@ test("status filters stay visible even when a source returns zero sold-out recor
   assert.ok(unavailableResponse > unavailableDeclaration, "unavailableCount must be declared before it is returned");
 });
 
-test("public inspection uses an isolated normal browser and cleans its temporary profile", async () => {
+test("public inspection reuses a persistent normal browser and observes the existing page without a second navigation", async () => {
   const [route, service] = await Promise.all([source("app/api/ticket-bot/route.ts"), source("tool-service/server.mjs")]);
   assert.match(route, /inspectAction, public_inspection: true/);
-  assert.match(route, /observe_seconds: 3, public_inspection: true/);
+  assert.match(route, /action: "observe_existing", url, public_inspection: true/);
+  assert.doesNotMatch(route, /action: "reset_public_inspection"/);
   assert.match(service, /ensurePublicInspectionBrowser/);
   assert.match(service, /headless: false/);
-  assert.match(service, /alpha-public-inspection-/);
-  assert.match(service, /fs\.rm\(profile, \{ recursive: true, force: true \}\)/);
+  assert.match(service, /public-inspection-profile/);
+  assert.match(service, /throttlePublicInspectionNavigation/);
+  assert.doesNotMatch(service, /mkdtemp\(join\(tmpdir\(\), "alpha-public-inspection-/);
 });
 
 test("runtime-adaptive project is generated when public detail facts are unavailable", async () => {

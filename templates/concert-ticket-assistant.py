@@ -110,7 +110,7 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "1.1.0-beta.23",
+        "generatorVersion": "1.1.0-beta.24",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -969,13 +969,16 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as runtime:
+        browser_profile = pathlib.Path(os.environ.get("ALPHA_TICKET_BROWSER_PROFILE") or (ROOT / "browser-profile"))
+        browser_profile.mkdir(parents=True, exist_ok=True)
         context = runtime.chromium.launch_persistent_context(
-            str(ROOT / "browser-profile"),
+            str(browser_profile),
             channel="chrome",
             headless=False,
+            ignore_default_args=["--no-sandbox", "--enable-automation"],
             args=["--window-size=1280,900", "--no-first-run"],
         )
-        record("runtime", {"mouse_control": False, "background_window": False, "browser_visible": True, "profile": "isolated", "detail": "เปิด Chrome แยกเพื่อแสดงทุกขั้น โดยไม่ขยับเมาส์ระบบ"})
+        record("runtime", {"mouse_control": False, "background_window": False, "browser_visible": True, "profile": "persistent_ticket_session", "detail": "เปิด Chrome แยกด้วย session เดิมเพื่อแสดงทุกขั้น โดยไม่ขยับเมาส์ระบบ"})
         page = context.pages[-1] if context.pages else context.new_page()
         observed = {"retry_after": None, "http_status": None, "server_date": None}
         observed_api = set()
@@ -1511,7 +1514,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "1.1.0-beta.23",
+        "generator_version": "1.1.0-beta.24",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

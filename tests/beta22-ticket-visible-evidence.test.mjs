@@ -82,10 +82,10 @@ test("beta23 patcher stamps version and is idempotent", async () => {
   assert.match(patcher, /updateInstalledTicketSkill/);
   assert.match(patcher, /concert-ticket-purchase-assistant/);
   assert.match(launcher, /apply-beta22-ticket-visible-evidence\.mjs/);
-  assert.match(launcher, /app_version\":\"1\.1\.0-beta\.23/);
+  assert.match(launcher, /app_version\":\"1\.1\.0-beta\.24/);
 });
 
-test("beta23 serializes repeated UI actions, caches announced dates and rejects stale projects", async () => {
+test("beta24 coalesces repeated UI actions, inspects detail on demand and rejects stale projects", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const route = await readFile(new URL("../app/api/ticket-bot/route.ts", import.meta.url), "utf8");
   const manager = await readFile(new URL("../tool-service/ticket-run-manager.mjs", import.meta.url), "utf8");
@@ -94,7 +94,7 @@ test("beta23 serializes repeated UI actions, caches announced dates and rejects 
 
   assert.match(page, /ticketInspectPendingRef\.current/);
   assert.match(page, /ticketRunPendingRef\.current/);
-  assert.match(page, /generator_version === "1\.1\.0-beta\.23"/);
+  assert.match(page, /generator_version === "1\.1\.0-beta\.24"/);
   assert.match(page, /กรุณาเลือกวันแสดงก่อนเข้าคิว/);
   assert.match(page, /normalizedTicketPerformanceOptions/);
   assert.match(page, /product_name/);
@@ -103,21 +103,37 @@ test("beta23 serializes repeated UI actions, caches announced dates and rejects 
   assert.match(route, /inspectionFlights/);
   assert.match(route, /saveTicketScheduleCache/);
   assert.match(route, /canonicalTicketEventUrl/);
-  assert.match(route, /reset_public_inspection/);
+  assert.doesNotMatch(route, /action: "reset_public_inspection"/);
   assert.match(route, /safePerformanceOptions/);
   assert.match(route, /selected_performance/);
-  assert.match(route, /all_announced_in_person_performances_sold_out/);
+  assert.match(route, /alpha-beta24-access-denied-v1/);
+  assert.match(route, /inspectionBlocked\(opened\)/);
+  assert.match(route, /let inspectionUrl = publicInspectionFallback\(url, mode\) \|\| url/);
+  assert.match(route, /ใช้หน้ารวม official สำรองเพื่อหลีกเลี่ยง Access Denied/);
+  assert.match(route, /inspectPublicDetailText/);
+  assert.match(route, /inspection_transport: "direct_web_read"/);
+  assert.match(route, /actually needs interactive controls/);
+  assert.match(route, /inspected\.inspection_transport === "browser"/);
+  assert.match(route, /Detail pages are loaded only after the user selects one/);
   assert.match(route, /fresh_page: false, public_inspection: true/);
   assert.doesNotMatch(route, /fresh_page: true, public_inspection: true/);
+  assert.doesNotMatch(route, /setTimeout\(resolve, 900\)/);
   assert.match(route, /stage: "runtime_discovery_required"/);
   assert.match(manager, /requiredGeneratorVersion/);
-  assert.match(server, /requiredGeneratorVersion: "1\.1\.0-beta\.23"/);
+  assert.match(server, /requiredGeneratorVersion: "1\.1\.0-beta\.24"/);
   assert.match(server, /ensurePublicInspectionBrowser[\s\S]*?headless: false/);
-  assert.match(server, /alpha-public-inspection-/);
-  assert.match(template, /"generatorVersion": "1\.1\.0-beta\.23"/);
-  assert.match(template, /"generator_version": "1\.1\.0-beta\.23"/);
+  assert.match(server, /public-inspection-profile/);
+  assert.match(server, /action === "observe_existing"/);
+  assert.match(server, /ignoreDefaultArgs: \["--no-sandbox", "--enable-automation"\]/);
+  assert.match(server, /await page\.close\(\)\.catch\(\(\) => \{\}\)/);
+  assert.match(server, /access_blocked: true/);
+  assert.match(manager, /ALPHA_TICKET_BROWSER_PROFILE/);
+  assert.match(template, /"generatorVersion": "1\.1\.0-beta\.24"/);
+  assert.match(template, /"generator_version": "1\.1\.0-beta\.24"/);
   assert.match(template, /activate_selected_performance/);
   assert.match(template, /same_queue_session/);
+  assert.match(template, /ALPHA_TICKET_BROWSER_PROFILE/);
+  assert.match(template, /ignore_default_args=\["--no-sandbox", "--enable-automation"\]/);
 });
 
 test("schedule cache is versioned so beta22 rows cannot override beta23 product status", async () => {
@@ -126,10 +142,11 @@ test("schedule cache is versioned so beta22 rows cannot override beta23 product 
   assert.match(source, /schema_version = \?/);
 });
 
-test("selecting an event performs one clean detail inspection and persists its schedule", async () => {
+test("selecting an event performs one detail inspection in the persistent session and persists its schedule", async () => {
   const api = await readFile(new URL("../app/api/ticket-bot/route.ts", import.meta.url), "utf8");
   const ui = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(api, /action: "reset_public_inspection"/);
+  assert.match(api, /inspected = await inspectPage\(url, settings, "form"\)/);
+  assert.doesNotMatch(api, /inspectPage\(url, settings, "form", true\)/);
   assert.match(api, /source_url: sourceUrl/);
   assert.match(ui, /void inspectSelectedTicketEvent\(event\)/);
   assert.match(ui, /source_url: ticketSourceUrl/);

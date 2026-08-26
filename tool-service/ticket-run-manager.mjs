@@ -112,7 +112,7 @@ function mapEvent(run, event) {
   run.updated_at = now();
 }
 
-export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh", logLimit = MAX_LOG_LINES, requiredGeneratorVersion = "" } = {}) {
+export function createTicketRunManager({ programCreateDir, ticketBrowserProfileDir = "", shellPath = "/bin/zsh", logLimit = MAX_LOG_LINES, requiredGeneratorVersion = "" } = {}) {
   if (!programCreateDir) throw new Error("programCreateDir is required");
   const runs = new Map();
 
@@ -166,8 +166,9 @@ export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh
 
   async function start(input = {}) {
     const projectPath = await validateProject(input.project_path);
-    const duplicate = [...runs.values()].find((run) => run.project_path === projectPath && ACTIVE.has(run.status));
-    if (duplicate) return { ok: true, reused: true, run: publicRun(duplicate) };
+    const activeRun = [...runs.values()].find((run) => ACTIVE.has(run.status));
+    if (activeRun?.project_path === projectPath) return { ok: true, reused: true, run: publicRun(activeRun) };
+    if (activeRun) throw new Error("มี Ticket Bot อีกงานกำลังใช้ browser session อยู่ กรุณาหยุดหรือทำงานเดิมให้จบก่อนเริ่มโปรเจกต์ใหม่");
 
     const username = safeText(input.username, 500);
     const password = typeof input.password === "string" ? input.password : "";
@@ -185,6 +186,7 @@ export function createTicketRunManager({ programCreateDir, shellPath = "/bin/zsh
         ...process.env,
         ...(username ? { TICKET_USERNAME: username } : {}),
         ...(password ? { TICKET_PASSWORD: password } : {}),
+        ...(ticketBrowserProfileDir ? { ALPHA_TICKET_BROWSER_PROFILE: resolve(ticketBrowserProfileDir) } : {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

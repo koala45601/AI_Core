@@ -41,5 +41,5 @@ test("Beta13 runtime patch is versioned and applied after Beta12", () => {
   const beta12 = launcher.indexOf("apply-beta12-host-access-routing.mjs");
   const beta13 = launcher.indexOf("apply-beta13-nonblocking-post-response.mjs");
   assert.ok(beta12 >= 0 && beta13 > beta12);
-  assert.match(launcher, /Alpha v1\.1\.0-beta\.(?:13|14|15|16|17|18)/);
+  assert.match(launcher, /Alpha v1\.1\.0-beta\.(?:13|14|15|16|17|18|19|20|21|22|23|24)/);
 });

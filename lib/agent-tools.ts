@@ -177,7 +177,7 @@ export const AGENT_TOOLS = [
         type: "object",
         required: ["action", "url"],
         properties: {
-          action: { type: "string", enum: ["discover", "probe"] },
+          action: { type: "string", enum: ["discover", "observe_existing", "probe"] },
           url: { type: "string" },
           observe_seconds: { type: "number", description: "1-15 seconds for discover" },
           method: { type: "string", enum: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"] },

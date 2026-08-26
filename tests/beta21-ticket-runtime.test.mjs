@@ -142,6 +142,24 @@ test("Ticket Run Manager rejects stale generators and reuses one active process 
   }
 });
 
+test("Ticket Run Manager shares one persistent ticket profile and blocks competing projects", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-shared-profile-"));
+  const root = join(temp, "Program_Create");
+  const profile = join(temp, "work", "ticket-browser-profile");
+  await mkdir(root, { recursive: true });
+  const firstPath = await project(root, "first", "#!/bin/bash\necho '{\"kind\":\"runtime\",\"stage\":\"running\"}'\nsleep 30\n");
+  const secondPath = await project(root, "second", "#!/bin/bash\nexit 0\n");
+  const manager = createTicketRunManager({ programCreateDir: root, ticketBrowserProfileDir: profile, shellPath: "/bin/bash" });
+  try {
+    const first = await manager.start({ project_path: firstPath });
+    await assert.rejects(() => manager.start({ project_path: secondPath }), /อีกงานกำลังใช้ browser session/);
+    await manager.stop(first.run.id);
+  } finally {
+    await manager.stopAll();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("beta21 source wires local runtime endpoints, UI polling, handoff input and truthful fixture wording", async () => {
   const server = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
   const client = await readFile(new URL("../lib/tool-client.ts", import.meta.url), "utf8");
@@ -166,5 +184,5 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);
-  assert.equal(pkg.version, "1.1.0-beta.23");
+  assert.equal(pkg.version, "1.1.0-beta.24");
 });

@@ -2,7 +2,8 @@ import { domainAllowed } from "@/lib/policy.js";
 import { getSettings } from "@/lib/settings-store";
 import { executeTool, getTicketRun, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult } from "@/lib/tool-client"; // alpha-beta21-ticket-runtime-v1
 import { AppSettings } from "@/lib/types";
-import { loadTicketScheduleCache, saveTicketScheduleCache, TicketScheduleCacheRecord } from "@/lib/ticket-event-cache";
+import { loadTicketScheduleCache, saveTicketScheduleCache } from "@/lib/ticket-event-cache";
+import { evaluateTicketPreflight, extractTicketPageFacts } from "@/lib/ticket-workflow.js";
 
 type TicketAction = "inspect" | "inspect_form" | "build" | "run" | "run_status" | "run_input" | "run_stop";
 type TicketSaleStatus = "open" | "upcoming" | "sold_out" | "closed" | "ended" | "cancelled" | "unknown";
@@ -239,11 +240,14 @@ function parseSkillOutput(result: ToolExecutionResult): Record<string, unknown> 
   return {};
 }
 
-function publicInspectionFallback(url: string): string {
+function publicInspectionFallback(url: string, mode: "events" | "form"): string {
   const parsed = new URL(url);
   if (!new Set(["www.thaiticketmajor.com", "thaiticketmajor.com"]).has(parsed.hostname.toLowerCase())) return "";
+  // The booking host does not mirror /concert/* detail pages. Retrying a
+  // rejected detail URL there only creates a second denied navigation.
+  if (mode !== "events" || !["/", "/index.html"].includes(parsed.pathname)) return "";
   parsed.hostname = "booking.thaiticketmajor.com";
-  if (["/", "/index.html"].includes(parsed.pathname)) parsed.pathname = "/index.php";
+  parsed.pathname = "/index.php";
   return parsed.toString();
 }
 
@@ -258,18 +262,27 @@ const inspectionFlights = new Map<string, { expires_at: number; promise: Promise
 
 async function inspectPageOnce(url: string, settings: AppSettings, mode: "events" | "form"): Promise<TicketInspectionResult> {
   const inspectAction = mode === "events" ? "inspect_events" : "inspect_form";
+  // ThaiTicketMajor's public marketing host rejects automated Chrome before
+  // any page data is available. Its official booking index exposes the same
+  // event listing, so select that transport up front instead of first showing
+  // the user a raw Access Denied page and only then retrying.
+  let inspectionUrl = publicInspectionFallback(url, mode) || url;
+  let usedPublicFallback = inspectionUrl !== url;
+  if (usedPublicFallback) assertInternetAndDomain(inspectionUrl, settings);
   // Passive discovery owns one reusable background page. Opening a new page on
   // every click caused parallel navigations and avoidable CDN Access Denied.
-  await executeTool("browser_action", { action: "open", url, fresh_page: false, public_inspection: true }, settings);
-  let result = await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
-  let inspectionUrl = url;
-  let usedPublicFallback = false;
-  if (inspectionBlocked(result)) {
-    const fallback = publicInspectionFallback(url);
+  const opened = await executeTool("browser_action", { action: "open", url: inspectionUrl, fresh_page: false, public_inspection: true }, settings);
+  let result = inspectionBlocked(opened)
+    ? opened
+    : await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
+  if (inspectionBlocked(result) && !usedPublicFallback) {
+    const fallback = publicInspectionFallback(url, mode);
     if (!fallback || fallback === url) throw new Error(`หน้า public ถูกเว็บไซต์ปฏิเสธ (${asText(result.block_reason, 500) || "Access Denied"})`);
     assertInternetAndDomain(fallback, settings);
-    await executeTool("browser_action", { action: "open", url: fallback, fresh_page: false, public_inspection: true }, settings);
-    result = await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
+    const fallbackOpened = await executeTool("browser_action", { action: "open", url: fallback, fresh_page: false, public_inspection: true }, settings);
+    result = inspectionBlocked(fallbackOpened)
+      ? fallbackOpened
+      : await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
     inspectionUrl = fallback;
     usedPublicFallback = true;
   }
@@ -284,13 +297,40 @@ async function inspectPage(url: string, settings: AppSettings, mode: "events" | 
   if (current && current.expires_at > Date.now()) return current.promise;
 
   const promise = inspectPageOnce(url, settings, mode);
-  inspectionFlights.set(key, { expires_at: Date.now() + 15_000, promise });
+  // Repeated UI clicks reuse the same completed navigation briefly. This is a
+  // request coalescer, not long-term event data; announced schedules live in D1.
+  inspectionFlights.set(key, { expires_at: Date.now() + (mode === "events" ? 120_000 : 60_000), promise });
   try {
     return await promise;
   } catch (error) {
     inspectionFlights.delete(key);
     throw error;
   }
+}
+
+async function inspectPublicDetailText(url: string, settings: AppSettings): Promise<TicketInspectionResult> {
+  const read = await executeTool("web_read", { url }, settings);
+  const content = asText(read.content, 60_000);
+  if (read.ok === false || !content) throw new Error(asText(read.error, 500) || "ตัวอ่าน HTML ไม่พบเนื้อหาหน้าเว็บ");
+  const finalUrl = asText(read.url, 2_000) || url;
+  const title = asText(read.title, 500);
+  const facts = extractTicketPageFacts({ url: finalUrl, title, body_text: content, controls: [] }) as Record<string, unknown>;
+  const preflight = evaluateTicketPreflight(facts) as Record<string, unknown>;
+  return Object.assign({}, read, {
+    requested_url: url,
+    inspection_url: finalUrl,
+    used_public_fallback: false,
+    inspection_transport: "direct_web_read",
+    controls: [],
+    candidates: {},
+    ambiguous_roles: [],
+    facts,
+    functional_preflight: {
+      ...preflight,
+      runtime_discovery_required: preflight.purchase_controls_ready !== true,
+      inspection_transport: "direct_web_read",
+    },
+  });
 }
 
 export async function POST(request: Request) {
@@ -330,104 +370,49 @@ export async function POST(request: Request) {
     if (action === "inspect") {
       const url = publicHttpUrl(body.url);
       assertInternetAndDomain(url, settings);
-      await executeTool("browser_action", { action: "reset_public_inspection", public_inspection: true }, settings);
-      const inspected = await inspectPage(url, settings, "events", true);
+      const inspected = await inspectPage(url, settings, "events");
       const listedEvents = normalizedEvents(inspected);
       const oldCache = await loadTicketScheduleCache(url);
-      const cacheUpdates: TicketScheduleCacheRecord[] = [];
       let freshScheduleCount = 0;
       let cachedScheduleCount = 0;
       const events: TicketEvent[] = [];
-      for (let eventIndex = 0; eventIndex < listedEvents.length; eventIndex += 1) {
-        const event = listedEvents[eventIndex];
-        if (!event.selectable || !["open", "upcoming"].includes(event.sale_status || "unknown")) {
-          events.push(event);
+      // alpha-beta24-access-denied-v1: Discover performs exactly one public
+      // navigation. Detail pages are loaded only after the user selects one
+      // event; cached announced dates are merged without touching the network.
+      for (const event of listedEvents) {
+        const cached = oldCache.get(event.id);
+        if (!cached) {
+          if (event.start_date || event.sale_open_at) freshScheduleCount += 1;
+          events.push({ ...event, schedule_status: event.start_date || event.sale_open_at ? "fresh" : "unavailable" });
           continue;
         }
-        try {
-          const detail = await inspectPage(event.url, settings, "form", true);
-          const facts = detail.facts && typeof detail.facts === "object" && !Array.isArray(detail.facts) ? detail.facts as Record<string, unknown> : {};
-          const showDates = Array.isArray(facts.show_dates) ? facts.show_dates.filter((item): item is { raw?: string; iso?: string } => Boolean(item && typeof item === "object")).slice(0, 30) : [];
-          const performanceOptions = safePerformanceOptions(facts.performance_options).slice(0, 30);
-          const checkedAt = Date.now();
-          const detailSaleAt = Date.parse(asText(facts.sale_open_at, 200));
-          const factsStatus = asText(facts.sale_status, 30) as TicketSaleStatus;
-          const detailStatus: TicketSaleStatus = Number.isFinite(detailSaleAt) && detailSaleAt > Date.now()
-            ? "upcoming"
-            : new Set<TicketSaleStatus>(["open", "upcoming", "sold_out", "closed", "ended", "cancelled"]).has(factsStatus) ? factsStatus : event.sale_status || "unknown";
-          const physicalOptions = performanceOptions.filter((option) => !option.product_type || option.product_type === "in_person");
-          const physicalSoldOut = physicalOptions.length > 0 && physicalOptions.every((option) => ["sold_out", "closed"].includes(option.status));
-          const enriched: TicketEvent = {
-            ...event,
-            show_dates: showDates,
-            performance_options: performanceOptions,
-            sale_open_at: asText(facts.sale_open_at, 200) || event.sale_open_at,
-            sale_status: physicalSoldOut ? "sold_out" : detailStatus,
-            selectable: !physicalSoldOut && ["open", "upcoming"].includes(detailStatus),
-            inventory_status: physicalSoldOut ? "sold_out" : physicalOptions.some((option) => option.status === "open") ? "available" : "not_checked",
-            inventory_evidence: physicalSoldOut ? "all_announced_in_person_performances_sold_out" : "announced_performance_rows_only",
-            queue_open_at: asText(facts.queue_open_at, 200),
-            schedule_checked_at: checkedAt,
-            schedule_status: "fresh",
-            cached_inspection: {
-              page: { url: asText(detail.url, 2_000), title: asText(detail.title, 500), requested_url: event.url, inspection_url: asText(detail.inspection_url, 2_000), used_public_fallback: detail.used_public_fallback === true },
-              candidates: detail.candidates && typeof detail.candidates === "object" ? detail.candidates : {},
-              ambiguous_roles: Array.isArray(detail.ambiguous_roles) ? detail.ambiguous_roles : [],
-              facts,
-              functional_preflight: detail.functional_preflight && typeof detail.functional_preflight === "object" ? detail.functional_preflight : {},
-              api_calls: [],
-            },
-          };
-          events.push(enriched);
-          freshScheduleCount += 1;
-          cacheUpdates.push({
-            source_url: url, event_id: event.id, event_name: event.name, event_url: event.url,
-            show_dates: showDates,
-            performance_options: performanceOptions.map(({ schedule, label, context_text, product_name, product_type, status, selectable }) => ({ schedule, label, context_text, product_name, product_type, status, selectable })),
-            sale_open_at: enriched.sale_open_at || "", queue_open_at: enriched.queue_open_at || "", updated_at: checkedAt,
-          });
-        } catch {
-          const cached = oldCache.get(event.id);
-          if (!cached) {
-            events.push({ ...event, schedule_status: "unavailable" });
-          } else {
-            cachedScheduleCount += 1;
-            const cachedPerformanceOptions = safePerformanceOptions(cached.performance_options);
-            const cachedPhysicalOptions = cachedPerformanceOptions.filter((option) => !option.product_type || option.product_type === "in_person");
-            const cachedPhysicalSoldOut = cachedPhysicalOptions.length > 0 && cachedPhysicalOptions.every((option) => ["sold_out", "closed"].includes(option.status));
-            const cachedSaleAt = Date.parse(cached.sale_open_at);
-            const cachedStatus: TicketSaleStatus = cachedPhysicalSoldOut ? "sold_out"
-              : Number.isFinite(cachedSaleAt) && cachedSaleAt > Date.now() ? "upcoming"
-                : event.sale_status || "unknown";
-            events.push({
-              ...event,
-              show_dates: cached.show_dates,
-              performance_options: cachedPerformanceOptions,
-              sale_open_at: cached.sale_open_at || event.sale_open_at,
-              sale_status: cachedStatus,
-              selectable: ["open", "upcoming"].includes(cachedStatus),
-              inventory_status: cachedPhysicalSoldOut ? "sold_out" : cachedPhysicalOptions.some((option) => option.status === "open") ? "available" : "not_checked",
-              inventory_evidence: cachedPhysicalSoldOut ? "all_cached_in_person_performances_sold_out" : "cached_announced_performance_rows_only",
-              queue_open_at: cached.queue_open_at,
-              schedule_checked_at: cached.updated_at,
-              schedule_status: "cached",
-              cached_inspection: {
-                page: { requested_url: event.url, inspection_url: event.url }, candidates: {}, ambiguous_roles: [], api_calls: [],
-                facts: { event_name: event.name, event_url: event.url, show_dates: cached.show_dates, performance_options: cachedPerformanceOptions, sale_open_at: cached.sale_open_at, queue_open_at: cached.queue_open_at, sale_status: cachedStatus, evidence: [{ field: "schedule_cache", text: "cached announced dates", source: "ticket_event_schedule_cache" }] },
-                functional_preflight: { public_page_verified: false, runtime_discovery_required: true, can_build: ["open", "upcoming"].includes(cachedStatus), workflow_state: cachedStatus === "upcoming" ? "pre_sale" : cachedStatus === "sold_out" ? "sold_out" : "runtime_discovery" },
-              },
-            });
-          }
-        }
-        // Inspecting every detail page in one tight burst causes the public
-        // CDN to reject otherwise normal browser navigation. Keep one page and
-        // a modest human-scale interval; this pass runs only when Discover is
-        // explicitly pressed and the announced schedules are cached.
-        if (eventIndex < listedEvents.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 900));
-        }
+        cachedScheduleCount += 1;
+        const cachedPerformanceOptions = safePerformanceOptions(cached.performance_options);
+        const cachedPhysicalOptions = cachedPerformanceOptions.filter((option) => !option.product_type || option.product_type === "in_person");
+        const cachedPhysicalSoldOut = cachedPhysicalOptions.length > 0 && cachedPhysicalOptions.every((option) => ["sold_out", "closed"].includes(option.status));
+        const cachedSaleAt = Date.parse(cached.sale_open_at);
+        const cachedStatus: TicketSaleStatus = cachedPhysicalSoldOut ? "sold_out"
+          : Number.isFinite(cachedSaleAt) && cachedSaleAt > Date.now() ? "upcoming"
+            : event.sale_status || "unknown";
+        events.push({
+          ...event,
+          show_dates: cached.show_dates,
+          performance_options: cachedPerformanceOptions,
+          sale_open_at: cached.sale_open_at || event.sale_open_at,
+          sale_status: cachedStatus,
+          selectable: ["open", "upcoming"].includes(cachedStatus),
+          inventory_status: cachedPhysicalSoldOut ? "sold_out" : cachedPhysicalOptions.some((option) => option.status === "open") ? "available" : "not_checked",
+          inventory_evidence: cachedPhysicalSoldOut ? "all_cached_in_person_performances_sold_out" : "cached_announced_performance_rows_only",
+          queue_open_at: cached.queue_open_at,
+          schedule_checked_at: cached.updated_at,
+          schedule_status: "cached",
+          cached_inspection: {
+            page: { requested_url: event.url, inspection_url: event.url }, candidates: {}, ambiguous_roles: [], api_calls: [],
+            facts: { event_name: event.name, event_url: event.url, show_dates: cached.show_dates, performance_options: cachedPerformanceOptions, sale_open_at: cached.sale_open_at, queue_open_at: cached.queue_open_at, sale_status: cachedStatus, evidence: [{ field: "schedule_cache", text: "cached announced dates", source: "ticket_event_schedule_cache" }] },
+            functional_preflight: { public_page_verified: false, runtime_discovery_required: true, can_build: ["open", "upcoming"].includes(cachedStatus), workflow_state: cachedStatus === "upcoming" ? "pre_sale" : cachedStatus === "sold_out" ? "sold_out" : "runtime_discovery" },
+          },
+        });
       }
-      await saveTicketScheduleCache(cacheUpdates);
       const counts = events.reduce((result, event) => {
         const status = event.sale_status || "unknown";
         result[status] = (result[status] || 0) + 1;
@@ -435,7 +420,7 @@ export async function POST(request: Request) {
       }, {} as Record<string, number>);
       const unavailableCount = events.filter((event) => event.selectable === false).length;
       const inventoryCheckedCount = events.filter((event) => ["available", "sold_out"].includes(event.inventory_status || "not_checked")).length;
-      const fallbackNote = inspected.used_public_fallback === true ? " · ใช้หน้ารวม official สำรองเพราะหน้าแรกตอบ Access Denied" : "";
+      const fallbackNote = inspected.used_public_fallback === true ? " · ใช้หน้ารวม official สำรองเพื่อหลีกเลี่ยง Access Denied" : "";
       return Response.json({
         ok: true,
         stage: "events_inspected",
@@ -445,7 +430,7 @@ export async function POST(request: Request) {
         excluded_count: unavailableCount,
         inventory: { scope: "listing_only", checked_count: inventoryCheckedCount, requires_login_for_live_stock: true },
         schedule_cache: { fresh_count: freshScheduleCount, cached_fallback_count: cachedScheduleCount, inventory_stored: false },
-        message: events.length ? `ตรวจวันแสดงใหม่ ${freshScheduleCount} งาน · ใช้ข้อมูลเดิมเพราะเว็บปฏิเสธชั่วคราว ${cachedScheduleCount} งาน · เปิดช่วงขาย ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · พบป้าย SOLD OUT ${counts.sold_out || 0} · ปิดขาย ${counts.closed || 0} · งานจบแล้ว ${counts.ended || 0} · ยกเลิก ${counts.cancelled || 0} · ยังยืนยันไม่ได้ ${counts.unknown || 0} · ไม่เก็บจำนวนบัตรหรือสถานะที่นั่ง${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
+        message: events.length ? `ตรวจหน้ารวม 1 ครั้ง · มีวัน/ช่วงขายจากหน้ารวม ${freshScheduleCount} งาน · ใช้วันแสดงที่เคยตรวจไว้ ${cachedScheduleCount} งาน · รายละเอียดจะตรวจเฉพาะคอนที่เลือก · เปิดช่วงขาย ${counts.open || 0} · กำลังจะเปิด ${counts.upcoming || 0} · พบป้าย SOLD OUT ${counts.sold_out || 0} · ปิดขาย ${counts.closed || 0} · งานจบแล้ว ${counts.ended || 0} · ยกเลิก ${counts.cancelled || 0} · ยังยืนยันไม่ได้ ${counts.unknown || 0} · ไม่เก็บจำนวนบัตรหรือสถานะที่นั่ง${fallbackNote}` : `ไม่พบรายการคอนเสิร์ตจากหน้านี้${fallbackNote}`,
       });
     }
 
@@ -455,13 +440,20 @@ export async function POST(request: Request) {
       let inspected: TicketInspectionResult | null = null;
       let inspectionWarning = "";
       try {
-        // A selected event is one explicit browser navigation. Give it a clean
-        // isolated profile instead of reusing a listing scan that the CDN may
-        // already have rejected.
-        await executeTool("browser_action", { action: "reset_public_inspection", public_inspection: true }, settings);
-        inspected = await inspectPage(url, settings, "form", true);
+        // Public detail pages are text-first. Direct HTML reading gets dates,
+        // prices and sale status without opening an automated Chrome window
+        // that strict CDNs may reject. The live bot still uses Chrome when it
+        // actually needs interactive controls.
+        inspected = await inspectPublicDetailText(url, settings);
       } catch (error) {
-        inspectionWarning = error instanceof Error ? error.message : "หน้าเว็บไม่อนุญาตให้ตรวจแบบ passive";
+        inspectionWarning = error instanceof Error ? error.message : "ตัวอ่าน HTML ไม่พร้อม";
+        try {
+          inspected = await inspectPage(url, settings, "form");
+          Object.assign(inspected, { inspection_transport: "browser" });
+        } catch (browserError) {
+          const detail = browserError instanceof Error ? browserError.message : "หน้าเว็บไม่อนุญาตให้ตรวจแบบ passive";
+          inspectionWarning = inspectionWarning ? `${inspectionWarning} · ${detail}` : detail;
+        }
       }
       if (!inspected) {
         return Response.json({
@@ -493,9 +485,9 @@ export async function POST(request: Request) {
       }
       let apiCalls: Array<Record<string, unknown>> = [];
       let apiWarning = "";
-      if (body.discover_api === true && settings.browser_mode === "alpha") {
+      if (body.discover_api === true && settings.browser_mode === "alpha" && inspected.inspection_transport === "browser") {
         try {
-          const discovered = await executeTool("api_discovery", { action: "discover", url, observe_seconds: 3, public_inspection: true }, settings);
+          const discovered = await executeTool("api_discovery", { action: "observe_existing", url, public_inspection: true }, settings);
           apiCalls = safeApiEvidence(discovered.api_calls);
         } catch (error) {
           apiWarning = error instanceof Error ? error.message : "ตรวจ API แบบ passive ไม่สำเร็จ";
@@ -522,7 +514,7 @@ export async function POST(request: Request) {
       return Response.json({
         ok: true,
         stage: "form_inspected",
-        page: { url: asText(inspected.url, 2_000), title: asText(inspected.title, 500), requested_url: url, inspection_url: asText(inspected.inspection_url, 2_000), used_public_fallback: inspected.used_public_fallback === true },
+        page: { url: asText(inspected.url, 2_000), title: asText(inspected.title, 500), requested_url: url, inspection_url: asText(inspected.inspection_url, 2_000), used_public_fallback: inspected.used_public_fallback === true, inspection_transport: asText(inspected.inspection_transport, 50) || "browser" },
         controls: Array.isArray(inspected.controls) ? inspected.controls.slice(0, 300) : [],
         candidates: inspected.candidates && typeof inspected.candidates === "object" ? inspected.candidates : {},
         ambiguous_roles: Array.isArray(inspected.ambiguous_roles) ? inspected.ambiguous_roles.slice(0, 30) : [],
@@ -564,7 +556,7 @@ export async function POST(request: Request) {
       let inspectionWarning = "";
       if (!hasCachedScheduleEvidence) {
         try {
-          const liveInspection = await inspectPage(selected.url, settings, "form");
+          const liveInspection = await inspectPublicDetailText(selected.url, settings);
           if (liveInspection.facts && typeof liveInspection.facts === "object" && !Array.isArray(liveInspection.facts)) eventFacts = liveInspection.facts as Record<string, unknown>;
           if (liveInspection.functional_preflight && typeof liveInspection.functional_preflight === "object" && !Array.isArray(liveInspection.functional_preflight)) functionalPreflight = liveInspection.functional_preflight as Record<string, unknown>;
         } catch (error) {

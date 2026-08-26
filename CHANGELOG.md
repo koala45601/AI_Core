@@ -1,5 +1,18 @@
 # Alpha changelog
 
+## 1.1.0-beta.24 — 2026-08-26
+
+- Ticket discovery now performs one listing navigation instead of immediately opening every event detail page.
+- Event details are inspected only after selection and repeated clicks reuse an in-flight result for a short cooldown.
+- Public inspection and live Ticket Bot runs use separate persistent browser profiles instead of disposable profiles on every run.
+- Passive API evidence is read from the already-open page; selecting an event no longer opens a second page or sends automatic OPTIONS probes.
+- Only one live Ticket Bot may own the persistent ticket session at a time, preventing competing windows and duplicate runs.
+- Invalid booking-host fallbacks for `/concert/*` pages were removed, so one rejected page no longer produces another rejected tab.
+- macOS Chrome now keeps its native sandbox and drops Playwright's automation banner flags; a denied public page is closed immediately and returned as a structured server denial instead of being left as an apparent successful inspection.
+- ThaiTicketMajor's official booking index is selected before listing inspection, avoiding a known denied marketing-host navigation instead of failing first and retrying afterward.
+- Public event details now use the direct HTML reader for dates, venue, prices and sale status, so selecting or rechecking KITA does not open an automated Chrome tab.
+- Explicit `Ticket Status SOLD OUT` is classified separately from a generally closed sale; live checks now distinguish open, upcoming, sold-out and closed official pages.
+
 ## 1.1.0-beta.23 — 2026-08-25
 
 - “ตรวจคอนเสิร์ต” refreshes each open/upcoming event once, stores announced show dates plus queue/sale times in D1, and reuses that session cache until the user explicitly refreshes again.

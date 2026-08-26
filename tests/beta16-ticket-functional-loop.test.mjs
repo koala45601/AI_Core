@@ -43,6 +43,33 @@ test("public KITA-style page yields an evidence-backed pre-sale state", () => {
   assert.equal(preflight.can_build, true);
 });
 
+test("direct HTML reader text keeps KITA dates and status even when block tags were flattened", () => {
+  const facts = extractTicketPageFacts({
+    url: "https://www.thaiticketmajor.com/concert/concert-miss-kita-by-phusit-laithong.html",
+    title: "Official Ticket | คอนเสิร์ต คิดถึง KITA โดย ภูษิต ไล้ทอง",
+    body_text: "เมนู คอนเสิร์ต วันที่แสดง วันเสาร์ที่ 31 ตุลาคม 2569 สถานที่แสดง SiamPic Hall ชั้น 7, สยามสแควร์วัน ประตูเปิด ก่อนการแสดง วันเปิดจำหน่าย วันเสาร์ที่ 29 สิงหาคม 2569, 10:00 น. ราคาบัตร 4,500 / 3,900 / 3,200 / 2,500 / 1,800 / 1,200 บาท Ticket Status COMING SOON แชร์",
+    controls: [],
+  });
+  assert.equal(facts.show_dates[0].iso, "2026-10-31T00:00:00+07:00");
+  assert.equal(facts.sale_open_at, "2026-08-29T10:00:00+07:00");
+  assert.equal(facts.sale_status, "upcoming");
+  assert.equal(facts.venue, "SiamPic Hall ชั้น 7, สยามสแควร์วัน");
+  assert.deepEqual(facts.prices, [4500, 3900, 3200, 2500, 1800, 1200]);
+  assert.equal(evaluateTicketPreflight(facts).workflow_state, "pre_sale");
+});
+
+test("explicit Ticket Status SOLD OUT is not collapsed into generic closed", () => {
+  const facts = extractTicketPageFacts({
+    url: "https://www.thaiticketmajor.com/concert/gotcha-pop-3-concert.html",
+    title: "Official Ticket | GOTCHA POP 3 Concert",
+    body_text: "วันที่แสดง วันเสาร์ที่ 24 พฤษภาคม 2568 สถานที่แสดง Exhibition Hall 3-4 วันเปิดจำหน่าย วันเสาร์ที่ 1 มีนาคม 2568, 10:00 น. ราคาบัตร 4,000 / 3,500 / 3,000 บาท Ticket Status SOLD OUT โปรโมชั่น & ส่วนลด",
+    controls: [],
+  });
+  assert.equal(facts.sale_status, "sold_out");
+  assert.equal(facts.ticket_status, "sold_out");
+  assert.equal(evaluateTicketPreflight(facts).workflow_state, "sold_out");
+});
+
 test("sale opening within 30 minutes is armed but a later sale stays pre-sale", () => {
   const common = {
     event_url: "https://tickets.test/event",
@@ -122,6 +149,57 @@ test("mixed physical, streaming and sold-out rounds keep product and per-round s
   assert.equal(facts.ticket_status, "mixed_availability");
 });
 
+test("four acceptance fixtures classify open, upcoming, closed and sold-out without guessing inventory", () => {
+  const common = {
+    url: "https://tickets.test/concert/status-case.html",
+    title: "Status Fixture Concert",
+  };
+  const cases = [
+    {
+      expected: ["open", "available", "sale_entry"],
+      snapshot: {
+        ...common,
+        body_text: "วันที่แสดง\n24 ตุลาคม 2569\nวันเปิดจำหน่าย\n25 สิงหาคม 2569, 12:00 น.\nTicket Status\nON SALE NOW",
+        controls: [{ label: "19:00 ซื้อบัตร", semantic_role: "schedule", selector: "[data-button='open']", context_text: "24 ตุลาคม 2569 19:00 ซื้อบัตร" }],
+      },
+    },
+    {
+      expected: ["upcoming", "coming_soon", "pre_sale"],
+      snapshot: {
+        ...common,
+        body_text: "วันที่แสดง\n31 ตุลาคม 2569\nวันเปิดจำหน่าย\n29 สิงหาคม 2569, 10:00 น.\nTicket Status\nCOMING SOON",
+        controls: [],
+      },
+    },
+    {
+      expected: ["closed", "closed", "closed"],
+      snapshot: {
+        ...common,
+        body_text: "วันที่แสดง\n1 มกราคม 2569\nวันเปิดจำหน่าย\n1 ธันวาคม 2568, 10:00 น.\nTicket Status\nCLOSED",
+        controls: [],
+      },
+    },
+    {
+      expected: ["sold_out", "sold_out", "sold_out"],
+      snapshot: {
+        ...common,
+        body_text: "วันที่แสดง\n5 กันยายน 2569\nวันเปิดจำหน่าย\n1 กรกฎาคม 2569, 10:00 น.\nTicket Status\nON SALE NOW",
+        announced_performances: [
+          { label: "18:00 Sold out", context_text: "วันเสาร์ที่ 5 กันยายน 2569 18:00 Sold out", product_name: "ARENA", product_type: "in_person", status: "sold_out", selectable: false },
+          { label: "20:00 Sold out", context_text: "วันอาทิตย์ที่ 6 กันยายน 2569 20:00 Sold out", product_name: "ARENA", product_type: "in_person", status: "sold_out", selectable: false },
+        ],
+        controls: [],
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const facts = extractTicketPageFacts(item.snapshot);
+    const preflight = evaluateTicketPreflight(facts);
+    assert.deepEqual([facts.sale_status, facts.ticket_status, preflight.workflow_state], item.expected);
+  }
+});
+
 test("an enabled buy control does not require the legacy row-enable class", async () => {
   const source = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /!row\.classList\.contains\("row-enable"\)/);
@@ -186,7 +264,8 @@ test("Ticket Studio exposes explicit multi-seat grouping preferences", async () 
 
 test("Ticket Bot API re-inspects live facts and requires fixture verification", async () => {
   const route = await source("app/api/ticket-bot/route.ts");
-  assert.match(route, /const liveInspection = await inspectPage\(selected\.url, settings, "form"\)/);
+  assert.match(route, /const liveInspection = await inspectPublicDetailText\(selected\.url, settings\)/);
+  assert.match(route, /executeTool\("web_read", \{ url \}, settings\)/);
   assert.match(route, /functionalPreflight\.public_page_verified !== true/);
   assert.match(route, /fixture_tests_passed/);
   assert.match(route, /queue_fixture_verified/);
@@ -211,6 +290,6 @@ test("launcher waits for the real web health endpoint before reporting ready", a
   const launcher = await source("start-alpha-v11.command");
   assert.match(launcher, /WEB_READY=false/);
   assert.match(launcher, /http:\/\/localhost:3000\/api\/health/);
-  assert.match(launcher, /"app_version":"1\.1\.0-beta\.23"/);
+  assert.match(launcher, /"app_version":"1\.1\.0-beta\.24"/);
   assert.match(launcher, /หน้าเว็บ Alpha เปิดไม่สำเร็จ/);
 });
