@@ -101,8 +101,8 @@ export OLLAMA_HOST="$ALPHA_OLLAMA_HOST"
 export OLLAMA_MODELS="$ALPHA_OLLAMA_MODELS_DIR"
 if curl -fsS "$ALPHA_OLLAMA_URL/api/tags" >/dev/null 2>&1; then
   if [[ -n "$ALPHA_OLLAMA_BIN" ]]; then
-    "$ALPHA_OLLAMA_BIN" stop qwen3:4b-instruct >/dev/null 2>&1 || true
     "$ALPHA_OLLAMA_BIN" stop qwen3.5:9b >/dev/null 2>&1 || true
+    "$ALPHA_OLLAMA_BIN" stop qwen3:4b-instruct >/dev/null 2>&1 || true
   fi
 fi
 

@@ -165,5 +165,5 @@ if [[ "$WEB_READY" != true ]]; then
   exit 1
 fi
 
-echo "Alpha v1.1.0-beta.23 พร้อม: Create Video Phase 1 เพิ่ม Project Storage · AI Director · Character/Location Registry · Continuity · Shot Planner; ยังไม่ติดตั้ง Video Model อัตโนมัติ"
+echo "Alpha v1.1.0-beta.23 พร้อม: Create Video Phase 1 และ Ticket Bot Full Loop พร้อม Browser/action timeline; Fixture หรือ inspect-only ไม่ถูกนับเป็น Full Loop"
 open "http://localhost:3000" >/dev/null 2>&1 || true

@@ -99,15 +99,37 @@ test("Ticket Run Manager stops only its owned process group", async () => {
   }
 });
 
+test("Ticket Run Manager never treats a zero-exit inspection as Full Loop success", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-not-verified-"));
+  const root = join(temp, "Program_Create");
+  await mkdir(root);
+  const path = await project(root, "inspection-only", `#!/bin/bash\necho '{"kind":"result","status":"INSPECTION_ONLY_NOT_FULL_LOOP","reason":"ตรวจเฉพาะหน้าแรก","live_checkout_verified":false}'\nexit 0\n`);
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
+  try {
+    const started = await manager.start({ project_path: path });
+    const ended = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.status === "not_verified" ? run : null;
+    });
+    assert.equal(ended.full_loop_verified, false);
+    assert.equal(ended.payment_handoff_verified, false);
+    assert.equal(ended.stage, "inspection_only_not_full_loop");
+    assert.match(ended.detail, /ยังไม่ผ่าน Full Loop/);
+  } finally {
+    await manager.stopAll();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("Ticket Run Manager rejects stale generators and reuses one active process for repeated Run clicks", async () => {
   const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-version-"));
   const root = join(temp, "Program_Create");
   await mkdir(root);
   const path = await project(root, "versioned", "#!/bin/bash\necho '{\"kind\":\"runtime\",\"stage\":\"running\"}'\nsleep 30\n");
-  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: "1.1.0-beta.22" });
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: "1.1.0-beta.23" });
   try {
     await assert.rejects(() => manager.start({ project_path: path }), /เวอร์ชันเก่า|สร้างใหม่/);
-    await writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: "1.1.0-beta.22" }), "utf8");
+    await writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: "1.1.0-beta.23" }), "utf8");
     const first = await manager.start({ project_path: path });
     const second = await manager.start({ project_path: path });
     assert.equal(second.reused, true);
@@ -138,8 +160,8 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(page, /สร้างและเริ่มบอท/);
   assert.match(page, /Live Ticket Run/);
   assert.match(page, /window\.setInterval\(\(\) => void poll\(\), 1_000\)/);
-  assert.match(page, /ยังไม่ถือว่า Full Loop ผ่านจนมี runtime evidence/);
+  assert.match(page, /ผ่านเฉพาะโครงสร้างและ fixture — ยังไม่ใช่ผลซื้อบัตรจริง/);
   assert.match(template, /record\("input_required"/);
   assert.match(template, /"field": "captcha" if state == "captcha_handoff" else "otp"/);
-  assert.equal(pkg.version, "1.1.0-beta.22");
+  assert.equal(pkg.version, "1.1.0-beta.23");
 });

@@ -10,9 +10,10 @@ const execFileAsync = promisify(execFile);
 const root = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, root), "utf8");
 
-test("selected open or upcoming event can build without mandatory detail inspection or budget", async () => {
+test("selected open or upcoming event auto-inspects but can still build when public detail is unavailable", async () => {
   const [page, route] = await Promise.all([source("app/page.tsx"), source("app/api/ticket-bot/route.ts")]);
-  assert.match(page, /ตรวจรายละเอียดเพิ่ม \(ไม่บังคับ\)/);
+  assert.match(page, /void inspectSelectedTicketEvent\(event\)/);
+  assert.match(page, /ตรวจรายละเอียดอีกครั้ง/);
   assert.match(page, /งบสูงสุดรวม \(ไม่บังคับ\)/);
   assert.match(page, /0 = ไม่จำกัดงบ/);
   assert.match(page, /สร้างบอท — ค้นข้อมูลจริงตอนรัน/);
@@ -46,13 +47,14 @@ test("status filters stay visible even when a source returns zero sold-out recor
   assert.ok(unavailableResponse > unavailableDeclaration, "unavailableCount must be declared before it is returned");
 });
 
-test("public inspection uses a headless profile and closes passive API pages", async () => {
+test("public inspection uses an isolated normal browser and cleans its temporary profile", async () => {
   const [route, service] = await Promise.all([source("app/api/ticket-bot/route.ts"), source("tool-service/server.mjs")]);
   assert.match(route, /inspectAction, public_inspection: true/);
   assert.match(route, /observe_seconds: 3, public_inspection: true/);
   assert.match(service, /ensurePublicInspectionBrowser/);
-  assert.match(service, /headless: true/);
-  assert.match(service, /await page\.close\(\)\.catch/);
+  assert.match(service, /headless: false/);
+  assert.match(service, /alpha-public-inspection-/);
+  assert.match(service, /fs\.rm\(profile, \{ recursive: true, force: true \}\)/);
 });
 
 test("runtime-adaptive project is generated when public detail facts are unavailable", async () => {

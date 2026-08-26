@@ -17,13 +17,13 @@ function run(command, args, options = {}) {
   });
 }
 
-test("beta22 classifier requires visible controls and keeps pre-sale runtime alive", async () => {
+test("beta23 classifier requires visible controls and keeps pre-sale runtime alive", async () => {
   const template = await readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8");
   assert.match(template, /def _actionable_text\(snapshot\):/);
   assert.match(template, /def visible_actionable_controls\(page\):/);
   assert.match(template, /def visible_seat_control_count\(page\):/);
   assert.match(template, /visible and enabled waiting-room control/);
-  assert.match(template, /visible and enabled purchase control/);
+  assert.match(template, /visible sale entry on an on-sale page/);
   assert.match(template, /waiting_for_visible_queue_or_sale_control/);
   assert.match(template, /WAITING_ROOM_CONTROL_CHANGED/);
   assert.doesNotMatch(template, /status last updated\|waiting room\|อยู่ในคิว/);
@@ -74,17 +74,18 @@ test("generated Ticket Bot rejects instructional queue text but accepts a visibl
   }
 });
 
-test("beta22 patcher stamps version and is idempotent", async () => {
+test("beta23 patcher stamps version and is idempotent", async () => {
   const patcher = await readFile(new URL("../scripts/apply-beta22-ticket-visible-evidence.mjs", import.meta.url), "utf8");
   const launcher = await readFile(new URL("../start-alpha-v11.command", import.meta.url), "utf8");
-  assert.match(patcher, /1\.1\.0-beta\.22/);
+  assert.match(patcher, /1\.1\.0-beta\.23/);
+  assert.match(patcher, /skills-index\.json/);
   assert.match(patcher, /updateInstalledTicketSkill/);
   assert.match(patcher, /concert-ticket-purchase-assistant/);
   assert.match(launcher, /apply-beta22-ticket-visible-evidence\.mjs/);
-  assert.match(launcher, /app_version\":\"1\.1\.0-beta\.22/);
+  assert.match(launcher, /app_version\":\"1\.1\.0-beta\.23/);
 });
 
-test("beta22 serializes repeated UI actions, reuses passive inspection and rejects stale projects", async () => {
+test("beta23 serializes repeated UI actions, caches announced dates and rejects stale projects", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const route = await readFile(new URL("../app/api/ticket-bot/route.ts", import.meta.url), "utf8");
   const manager = await readFile(new URL("../tool-service/ticket-run-manager.mjs", import.meta.url), "utf8");
@@ -93,13 +94,52 @@ test("beta22 serializes repeated UI actions, reuses passive inspection and rejec
 
   assert.match(page, /ticketInspectPendingRef\.current/);
   assert.match(page, /ticketRunPendingRef\.current/);
-  assert.match(page, /generator_version === "1\.1\.0-beta\.22"/);
+  assert.match(page, /generator_version === "1\.1\.0-beta\.23"/);
+  assert.match(page, /กรุณาเลือกวันแสดงก่อนเข้าคิว/);
+  assert.match(page, /normalizedTicketPerformanceOptions/);
+  assert.match(page, /product_name/);
+  assert.match(page, /disabled=\{\["sold_out", "closed"\]/);
+  assert.match(page, /ใช้วันแสดงที่ตรวจไว้ในรอบล่าสุดทันที/);
   assert.match(route, /inspectionFlights/);
+  assert.match(route, /saveTicketScheduleCache/);
+  assert.match(route, /canonicalTicketEventUrl/);
+  assert.match(route, /reset_public_inspection/);
+  assert.match(route, /safePerformanceOptions/);
+  assert.match(route, /selected_performance/);
+  assert.match(route, /all_announced_in_person_performances_sold_out/);
   assert.match(route, /fresh_page: false, public_inspection: true/);
   assert.doesNotMatch(route, /fresh_page: true, public_inspection: true/);
   assert.match(route, /stage: "runtime_discovery_required"/);
   assert.match(manager, /requiredGeneratorVersion/);
-  assert.match(server, /requiredGeneratorVersion: "1\.1\.0-beta\.22"/);
-  assert.match(template, /"generatorVersion": "1\.1\.0-beta\.22"/);
-  assert.match(template, /"generator_version": "1\.1\.0-beta\.22"/);
+  assert.match(server, /requiredGeneratorVersion: "1\.1\.0-beta\.23"/);
+  assert.match(server, /ensurePublicInspectionBrowser[\s\S]*?headless: false/);
+  assert.match(server, /alpha-public-inspection-/);
+  assert.match(template, /"generatorVersion": "1\.1\.0-beta\.23"/);
+  assert.match(template, /"generator_version": "1\.1\.0-beta\.23"/);
+  assert.match(template, /activate_selected_performance/);
+  assert.match(template, /same_queue_session/);
+});
+
+test("schedule cache is versioned so beta22 rows cannot override beta23 product status", async () => {
+  const source = await readFile(new URL("../lib/ticket-event-cache.ts", import.meta.url), "utf8");
+  assert.match(source, /CACHE_SCHEMA_VERSION = 2/);
+  assert.match(source, /schema_version = \?/);
+});
+
+test("selecting an event performs one clean detail inspection and persists its schedule", async () => {
+  const api = await readFile(new URL("../app/api/ticket-bot/route.ts", import.meta.url), "utf8");
+  const ui = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(api, /action: "reset_public_inspection"/);
+  assert.match(api, /source_url: sourceUrl/);
+  assert.match(ui, /void inspectSelectedTicketEvent\(event\)/);
+  assert.match(ui, /source_url: ticketSourceUrl/);
+});
+
+test("Ticket Studio never labels fixture-only evidence as a passed Full Loop", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /สถานะการตรวจและรันจริง/);
+  assert.match(page, /Fixture เท่านั้น/);
+  assert.match(page, /ผ่านเฉพาะโครงสร้างและ fixture — ยังไม่ใช่ผลซื้อบัตรจริง/);
+  assert.match(page, /ticketRun\?\.payment_handoff_verified \? "Full Loop ผ่าน"/);
+  assert.doesNotMatch(page, /<strong>สถานะ Full Loop<\/strong>/);
 });

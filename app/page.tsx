@@ -7,8 +7,9 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { AppSettings, ArtifactRecord, DEFAULT_SETTINGS, HealthStatus, SearchResult, SkillSummary } from "@/lib/types";
 import { ALPHA_DISPLAY_VERSION } from "@/lib/version";
+import CreateVideoStudio from "@/components/create-video-studio"; // alpha-beta23-create-video-phase1-v1
 
-type View = "chat" | "memory" | "skills" | "tickets" | "settings";
+type View = "chat" | "video" | "memory" | "skills" | "tickets" | "settings";
 type LearningTab = "memory" | "auto" | "lab";
 type SkillDetailTab = "overview" | "verification" | "runs" | "files" | "history";
 
@@ -148,10 +149,31 @@ interface TicketEventChoice {
   status_evidence?: string;
   inventory_status?: "not_checked" | "available" | "sold_out" | "unknown";
   inventory_evidence?: string;
+  show_dates?: Array<{ raw?: string; iso?: string }>;
+  performance_options?: TicketPerformanceOption[];
+  queue_open_at?: string;
+  schedule_checked_at?: number;
+  schedule_status?: "fresh" | "cached" | "unavailable";
+  cached_inspection?: TicketFormInspection;
 }
 
 type TicketSaleStatus = NonNullable<TicketEventChoice["sale_status"]>;
 type TicketStatusFilter = "all" | TicketSaleStatus;
+
+interface TicketPerformanceOption {
+  selector?: string;
+  label?: string;
+  semantic_role?: string;
+  context_text?: string;
+  schedule?: string;
+  data_button?: string;
+  target_url?: string;
+  product_name?: string;
+  product_type?: "in_person" | "live_stream" | "rerun" | string;
+  status?: "open" | "upcoming" | "sold_out" | "closed" | string;
+  selectable?: boolean;
+  announced_before_sale?: boolean;
+}
 
 interface TicketFormInspection {
   page?: { url?: string; title?: string; requested_url?: string; inspection_url?: string; used_public_fallback?: boolean };
@@ -165,13 +187,15 @@ interface TicketFormInspection {
     show_dates?: Array<{ raw?: string; iso?: string }>;
     sale_open_at?: string;
     sale_open_at_raw?: string;
+    queue_open_at?: string;
+    queue_open_at_raw?: string;
     sale_status?: string;
     ticket_status?: string;
     venue?: string;
     prices?: number[];
     purchase_controls?: Array<{ selector?: string; label?: string }>;
-    sale_entry_controls?: Array<{ selector?: string; label?: string; semantic_role?: string; context_text?: string }>;
-    performance_options?: Array<{ selector?: string; label?: string; semantic_role?: string; context_text?: string }>;
+    sale_entry_controls?: TicketPerformanceOption[];
+    performance_options?: TicketPerformanceOption[];
     zones?: string[];
     seat_rows?: string[];
     seat_map_detected?: boolean;
@@ -221,7 +245,7 @@ interface TicketRunView {
   id: string;
   project_path: string;
   pid?: number | null;
-  status: "starting_runtime" | "runtime_running" | "waiting_handoff" | "completed" | "failed" | "stopped";
+  status: "starting_runtime" | "runtime_running" | "waiting_handoff" | "completed" | "not_verified" | "failed" | "stopped";
   stage: string;
   detail?: string;
   started_at?: number;
@@ -231,6 +255,8 @@ interface TicketRunView {
   latest_url?: string;
   full_loop_verified?: boolean;
   payment_handoff_verified?: boolean;
+  result_status?: string;
+  result_reason?: string;
   handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
   logs?: Array<{ at: number; stream: string; text: string }>;
 }
@@ -268,6 +294,57 @@ const TICKET_SALE_STATUS: Record<TicketSaleStatus, { label: string; className: s
 
 function ticketSaleStatus(status: TicketEventChoice["sale_status"]) {
   return TICKET_SALE_STATUS[status || "unknown"];
+}
+
+function ticketPerformanceValue(option: TicketPerformanceOption) {
+  const schedule = String(option?.schedule || option?.context_text || option?.label || "").trim();
+  return [schedule, option?.data_button || option?.target_url || option?.product_type || "performance"].join("#");
+}
+
+function ticketPerformanceLabel(option: TicketPerformanceOption) {
+  const performance = String(option?.context_text || option?.label || option?.schedule || "")
+    .replace(/\s*(?:ซื้อบัตร|จองบัตร|buy\s*(?:now|ticket))\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const product = String(option?.product_name || "").trim();
+  const status = option?.status === "sold_out" ? "ขายหมด" : option?.status === "closed" ? "ปิดขาย" : option?.status === "upcoming" ? "ยังไม่เปิดขาย" : "เปิดขาย";
+  return `${product ? `${product} · ` : ""}${performance} · ${status}`;
+}
+
+function normalizedTicketPerformanceOptions(options?: TicketPerformanceOption[]) {
+  const source = Array.isArray(options) ? options : [];
+  const datedTimes = new Set(source.flatMap((option) => {
+    const value = ticketPerformanceValue(option);
+    const text = `${value} ${option.context_text || ""} ${option.label || ""}`;
+    const dated = /^\d{4}-\d{2}-\d{2}T/.test(value) || /\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}/.test(text);
+    return dated ? (text.match(/\b\d{1,2}:\d{2}\b/g) || []) : [];
+  }));
+  const seen = new Set<string>();
+  return source.filter((option) => {
+    const value = ticketPerformanceValue(option);
+    const text = `${value} ${option.context_text || ""} ${option.label || ""}`;
+    const time = text.match(/\b\d{1,2}:\d{2}\b/)?.[0] || "";
+    const dated = /^\d{4}-\d{2}-\d{2}T/.test(value) || /\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}/.test(text);
+    if (!dated && time && datedTimes.has(time)) return false;
+    if (!value || seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function ticketRunLogLabel(text: string) {
+  try {
+    const item = JSON.parse(text) as Record<string, unknown>;
+    const kind = String(item.kind || "");
+    if (kind === "action") return `ทำงาน: ${String(item.action || "action")}${item.label ? ` — ${String(item.label)}` : ""}`;
+    if (kind === "checkpoint") return `ตรวจหน้า: ${String(item.state || "unknown")} · ${String(item.url || "")}`;
+    if (kind === "api") return `API: ${String(item.method || "GET")} ${String(item.url || "")} → ${String(item.status || "")}`;
+    if (kind === "wait") return `กำลังรอ: ${String(item.state || "เงื่อนไขจากเว็บ")}`;
+    if (kind === "result") return `ผล: ${String(item.status || "ยังไม่ยืนยัน")}${item.reason ? ` — ${String(item.reason)}` : ""}`;
+    if (kind === "input_required") return `รอผู้ใช้: ${String(item.prompt || item.field || "ตรวจหน้า Browser")}`;
+    if (kind === "runtime") return String(item.detail || "เปิด Browser แยกแล้ว");
+  } catch { /* plain process output */ }
+  return text;
 }
 
 function automaticTicketProjectName(event?: TicketEventChoice) {
@@ -1378,8 +1455,8 @@ export default function Home() {
     }
   }
 
-  async function inspectSelectedTicketEvent() {
-    const selected = ticketEvents.find((event) => event.id === ticketSelectedId);
+  async function inspectSelectedTicketEvent(selectedOverride?: TicketEventChoice) {
+    const selected = selectedOverride ?? ticketEvents.find((event) => event.id === ticketSelectedId);
     if (!selected || ticketStage === "form_inspecting" || ticketInspectPendingRef.current) return;
     ticketInspectPendingRef.current = true;
     setTicketStage("form_inspecting");
@@ -1390,7 +1467,7 @@ export default function Home() {
       const response = await fetch("/api/ticket-bot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "inspect_form", url: selected.url, discover_api: true }),
+        body: JSON.stringify({ action: "inspect_form", url: selected.url, source_url: ticketSourceUrl, event_id: selected.id, event_name: selected.name, discover_api: true }),
       });
       const data = await response.json() as TicketFormInspection & { error?: string };
       if (!response.ok) throw new Error(data.error || "ตรวจหน้าเลือกบัตรไม่สำเร็จ");
@@ -1403,11 +1480,20 @@ export default function Home() {
         facts: data.facts ?? {},
         functional_preflight: data.functional_preflight ?? {},
       });
+      const performanceOptions = normalizedTicketPerformanceOptions(data.facts?.performance_options);
+      setTicketEvents((current) => current.map((event) => event.id !== selected.id ? event : {
+        ...event,
+        show_dates: data.facts?.show_dates ?? event.show_dates,
+        performance_options: performanceOptions,
+        sale_open_at: data.facts?.sale_open_at || event.sale_open_at,
+        sale_status: data.facts?.sale_status || event.sale_status,
+        inventory_status: data.facts?.ticket_status === "sold_out" ? "sold_out" : data.facts?.ticket_status === "available" || data.facts?.ticket_status === "mixed_availability" ? "available" : event.inventory_status,
+        queue_open_at: data.facts?.queue_open_at || event.queue_open_at,
+        schedule_status: "fresh",
+      }));
       const verifiedSchedule = data.facts?.show_dates?.[0]?.iso || data.facts?.show_dates?.[0]?.raw || selected.start_date || "";
-      const firstPerformance = data.facts?.performance_options?.find((option) => /^\s*\d{1,2}:\d{2}/.test(option.label || ""))?.label?.trim()
-        || data.facts?.performance_options?.find((option) => option.label?.trim())?.label?.trim()
-        || "";
-      setTicketSchedule(firstPerformance && !verifiedSchedule.includes(firstPerformance) ? `${verifiedSchedule} ${firstPerformance}`.trim() : verifiedSchedule);
+      setTicketSchedule(performanceOptions.length === 1 ? ticketPerformanceValue(performanceOptions[0]) : performanceOptions.length > 1 ? "" : verifiedSchedule);
+      setTicketQueueOpenAt(data.facts?.queue_open_at || "");
       const workflowState = data.functional_preflight?.workflow_state || "unknown";
       const workflowLabel = workflowState === "armed_pre_sale" ? "เตรียมพร้อม — เปิดขายภายใน 30 นาที"
         : workflowState === "pre_sale" ? "ยังไม่เปิดขาย — เหลือมากกว่า 30 นาที"
@@ -1415,7 +1501,7 @@ export default function Home() {
             : workflowState;
       const unresolved = data.functional_preflight?.unresolved ?? [];
       setTicketStatus(data.functional_preflight?.public_page_verified
-        ? `ยืนยันข้อมูลหน้าจริงแล้ว · ${workflowLabel}${data.functional_preflight.purchase_controls_ready ? " · พบทางเข้าซื้อ" : " · ยังไม่พบทางเข้าซื้อ"}`
+        ? `ยืนยันข้อมูลหน้าจริงแล้ว · พบ ${performanceOptions.length || data.facts?.show_dates?.length || 1} รอบ · ${workflowLabel}${data.functional_preflight.purchase_controls_ready ? " · พบทางเข้าซื้อ" : " · เก็บรอบไว้ก่อนและจะจับคู่ปุ่มซื้อหลังเปิดขาย"}`
         : `หลักฐานหน้าจริงยังไม่ครบ: ${unresolved.join(", ") || "ไม่พบวันแสดง/วันเปิดขาย"}`);
       setTicketStage("preferences");
     } catch (error) {
@@ -1448,6 +1534,8 @@ export default function Home() {
           inspection_warning: warning,
         },
       });
+      setTicketSchedule(selected.start_date || "");
+      setTicketQueueOpenAt("");
       setTicketStage("preferences");
       setTicketStatus(`หน้ารายละเอียดถูกเว็บไซต์ปฏิเสธ แต่สร้างบอทได้ — โปรแกรมจะอ่านรอบ โซน และฟอร์มจริงหลัง Login ตอนรัน (${warning})`);
     } finally {
@@ -1499,13 +1587,20 @@ export default function Home() {
       setTicketStatus("เลือกจัดส่งทางไปรษณีย์จึงต้องใส่ที่อยู่ก่อน");
       return;
     }
+    const performanceOptions = normalizedTicketPerformanceOptions(ticketInspection?.facts?.performance_options);
+    const selectedPerformance = performanceOptions.find((option) => ticketPerformanceValue(option) === ticketSchedule);
+    if (performanceOptions.length > 1 && !selectedPerformance) {
+      setTicketStage("error");
+      setTicketStatus("คอนเสิร์ตนี้มีหลายวัน กรุณาเลือกรอบก่อนเริ่มบอท ระบบจะจำรอบนี้ไว้ตลอดคิว");
+      return;
+    }
     ticketRunPendingRef.current = true;
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "1.1.0-beta.22"
+        && ticketBuildReport.generator_version === "1.1.0-beta.23"
         && ticketRun
-        && ["completed", "stopped"].includes(ticketRun.status);
+        && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
         setTicketStatus("กำลังเริ่มโปรเจกต์เวอร์ชันปัจจุบันอีกครั้ง…");
         await startTicketRuntime(ticketBuildReport.project_path);
@@ -1527,7 +1622,8 @@ export default function Home() {
             event_candidates: ticketEvents,
             selected_event_id: selected.id,
             selected_event_name: selected.name,
-            schedule: ticketSchedule || selected.start_date,
+            schedule: selectedPerformance?.schedule || ticketSchedule || selected.start_date,
+            selected_performance: selectedPerformance ?? null,
             sale_open_at: ticketInspection?.facts?.sale_open_at,
             queue_open_at: ticketQueueOpenAt,
             seat_mode: ticketSeatMode,
@@ -1576,6 +1672,7 @@ export default function Home() {
   const runtimeReady = Boolean(health?.ollama_connected && health?.model_installed);
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const selectedTicketEvent = ticketEvents.find((event) => event.id === ticketSelectedId);
+  const currentTicketPerformanceOptions = normalizedTicketPerformanceOptions(ticketInspection?.facts?.performance_options);
   const generatedTicketProjectName = automaticTicketProjectName(selectedTicketEvent);
   const effectiveTicketProjectName = ticketProjectName.trim() || generatedTicketProjectName;
   const ticketRunActive = Boolean(ticketRun && ["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status));
@@ -1614,6 +1711,7 @@ export default function Home() {
 
         <nav className="sidebar-nav" aria-label="เมนูหลัก">
           <button className={`nav-item ${view === "chat" ? "active" : ""}`} type="button" onClick={() => setView("chat")}><span>⌁</span>สนทนา</button>
+          <button className={`nav-item ${view === "video" ? "active" : ""}`} type="button" onClick={() => setView("video")}><span>▶</span>Create Video</button>
           <button className={`nav-item ${view === "memory" ? "active" : ""}`} type="button" onClick={() => setView("memory")}><span>◇</span>สอนอัลฟ่า</button>
           <button className={`nav-item ${view === "skills" ? "active" : ""}`} type="button" onClick={() => setView("skills")}><span>⬡</span>ทักษะ</button>
           <button className={`nav-item ${view === "tickets" ? "active" : ""}`} type="button" onClick={() => setView("tickets")}><span>▱</span>บอทบัตร</button>
@@ -1650,8 +1748,8 @@ export default function Home() {
       <section className="main-panel">
         <header className="topbar">
           <div>
-            <span className="eyebrow">{view === "chat" ? "LOCAL AI CHAT" : view === "memory" ? "LEARNING WORKSPACE" : view === "skills" ? "SKILL REGISTRY" : view === "tickets" ? "TICKET BOT STUDIO" : "CONTROL CENTER"}</span>
-            <h1>{view === "chat" ? activeChat?.title || "คุยกับอัลฟ่า" : view === "memory" ? "สอนและพัฒนาอัลฟ่า" : view === "skills" ? "ทักษะของอัลฟ่า" : view === "tickets" ? "สร้างบอทบัตรแบบ Full Loop" : "ตั้งค่าอัลฟ่า"}</h1>
+            <span className="eyebrow">{view === "chat" ? "LOCAL AI CHAT" : view === "video" ? "LOCAL AI FILM STUDIO" : view === "memory" ? "LEARNING WORKSPACE" : view === "skills" ? "SKILL REGISTRY" : view === "tickets" ? "TICKET BOT STUDIO" : "CONTROL CENTER"}</span>
+            <h1>{view === "chat" ? activeChat?.title || "คุยกับอัลฟ่า" : view === "video" ? "Create Video" : view === "memory" ? "สอนและพัฒนาอัลฟ่า" : view === "skills" ? "ทักษะของอัลฟ่า" : view === "tickets" ? "สร้างบอทบัตรแบบ Full Loop" : "ตั้งค่าอัลฟ่า"}</h1>
           </div>
           {view === "chat" && activeChat && <div className="chat-top-actions"><a href={`/api/chats/${encodeURIComponent(activeChat.id)}/export?format=markdown`}>Export MD</a><a href={`/api/chats/${encodeURIComponent(activeChat.id)}/export?format=json`}>JSON</a></div>}
           <div className="internet-control">
@@ -1780,6 +1878,8 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {view === "video" && <CreateVideoStudio />}
 
         {view === "memory" && (
           <div className={`content-view memory-view tab-${learningTab}`}>
@@ -1935,7 +2035,7 @@ export default function Home() {
             <aside className="ticket-discovery-pane">
               <div className="ticket-pane-header">
                 <div><span className="section-kicker">STEP 1 · DISCOVER</span><h2>เลือกคอนเสิร์ต</h2></div>
-                <span className={`ticket-stage ${ticketStage}`}>{ticketStage === "inspecting" || ticketStage === "form_inspecting" || ticketStage === "building" ? "กำลังทำงาน" : ticketStage === "ready" ? "พร้อม" : ticketStage === "error" ? "ตรวจสอบ" : "รอข้อมูล"}</span>
+                <span className={`ticket-stage ${ticketStage}`}>{ticketRun?.payment_handoff_verified ? "Full Loop ผ่าน" : ticketRunActive ? "กำลังรันจริง" : ticketBuildReport ? "Fixture เท่านั้น" : ticketStage === "inspecting" || ticketStage === "form_inspecting" || ticketStage === "building" ? "กำลังทำงาน" : ticketStage === "error" ? "ไม่ผ่าน" : "รอข้อมูล"}</span>
               </div>
               <div className="ticket-source-form">
                 <label><span>หน้ารวมคอนเสิร์ตหรือหน้ากิจกรรม</span><input value={ticketSourceUrl} onChange={(event) => setTicketSourceUrl(event.target.value)} placeholder="https://www.thaiticketmajor.com/index.html" /></label>
@@ -1943,7 +2043,7 @@ export default function Home() {
               </div>
               <div className="ticket-status-card">
                 <span className="ticket-status-dot" />
-                <div><strong>สถานะ Full Loop</strong><p>{ticketStatus}</p></div>
+                <div><strong>สถานะการตรวจและรันจริง</strong><p>{ticketStatus}</p></div>
               </div>
               {ticketEvents.length > 0 && <div className="ticket-status-legend" aria-label="กรองสถานะคอนเสิร์ต">
                 <button type="button" className={`ticket-status-filter ${ticketStatusFilter === "all" ? "active" : ""}`} onClick={() => setTicketStatusFilter("all")}>ทั้งหมด {ticketEvents.length}</button>
@@ -1962,16 +2062,24 @@ export default function Home() {
                     <input type="radio" name="ticket-event" disabled={!selectable} checked={ticketSelectedId === event.id} onChange={() => {
                       setTicketSelectedId(event.id);
                       setTicketProjectName("");
-                      setTicketSchedule(event.start_date || "");
-                      setTicketInspection(null);
+                      const cachedInspection = event.cached_inspection ?? null;
+                      const cachedOptions = normalizedTicketPerformanceOptions(event.performance_options ?? cachedInspection?.facts?.performance_options);
+                      setTicketSchedule(cachedOptions.length === 1 ? ticketPerformanceValue(cachedOptions[0]) : cachedOptions.length > 1 ? "" : event.show_dates?.[0]?.iso || event.show_dates?.[0]?.raw || event.start_date || "");
+                      setTicketQueueOpenAt(event.queue_open_at || cachedInspection?.facts?.queue_open_at || "");
+                      setTicketInspection(cachedInspection);
                       setTicketBuildReport(null);
-                      setTicketStage("event_ready");
-                      setTicketStatus(`เลือก ${event.name} แล้ว · ตั้งจำนวนบัตรและกดสร้างได้ทันที ส่วนตรวจรายละเอียดเป็นขั้นตอนเสริม`);
+                      setTicketStage(cachedInspection ? "preferences" : "event_ready");
+                      setTicketStatus(cachedInspection
+                        ? `เลือก ${event.name} แล้ว · ใช้วันแสดงที่ตรวจไว้ในรอบล่าสุดทันที${cachedOptions.length > 1 ? " · กรุณาเลือกวันที่ต้องการก่อนเข้าคิว" : ""}`
+                        : `เลือก ${event.name} แล้ว แต่ยังอ่านวันแสดงไม่ได้จากการตรวจรอบนี้ กดตรวจคอนเสิร์ตอีกครั้งหรือใช้ตรวจรายละเอียดเฉพาะงาน`);
+                      void inspectSelectedTicketEvent(event);
                     }} />
                     <span>
                       <span className="ticket-event-title"><strong>{event.name}</strong><span className={`ticket-sale-pill ${saleMeta.className}`}>{saleMeta.label}</span></span>
                       <small>{event.start_date ? `วันแสดง ${event.start_date}` : "ตรวจรอบจากหน้าถัดไป"}</small>
                       <small>{event.sale_open_at ? `เวลาเปิดช่วงขาย ${event.sale_open_at}` : event.status_evidence || (selectable ? "เลือกเพื่อตรวจรายละเอียดต่อได้" : "แสดงไว้เพื่อบอกสถานะ แต่สร้างบอทไม่ได้")}</small>
+                      {normalizedTicketPerformanceOptions(event.performance_options).length ? <small>รอบที่บันทึกไว้: {normalizedTicketPerformanceOptions(event.performance_options).map(ticketPerformanceLabel).join(" · ")}</small> : null}
+                      {event.schedule_status === "cached" ? <small className="ticket-inventory-warning">ใช้วันแสดงจากฐานข้อมูลครั้งก่อน เพราะหน้าเว็บปฏิเสธการตรวจรอบนี้</small> : null}
                       {selectable && <small className="ticket-inventory-warning">สถานะที่นั่ง: ยังไม่ได้ตรวจ — ต้อง Login แล้วเข้าโซน/ผังที่นั่งจริง</small>}
                     </span>
                   </label>
@@ -1980,7 +2088,7 @@ export default function Home() {
                 {ticketEvents.length > 0 && !ticketEvents.some((event) => ticketStatusFilter === "all" || (event.sale_status || "unknown") === ticketStatusFilter) && <div className="ticket-empty"><span>0</span><strong>หน้ารวมไม่พบป้ายสถานะนี้</strong><p>ไม่ได้แปลว่า inventory ทุกงานยังมีบัตร — ต้องตรวจงานที่เลือกหลัง Login</p></div>}
               </div>
               <div className="ticket-discovery-actions">
-                <button type="button" disabled={!ticketSelectedId || ticketStage === "form_inspecting"} onClick={() => void inspectSelectedTicketEvent()}>{ticketStage === "form_inspecting" ? "กำลังอ่านหน้าเว็บ…" : "ตรวจรายละเอียดเพิ่ม (ไม่บังคับ)"}</button>
+                <button type="button" disabled={!ticketSelectedId || ticketStage === "form_inspecting"} onClick={() => void inspectSelectedTicketEvent()}>{ticketStage === "form_inspecting" ? "กำลังอ่านหน้าเว็บ…" : "ตรวจรายละเอียดอีกครั้ง"}</button>
               </div>
             </aside>
 
@@ -2011,7 +2119,7 @@ export default function Home() {
                     <section className="ticket-form-section">
                       <div className="ticket-form-heading"><span>01</span><div><strong>รอบและประเภทบัตร</strong><small>รองรับทั้งเลือกที่นั่งและบัตรยืน/ไม่ระบุที่นั่ง</small></div></div>
                       <div className="ticket-form-grid">
-                        <label className="field"><span>รอบ/วันแสดง</span><input list="ticket-performance-options" value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)} placeholder="เช่น 2026-09-11 18:00" /><datalist id="ticket-performance-options">{ticketInspection?.facts?.performance_options?.map((option, index) => <option key={`${option.label}-${index}`} value={option.label || ""}>{option.context_text || option.label}</option>)}</datalist></label>
+                        <label className="field"><span>รอบ/วันแสดง</span>{currentTicketPerformanceOptions.length ? <select value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)}><option value="">{currentTicketPerformanceOptions.length > 1 ? "กรุณาเลือกวันแสดงก่อนเข้าคิว" : "เลือกรอบ"}</option>{currentTicketPerformanceOptions.map((option, index) => <option key={`${ticketPerformanceValue(option)}-${index}`} value={ticketPerformanceValue(option)} disabled={["sold_out", "closed"].includes(option.status || "")}>{ticketPerformanceLabel(option)}</option>)}</select> : <input value={ticketSchedule} onChange={(event) => setTicketSchedule(event.target.value)} placeholder="ยังไม่พบรอบอัตโนมัติ — ระบุวันที่/เวลาที่ประกาศไว้" />}<small>{currentTicketPerformanceOptions.length ? "ระบบจะแสดงประเภทสินค้าและสถานะรายรอบ ล็อกรอบที่เลือกก่อนเข้าคิว และไม่ถามใหม่หลังผ่านคิว" : "ถ้ายังไม่มีปุ่มซื้อ ระบบจะจับคู่วันที่นี้กับปุ่มที่ปรากฏภายหลังโดยไม่ออกจากคิว"}</small></label>
                         <label className="field"><span>เวลาเริ่มรับคิว (ถ้ามี)</span><input value={ticketQueueOpenAt} onChange={(event) => setTicketQueueOpenAt(event.target.value)} placeholder="เช่น 2026-08-29T09:00:00+07:00" /></label>
                         <label className="field"><span>ประเภทบัตร</span><select value={ticketSeatMode} onChange={(event) => setTicketSeatMode(event.target.value as typeof ticketSeatMode)}><option value="reserved">เลือกที่นั่ง</option><option value="standing">บัตรยืน</option><option value="general_admission">ไม่ระบุที่นั่ง</option></select></label>
                         {ticketSeatMode === "reserved" && <label className="field"><span>การจัดที่นั่งหลายใบ</span><select value={ticketSeatGrouping} onChange={(event) => setTicketSeatGrouping(event.target.value as typeof ticketSeatGrouping)}><option value="adjacent">ต้องติดกันในโซนเดียว</option><option value="same_zone">ไม่ติดกันได้ แต่โซนเดียวกัน</option><option value="any">ใบไหนก็ได้ในโซนเดียวกัน</option></select></label>}
@@ -2068,7 +2176,7 @@ export default function Home() {
                     <section className="ticket-handoff-note"><strong>ทำงานเบื้องหลังโดยไม่ยึดเมาส์</strong><span>Login อัตโนมัติจาก session/secure prompt · รับช่วงเฉพาะ CAPTCHA · OTP · Payment</span><p>บอทใช้ DOM ในโปรไฟล์แยก รองรับ image-map ของโซนและไม่ขยับเมาส์ระบบ รหัสผ่านไม่ถูกเขียนลง config ส่วนการจ่ายเงินจริงจะหยุดที่หน้า QR ให้พี่ตรวจเสมอ</p></section>
 
                     {ticketBuildReport && <section className="ticket-result-card">
-                      <div><span>✓</span><div><strong>สร้างโปรเจกต์และ fixture ผ่าน — ยังไม่ถือว่า Full Loop ผ่านจนมี runtime evidence</strong><p>{ticketBuildReport.project_path}</p></div></div>
+                      <div><span>≠</span><div><strong>ผ่านเฉพาะโครงสร้างและ fixture — ยังไม่ใช่ผลซื้อบัตรจริง</strong><p>{ticketBuildReport.project_path}</p></div></div>
                       <div className="ticket-result-files">{ticketBuildReport.created_files.map((file) => <span key={file}>{file}</span>)}</div>
                       <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · Fixture: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · Runtime: {ticketRun ? ticketRun.stage : "ยังไม่เริ่ม"} · PAYMENT_HANDOFF: {ticketRun?.payment_handoff_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</small>
                     </section>}
@@ -2076,7 +2184,7 @@ export default function Home() {
                     {ticketRun && <section className="ticket-result-card">
                       <div><span>{ticketRun.status === "failed" ? "!" : ticketRun.status === "stopped" ? "■" : "▶"}</span><div><strong>Live Ticket Run · {ticketRun.status}</strong><p>Run {ticketRun.id} · PID {ticketRun.pid || "—"} · Stage {ticketRun.stage}</p></div></div>
                       <small>{ticketRun.detail || "กำลังรอ event จาก process"}{ticketRun.latest_url ? ` · ${ticketRun.latest_url}` : ""}</small>
-                      {ticketRun.logs?.length ? <pre>{ticketRun.logs.slice(-8).map((item) => item.text).join("\n")}</pre> : null}
+                      {ticketRun.logs?.length ? <ol className="ticket-run-timeline">{ticketRun.logs.slice(-12).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
                       {ticketRun.status === "waiting_handoff" && <div className="confirm-row">
                         <span>{ticketRun.handoff?.prompt || "ต้องให้ผู้ใช้รับช่วง"}</span>
                         {!["captcha", "otp", "payment", "continue", "ticket_selection", "checkout_options", "review"].includes(ticketRun.handoff?.field || "") && <input type={ticketRun.handoff?.secret ? "password" : "text"} value={ticketRunInput} onChange={(event) => setTicketRunInput(event.target.value)} placeholder={ticketRun.handoff?.options?.join(", ") || "กรอกข้อมูลที่บอทรอ"} />}
