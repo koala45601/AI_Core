@@ -1,0 +1,100 @@
+{
+  "generatorVersion": "1.1.0-beta.24",
+  "eventId": "https://www.thaiticketmajor.com/concert/andru-donalds-live-in-bangkok-2026.html",
+  "eventName": "Andru Donalds Live in Bangkok 2026",
+  "eventUrl": "https://www.thaiticketmajor.com/concert/andru-donalds-live-in-bangkok-2026.html",
+  "schedule": "2026-10-24T00:00:00+07:00",
+  "selectedPerformance": {
+    "schedule": "2026-10-24T00:00:00+07:00",
+    "label": "วันเสาร์ที่ 24 ตุลาคม 2569",
+    "contextText": "วันเสาร์ที่ 24 ตุลาคม 2569",
+    "selector": "",
+    "dataButton": "",
+    "targetUrl": "",
+    "productName": "",
+    "productType": "in_person",
+    "status": "upcoming"
+  },
+  "saleOpenAt": "2026-08-25T12:00:00+07:00",
+  "runtimeDiscoveryRequired": true,
+  "queueOpenAt": "",
+  "saleStatus": "open",
+  "quantity": 1,
+  "seatMode": "reserved",
+  "seatGrouping": "any",
+  "preferredZones": [
+    "A3"
+  ],
+  "preferredRows": [],
+  "preferredSeatNumbers": [],
+  "seatFallbackMode": "zone_any",
+  "budget": 0.0,
+  "customerName": "Ratchanon",
+  "attendeeNames": [
+    "Ratchanon"
+  ],
+  "shippingAddress": {},
+  "deliveryMethod": "pickup",
+  "ticketProtect": false,
+  "paymentMethod": "qr",
+  "selectors": {},
+  "purchaseControls": [],
+  "saleEntryControls": [],
+  "performanceOptions": [
+    {
+      "selector": "",
+      "label": "วันเสาร์ที่ 24 ตุลาคม 2569",
+      "context_text": "วันเสาร์ที่ 24 ตุลาคม 2569",
+      "semantic_role": "schedule",
+      "selector_confidence": 0.5,
+      "data_button": "",
+      "target_url": "",
+      "product_name": "",
+      "product_type": "in_person",
+      "status": "upcoming",
+      "selectable": true,
+      "announced_before_sale": true,
+      "schedule": "2026-10-24T00:00:00+07:00"
+    }
+  ],
+  "mouseControl": false,
+  "backgroundWindow": true,
+  "observedApi": [],
+  "evidence": [
+    {
+      "field": "show_date",
+      "text": "วันเสาร์ที่ 24 ตุลาคม 2569",
+      "source": "page_text"
+    },
+    {
+      "field": "sale_open_at",
+      "text": "วันอังคารที่ 25 สิงหาคม 2569, 12:00 น.",
+      "source": "page_text"
+    },
+    {
+      "field": "venue",
+      "text": "เมืองไทยรัชดาลัย เธียเตอร์",
+      "source": "page_text"
+    },
+    {
+      "field": "sale_status",
+      "text": "open",
+      "source": "page_state"
+    }
+  ],
+  "queue": {
+    "retryAfterSeconds": 2,
+    "maxBackoffSeconds": 30,
+    "preserveSession": true
+  },
+  "credentialEnvironment": {
+    "username": "TICKET_USERNAME",
+    "password": "TICKET_PASSWORD"
+  },
+  "handoffPoints": [
+    "captcha",
+    "otp",
+    "payment"
+  ],
+  "resumeAfterHandoff": true
+}

@@ -12,6 +12,10 @@
 - ThaiTicketMajor's official booking index is selected before listing inspection, avoiding a known denied marketing-host navigation instead of failing first and retrying afterward.
 - Public event details now use the direct HTML reader for dates, venue, prices and sale status, so selecting or rechecking KITA does not open an automated Chrome tab.
 - Explicit `Ticket Status SOLD OUT` is classified separately from a generally closed sale; live checks now distinguish open, upcoming, sold-out and closed official pages.
+- ThaiTicketMajor's real `.seatuncheck[data-seat][data-seatk]` seat controls are parsed by zone, row and number, so reserved-seat runs no longer stop at an empty synthetic selector.
+- A persistent signed-in booking session is accepted only after reaching a private booking step without a visible password form; users no longer have to log in again after the site has already authenticated that profile.
+- Future-day pre-sales produce `PRE_SALE_SCHEDULED` and release the browser instead of holding a Chrome process for days; the same-session hold remains reserved for the final 30-minute window.
+- SOLD OUT, closed-sale and scheduled pre-sale results capture full-page evidence and finish as handled terminal outcomes without being mislabeled as a successful Full Loop.
 
 ## 1.1.0-beta.23 — 2026-08-25
 

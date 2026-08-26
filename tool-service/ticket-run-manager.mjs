@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { basename, relative, resolve, sep } from "node:path";
 
 const ACTIVE = new Set(["starting_runtime", "runtime_running", "waiting_handoff"]);
+const HANDLED_TERMINAL_RESULTS = new Set(["SOLD_OUT_BY_SERVER", "SALE_CLOSED_BY_SERVER", "PRE_SALE_SCHEDULED", "PRE_SALE_READY", "ARMED_PRE_SALE"]);
 const REQUIRED_FILES = ["run-full-loop.command", "start.command", "bot.py", "config.json"];
 const MAX_LOG_LINES = 350;
 
@@ -51,6 +52,7 @@ function publicRun(run) {
     payment_handoff_verified: run.payment_handoff_verified === true,
     result_status: run.result_status,
     result_reason: run.result_reason,
+    evidence_paths: [...(run.evidence_paths || [])],
   };
 }
 
@@ -77,6 +79,10 @@ function mapEvent(run, event) {
     run.status = "runtime_running";
     run.stage = "selecting_ticket";
     run.detail = safeText(event.reason, 500) || "กำลังเลือกบัตรตามเงื่อนไข";
+  } else if (kind === "evidence" || kind === "screenshot") {
+    const evidencePath = safeText(event.path, 2_000);
+    if (evidencePath && !run.evidence_paths.includes(evidencePath)) run.evidence_paths.push(evidencePath);
+    run.detail = evidencePath ? `บันทึกภาพหลักฐาน ${evidencePath}` : "บันทึกหลักฐานแล้ว";
   } else if (kind === "input_required") {
     run.status = "waiting_handoff";
     run.stage = safeText(event.stage, 100) || `waiting_${safeText(event.field, 80) || "input"}`;
@@ -209,6 +215,7 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
       payment_handoff_verified: false,
       result_status: "",
       result_reason: "",
+      evidence_paths: [],
       stop_requested: false,
       child,
     };
@@ -249,6 +256,10 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
         run.status = "completed";
         run.stage = "completed_payment_handoff";
         run.detail = "process จบหลังยืนยัน PAYMENT_HANDOFF";
+      } else if (HANDLED_TERMINAL_RESULTS.has(run.result_status)) {
+        run.status = "completed";
+        run.stage = run.result_status.toLowerCase();
+        run.detail = `ตรวจสถานะสำเร็จ: ${run.result_status} · ไม่ใช่ Full Loop และไม่มีการชำระเงินจริง`;
       } else {
         run.status = "not_verified";
         run.stage = run.result_status ? run.result_status.toLowerCase() : "ended_without_payment_handoff";

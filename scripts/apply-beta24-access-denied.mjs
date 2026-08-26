@@ -44,7 +44,8 @@ await assertSource("templates/concert-ticket-assistant.py", [
   `"generatorVersion": "${version}"`,
   "ALPHA_TICKET_BROWSER_PROFILE",
   "persistent_ticket_session",
-  'ignore_default_args=["--no-sandbox", "--enable-automation"]',
+  "connect_over_cdp",
+  "--remote-debugging-port",
 ]);
 
 const packagePath = resolve(appDir, "package.json");

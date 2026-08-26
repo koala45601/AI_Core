@@ -181,6 +181,9 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(page, /ผ่านเฉพาะโครงสร้างและ fixture — ยังไม่ใช่ผลซื้อบัตรจริง/);
   assert.match(template, /record\("input_required"/);
   assert.match(template, /"field": "captcha" if state == "captcha_handoff" else "otp"/);
+  assert.match(template, /wait_for_post_login_transition\(page, login_url\)/);
+  assert.match(template, /TERMS_ACCEPTANCE_REQUIRED/);
+  assert.match(page, /"access_denied", "terms"/);
   assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);

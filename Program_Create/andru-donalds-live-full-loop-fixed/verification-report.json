@@ -1,0 +1,19 @@
+{
+  "fixture_tests_passed": true,
+  "fixture_test_count": 44,
+  "queue_fixture_verified": true,
+  "live_public_page_verified": true,
+  "live_queue_observed": false,
+  "live_checkout_verified": true,
+  "payment_handoff_verified": true,
+  "payment_submitted": false,
+  "live_status_cases": {
+    "open_sale_to_qr": "passed_live",
+    "sold_out": "passed_live",
+    "sale_closed": "passed_live",
+    "future_day_pre_sale": "passed_live",
+    "same_day_within_30_minutes": "passed_fixture_only_no_live_candidate"
+  },
+  "verified_at": "2026-08-26T20:32:33+07:00",
+  "scope": "44 deterministic state-machine fixtures plus live ThaiTicketMajor open-sale checkout to the unpaid QR handoff and live status-page verification. No live queue window was available and no payment was submitted."
+}

@@ -257,6 +257,7 @@ interface TicketRunView {
   payment_handoff_verified?: boolean;
   result_status?: string;
   result_reason?: string;
+  evidence_paths?: string[];
   handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
   logs?: Array<{ at: number; stream: string; text: string }>;
 }
@@ -2184,10 +2185,11 @@ export default function Home() {
                     {ticketRun && <section className="ticket-result-card">
                       <div><span>{ticketRun.status === "failed" ? "!" : ticketRun.status === "stopped" ? "■" : "▶"}</span><div><strong>Live Ticket Run · {ticketRun.status}</strong><p>Run {ticketRun.id} · PID {ticketRun.pid || "—"} · Stage {ticketRun.stage}</p></div></div>
                       <small>{ticketRun.detail || "กำลังรอ event จาก process"}{ticketRun.latest_url ? ` · ${ticketRun.latest_url}` : ""}</small>
+                      {ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
                       {ticketRun.logs?.length ? <ol className="ticket-run-timeline">{ticketRun.logs.slice(-12).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
                       {ticketRun.status === "waiting_handoff" && <div className="confirm-row">
                         <span>{ticketRun.handoff?.prompt || "ต้องให้ผู้ใช้รับช่วง"}</span>
-                        {!["captcha", "otp", "payment", "continue", "ticket_selection", "checkout_options", "review"].includes(ticketRun.handoff?.field || "") && <input type={ticketRun.handoff?.secret ? "password" : "text"} value={ticketRunInput} onChange={(event) => setTicketRunInput(event.target.value)} placeholder={ticketRun.handoff?.options?.join(", ") || "กรอกข้อมูลที่บอทรอ"} />}
+                        {!["captcha", "otp", "payment", "continue", "ticket_selection", "checkout_options", "review", "access_denied", "terms"].includes(ticketRun.handoff?.field || "") && <input type={ticketRun.handoff?.secret ? "password" : "text"} value={ticketRunInput} onChange={(event) => setTicketRunInput(event.target.value)} placeholder={ticketRun.handoff?.options?.join(", ") || "กรอกข้อมูลที่บอทรอ"} />}
                         <button type="button" onClick={() => void sendTicketRuntimeInput()}>ทำต่อ</button>
                       </div>}
                       {ticketRunActive && <button type="button" className="secondary-action" onClick={() => void stopTicketRuntime()}>หยุดบอท</button>}
