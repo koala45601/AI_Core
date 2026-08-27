@@ -191,5 +191,5 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import[^\n]*urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);
-  assert.equal(pkg.version, "1.1.0-beta.27");
+  assert.equal(pkg.version, "1.1.0-beta.28");
 });

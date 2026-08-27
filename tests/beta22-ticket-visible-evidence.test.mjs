@@ -135,7 +135,7 @@ test("beta24 coalesces repeated UI actions, inspects detail on demand and reject
 
   assert.match(page, /ticketInspectPendingRef\.current/);
   assert.match(page, /ticketRunPendingRef\.current/);
-  assert.match(page, /generator_version === "1\.1\.0-beta\.27"/);
+  assert.match(page, /generator_version === "1\.1\.0-beta\.28"/);
   assert.match(page, /กรุณาเลือกวันและเวลาก่อนเข้าคิว/);
   assert.match(page, /ระบบแยกวันเดียวหลายเวลาเป็นคนละรอบ/);
   assert.match(page, /normalizedTicketPerformanceOptions/);
@@ -162,7 +162,7 @@ test("beta24 coalesces repeated UI actions, inspects detail on demand and reject
   assert.doesNotMatch(route, /setTimeout\(resolve, 900\)/);
   assert.match(route, /stage: "runtime_discovery_required"/);
   assert.match(manager, /requiredGeneratorVersion/);
-  assert.match(server, /requiredGeneratorVersion: "1\.1\.0-beta\.27"/);
+  assert.match(server, /requiredGeneratorVersion: "1\.1\.0-beta\.28"/);
   assert.match(server, /ensurePublicInspectionBrowser[\s\S]*?headless: false/);
   assert.match(server, /public-inspection-profile/);
   assert.match(server, /action === "observe_existing"/);
@@ -171,8 +171,8 @@ test("beta24 coalesces repeated UI actions, inspects detail on demand and reject
   assert.match(server, /access_blocked: true/);
   assert.match(manager, /ALPHA_TICKET_BROWSER_PROFILE/);
   assert.match(manager, /evidence_paths/);
-  assert.match(template, /"generatorVersion": "1\.1\.0-beta\.27"/);
-  assert.match(template, /"generator_version": "1\.1\.0-beta\.27"/);
+  assert.match(template, /"generatorVersion": "1\.1\.0-beta\.28"/);
+  assert.match(template, /"generator_version": "1\.1\.0-beta\.28"/);
   assert.match(template, /activate_selected_performance/);
   assert.match(template, /same_queue_session/);
   assert.match(template, /ALPHA_TICKET_BROWSER_PROFILE/);

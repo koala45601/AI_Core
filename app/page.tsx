@@ -1660,7 +1660,7 @@ export default function Home() {
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "1.1.0-beta.27"
+        && ticketBuildReport.generator_version === "1.1.0-beta.28"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {

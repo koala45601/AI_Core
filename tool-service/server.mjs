@@ -57,7 +57,7 @@ let autoLearnLoopPromise = null;
 const ticketRunManager = createTicketRunManager({
   programCreateDir,
   ticketBrowserProfileDir,
-  requiredGeneratorVersion: "1.1.0-beta.27",
+  requiredGeneratorVersion: "1.1.0-beta.28",
   ollamaBaseUrl,
 });
 

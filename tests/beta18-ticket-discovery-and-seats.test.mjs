@@ -104,7 +104,8 @@ test("generated reserved-seat bot can defer zone choice and requires verified lo
     assert.deepEqual(config.preferredRows, ["K"]);
     assert.deepEqual(config.preferredSeatNumbers, ["10"]);
     assert.equal(config.seatFallbackMode, "exact");
-    assert.match(bot, /"strategy": "auto_first_available"/);
+    assert.match(bot, /"strategy": "auto_page_order_with_fallbacks"/);
+    assert.match(bot, /"fallbacks": zones\[1:\]/);
     assert.match(bot, /"reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"/);
     assert.match(bot, /LOGIN_REQUIRED_BEFORE_CHECKOUT/);
     assert.match(bot, /successful_form_transition/);
