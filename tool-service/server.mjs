@@ -17,6 +17,10 @@ const appDir = resolve(process.env.ALPHA_APP_DIR || process.argv[2] || process.c
 const appVersion = await fs.readFile(resolve(appDir, "package.json"), "utf8").then((value) => JSON.parse(value).version).catch(() => "1.0.0");
 const varsFile = await fs.readFile(resolve(appDir, ".dev.vars"), "utf8").catch(() => "");
 const token = String(process.env.ALPHA_TOOL_TOKEN || varsFile.match(/^ALPHA_TOOL_TOKEN=(.+)$/m)?.[1] || "").trim();
+const ollamaBaseUrl = String(process.env.OLLAMA_BASE_URL || varsFile.match(/^OLLAMA_BASE_URL=(.+)$/m)?.[1] || "http://127.0.0.1:11435")
+  .trim()
+  .replace(/^['"]|['"]$/g, "")
+  .replace(/\/$/, "");
 const port = Number(process.env.ALPHA_TOOL_PORT || 4317);
 const outputsDir = resolve(appDir, "outputs", "Alpha Outputs");
 const programCreateDir = resolve(appDir, "Program_Create");
@@ -50,7 +54,12 @@ let storageError = "";
 let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
-const ticketRunManager = createTicketRunManager({ programCreateDir, ticketBrowserProfileDir, requiredGeneratorVersion: "1.1.0-beta.27" });
+const ticketRunManager = createTicketRunManager({
+  programCreateDir,
+  ticketBrowserProfileDir,
+  requiredGeneratorVersion: "1.1.0-beta.27",
+  ollamaBaseUrl,
+});
 
 if (token.length < 32) {
   console.error("ALPHA_TOOL_TOKEN is missing or too short");

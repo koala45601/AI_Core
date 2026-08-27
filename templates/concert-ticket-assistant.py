@@ -173,6 +173,8 @@ if not missing:
             "actionMode": "validated_autonomous",
             "strategyMemory": True,
             "maxStrategyEntries": 200,
+            "timeoutSeconds": 60,
+            "keepAlive": "-1",
             "model": "qwen3.5:9b",
         },
         "credentialEnvironment": {"username": "TICKET_USERNAME", "password": "TICKET_PASSWORD"},
@@ -451,6 +453,7 @@ import select
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -469,10 +472,13 @@ SEAT_SELECTOR = ".seatuncheck, .seatcheck, [data-seat][data-seatk], [data-seat][
 SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
 LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "at": 0.0}
-AI_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alpha-ticket-ai")
-AI_FUTURE = None
-AI_FUTURE_META = {}
+AI_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="alpha-ticket-ai")
+AI_FUTURES = {}
+AI_LOCK = threading.RLock()
+REPORT_LOCK = threading.RLock()
 AI_LAST_DECISION = {}
+AI_LAST_DECISIONS = {}
+AI_LAST_DECISIONS_BY_STATE = {}
 AI_LAST_STATE = ""
 AI_LAST_SUBMITTED = {}
 AI_STRATEGY_PATH = Path(os.environ.get("ALPHA_TICKET_STRATEGY_PATH") or (ROOT.parent.parent / "work" / "ticket-ai-recovery-strategies.json"))
@@ -480,9 +486,17 @@ AI_STRATEGY_PATH = Path(os.environ.get("ALPHA_TICKET_STRATEGY_PATH") or (ROOT.pa
 
 def record(kind, payload):
     item = {"at": datetime.now().astimezone().isoformat(), "kind": kind, **payload}
-    with REPORT.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(item, ensure_ascii=False) + "\n")
-    print(json.dumps(item, ensure_ascii=False), flush=True)
+    with REPORT_LOCK:
+        with REPORT.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(json.dumps(item, ensure_ascii=False), flush=True)
+
+
+def console_input(prompt=""):
+    """Keep operator prompts off stdout so JSON runtime events stay parseable."""
+    if prompt:
+        print(prompt, file=sys.stderr, flush=True)
+    return input()
 
 
 def capture_status_evidence(page, status):
@@ -1036,7 +1050,7 @@ def fill_login(page):
     password = os.environ.get("TICKET_PASSWORD", "")
     if not username:
         record("input_required", {"field": "username", "stage": "waiting_username", "prompt": "กรอกอีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตร", "secret": False})
-        username = input("อีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตรนี้: ").strip()
+        username = console_input("อีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตรนี้: ").strip()
     if not password:
         record("input_required", {"field": "password", "stage": "waiting_password", "prompt": "กรอกรหัสผ่านสำหรับเว็บขายบัตร", "secret": True})
         password = getpass.getpass("รหัสผ่าน (ไม่แสดงและไม่บันทึก): ")
@@ -1237,7 +1251,7 @@ def fill_attendee_details(page):
         else:
             prompt_label = descriptor or f"บัตรใบที่ {index + 1}"
             record("input_required", {"field": "event_specific", "stage": "waiting_event_field", "prompt": f"หน้าเว็บคอนนี้ต้องการข้อมูล {prompt_label}", "secret": False})
-            value = input(f"หน้าเว็บคอนนี้ต้องการข้อมูล '{prompt_label}': ").strip()
+            value = console_input(f"หน้าเว็บคอนนี้ต้องการข้อมูล '{prompt_label}': ").strip()
         if not value:
             return False
         locator.fill(value)
@@ -1710,9 +1724,17 @@ def remember_ai_strategy(decision, from_state, to_state):
         record("ai_strategy_learned", {"state": from_state, "to_state": to_state, "action": action, "strategy_key": key, "saved": False, "reason": str(error)[:300]})
 
 
-def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds=20):
+def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds=60):
     runtime = CONFIG.get("aiRuntime") if isinstance(CONFIG.get("aiRuntime"), dict) else {}
     model = os.environ.get("ALPHA_RECOVERY_MODEL", str(runtime.get("model") or "qwen3.5:9b")).strip() or "qwen3.5:9b"
+    ollama_base_url = (
+        os.environ.get("ALPHA_OLLAMA_BASE_URL")
+        or os.environ.get("OLLAMA_BASE_URL")
+        or os.environ.get("OLLAMA_HOST")
+        or "http://127.0.0.1:11435"
+    ).strip().rstrip("/")
+    if not ollama_base_url.startswith(("http://", "https://")):
+        ollama_base_url = f"http://{ollama_base_url}"
     strategy_key = ai_strategy_key(snapshot_data)
     prompt = {
         "role": "ticket_runtime_advisor",
@@ -1723,8 +1745,16 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
         "instruction": "Analyze the current state and return JSON only with action, diagnosis, reason, confidence, and next_expected_state. Choose exactly one allowed action. Never change the locked event, performance, quantity, payment method, or allowed zones. Never solve CAPTCHA/OTP or submit payment.",
     }
     request = urllib.request.Request(
-        "http://127.0.0.1:11434/api/chat",
-        data=json.dumps({"model": model, "stream": False, "format": "json", "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}], "options": {"temperature": 0, "num_predict": 128}}).encode("utf-8"),
+        f"{ollama_base_url}/api/chat",
+        data=json.dumps({
+            "model": model,
+            "stream": False,
+            "format": "json",
+            "think": False,
+            "keep_alive": str(runtime.get("keepAlive") or "-1"),
+            "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}],
+            "options": {"temperature": 0, "num_predict": 384},
+        }).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -1751,55 +1781,94 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
     return result
 
 
-def collect_ai_runtime_analysis(wait_seconds=0):
-    global AI_FUTURE, AI_FUTURE_META, AI_LAST_DECISION
-    if AI_FUTURE is None:
-        return None
-    if wait_seconds <= 0 and not AI_FUTURE.done():
-        return None
+def finalize_ai_runtime_analysis(strategy_key, future):
+    global AI_LAST_DECISION
+    with AI_LOCK:
+        task = AI_FUTURES.get(strategy_key)
+        if not task or task.get("future") is not future:
+            return AI_LAST_DECISIONS.get(strategy_key)
+        meta = dict(task.get("meta") or {})
     try:
-        result = AI_FUTURE.result(timeout=max(0, wait_seconds))
-    except FutureTimeoutError:
-        return None
+        result = future.result()
     except Exception as error:
-        result = {"action": "wait", "diagnosis": "advisor task failed", "reason": str(error)[:300], "confidence": 0.0, **AI_FUTURE_META}
-    AI_FUTURE = None
-    AI_FUTURE_META = {}
-    AI_LAST_DECISION = result
+        result = {"action": "wait", "diagnosis": "advisor task failed", "reason": str(error)[:300], "confidence": 0.0, **meta}
+    with AI_LOCK:
+        current = AI_FUTURES.get(strategy_key)
+        if current and current.get("future") is future:
+            AI_FUTURES.pop(strategy_key, None)
+        AI_LAST_DECISION = result
+        AI_LAST_DECISIONS[strategy_key] = result
+        state = str(result.get("state") or meta.get("state") or "")
+        if state:
+            AI_LAST_DECISIONS_BY_STATE[state] = result
     record("ai_analysis", {**result, "background": True, "credentials_included": False, "screenshot_included": False})
     return result
 
 
+def collect_ai_runtime_analysis(wait_seconds=0, strategy_key=None):
+    with AI_LOCK:
+        if strategy_key:
+            task = AI_FUTURES.get(strategy_key)
+            cached = AI_LAST_DECISIONS.get(strategy_key)
+        else:
+            tasks = list(AI_FUTURES.items())
+            task = None
+            cached = AI_LAST_DECISION
+    if strategy_key:
+        if not task:
+            return cached
+        future = task.get("future")
+        if wait_seconds <= 0 and not future.done():
+            return cached
+        try:
+            future.result(timeout=max(0, wait_seconds))
+        except FutureTimeoutError:
+            return cached
+        except Exception:
+            pass
+        return finalize_ai_runtime_analysis(strategy_key, future)
+    for key, pending in tasks:
+        future = pending.get("future")
+        if future.done():
+            finalize_ai_runtime_analysis(key, future)
+    with AI_LOCK:
+        return AI_LAST_DECISION
+
+
 def schedule_ai_runtime_analysis(page, checkpoint, context=None):
-    global AI_FUTURE, AI_FUTURE_META
     runtime = CONFIG.get("aiRuntime") if isinstance(CONFIG.get("aiRuntime"), dict) else {}
     collect_ai_runtime_analysis()
-    if runtime.get("enabled", True) is False or runtime.get("analyzeEveryState", True) is False or AI_FUTURE is not None:
+    if runtime.get("enabled", True) is False or runtime.get("analyzeEveryState", True) is False:
         return
     snapshot_data = sanitized_recovery_snapshot(page, checkpoint)
     strategy_key = ai_strategy_key(snapshot_data)
     now = time.monotonic()
-    if now - float(AI_LAST_SUBMITTED.get(strategy_key, 0)) < 10:
-        return
-    AI_LAST_SUBMITTED[strategy_key] = now
     allowed_actions = ai_actions_for_state(checkpoint.get("state"))
-    AI_FUTURE_META = {"state": checkpoint.get("state"), "strategy_key": strategy_key}
-    AI_FUTURE = AI_EXECUTOR.submit(query_local_ai, snapshot_data, allowed_actions, context or {}, 8)
+    meta = {"state": checkpoint.get("state"), "strategy_key": strategy_key}
+    with AI_LOCK:
+        if strategy_key in AI_FUTURES or now - float(AI_LAST_SUBMITTED.get(strategy_key, 0)) < 10:
+            return
+        AI_LAST_SUBMITTED[strategy_key] = now
+        timeout_seconds = max(30, int(runtime.get("timeoutSeconds", 60) or 60))
+        future = AI_EXECUTOR.submit(query_local_ai, snapshot_data, allowed_actions, context or {}, timeout_seconds)
+        AI_FUTURES[strategy_key] = {"future": future, "meta": meta}
+    future.add_done_callback(lambda completed, key=strategy_key: finalize_ai_runtime_analysis(key, completed))
     record("ai_analysis", {"status": "QUEUED", "state": checkpoint.get("state"), "allowed_actions": allowed_actions, "background": True, "critical_path_blocked": False})
 
 
 def note_ai_state_transition(current_state):
     global AI_LAST_STATE
     previous = AI_LAST_STATE
-    if previous and previous != current_state and AI_LAST_DECISION.get("state") == previous:
-        remember_ai_strategy(AI_LAST_DECISION, previous, current_state)
+    decision = AI_LAST_DECISIONS_BY_STATE.get(previous, {})
+    if previous and previous != current_state and decision.get("state") == previous:
+        remember_ai_strategy(decision, previous, current_state)
     AI_LAST_STATE = current_state
 
 
 def request_ai_recovery_action(page, checkpoint, allowed_actions, context=None):
     """Use the all-state advisor result, waiting only when deterministic recovery is exhausted."""
-    result = collect_ai_runtime_analysis(wait_seconds=20)
     current_key = ai_strategy_key(sanitized_recovery_snapshot(page, checkpoint))
+    result = collect_ai_runtime_analysis(wait_seconds=20, strategy_key=current_key)
     if not result or result.get("strategy_key") != current_key or result.get("action") not in allowed_actions:
         result = query_local_ai(sanitized_recovery_snapshot(page, checkpoint), allowed_actions, context or {})
         record("ai_analysis", {**result, "background": False, "credentials_included": False, "screenshot_included": False})
@@ -1891,7 +1960,7 @@ def adaptive_retry_delay(checkpoint, attempt):
 def wait_for_payment_review(countdown_seconds=None):
     """Keep the QR browser alive until user input or the server hold countdown ends."""
     if countdown_seconds is None:
-        input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
+        console_input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
         return "user_done"
     deadline = time.monotonic() + max(0, int(countdown_seconds))
     while time.monotonic() < deadline:
@@ -1991,7 +2060,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             record("result", {"status": "INSPECTION_ONLY_NOT_FULL_LOOP", "state": checkpoint["state"], "reason": "ตรวจเฉพาะหน้าแรกและยังไม่ได้กดทางซื้อ", "live_checkout_verified": False})
             surface_browser_window(page, browser_profile, "inspection_only_review")
             record("input_required", {"field": "review", "stage": "inspection_only_review", "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว กดทำต่อหรือหยุดบอทเมื่อดูเสร็จ", "secret": False})
-            input("ตรวจหน้าใน Chrome แล้วกลับมากด Enter เพื่อปิด หรือกดหยุดบอทจาก Alpha: ")
+            console_input("ตรวจหน้าใน Chrome แล้วกลับมากด Enter เพื่อปิด หรือกดหยุดบอทจาก Alpha: ")
             context.close()
             return 0
         if checkpoint["state"] in {"pre_sale", "armed_pre_sale"} and not wait_for_window:
@@ -2072,7 +2141,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     if recovery["decision"].get("action") == "request_user":
                         surface_browser_window(page, browser_profile, "waiting_unknown_layout")
                         record("input_required", {"field": "unknown_layout", "stage": "waiting_unknown_layout", "prompt": "รูปแบบหน้าเว็บเปลี่ยนและ recovery ปกติระบุขั้นต่อไปไม่ได้ กรุณาตรวจหน้าเดิมแล้วกดทำต่อ", "secret": False})
-                        input("ตรวจหน้าเดิมแล้วกด Enter เพื่อให้ AI rescan ด้วย session เดิม: ")
+                        console_input("ตรวจหน้าเดิมแล้วกด Enter เพื่อให้ AI rescan ด้วย session เดิม: ")
                         continue
                 wait_seconds = 15
                 record("wait", {
@@ -2094,7 +2163,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     continue
                 surface_browser_window(page, browser_profile, "waiting_unknown_layout")
                 record("input_required", {"field": "unknown_layout", "stage": "waiting_unknown_layout", "prompt": "AI ระบุขั้นต่อไปจากหลักฐานไม่ได้ กรุณาตรวจหน้าเดิมแล้วกดทำต่อ", "secret": False})
-                input("ตรวจหน้าเดิมแล้วกด Enter เพื่อ rescan: ")
+                console_input("ตรวจหน้าเดิมแล้วกด Enter เพื่อ rescan: ")
                 continue
             if state == "waiting_room_entry":
                 selected_queue_entry = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
@@ -2114,7 +2183,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_queue_recovery")
                     record("input_required", {"field": "queue_recovery", "stage": "waiting_queue_recovery", "prompt": "AI วิเคราะห์แล้วแต่ยังยืนยันปุ่มรับคิวไม่ได้ ระบบรักษา session เดิมไว้ให้ตรวจ", "secret": False})
-                    input("ตรวจหน้าคิวเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจหน้าคิวเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 if activated_page:
                     page = activated_page
@@ -2153,7 +2222,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_selected_performance")
                     record("input_required", {"field": "performance", "stage": "waiting_selected_performance", "prompt": "AI ยังหารอบที่ล็อกไว้ไม่พบ ระบบไม่เลือกรอบอื่นแทนและรักษา session เดิมไว้", "secret": False})
-                    input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ โดยไม่เปลี่ยนรอบ: ")
+                    console_input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ โดยไม่เปลี่ยนรอบ: ")
                     continue
                 page = activated_page
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
@@ -2184,7 +2253,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     continue
                 surface_browser_window(page, browser_profile, "waiting_reservation_recovery")
                 record("input_required", {"field": "reservation_recovery", "stage": "waiting_reservation_recovery", "prompt": "ที่นั่งหลุดและระบบย้อนกลับผังเดิมไม่ได้ กรุณากลับหน้าผังใน browser เดิมแล้วกดทำต่อ", "secret": False})
-                input("กลับไปหน้าผังที่นั่งใน Chrome เดิมแล้วกด Enter: ")
+                console_input("กลับไปหน้าผังที่นั่งใน Chrome เดิมแล้วกด Enter: ")
                 continue
             if state == "login":
                 login_url = page.url
@@ -2192,7 +2261,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 if not fill_login(page):
                     surface_browser_window(page, browser_profile, "waiting_login_form")
                     record("input_required", {"field": "login", "stage": "waiting_login_form", "prompt": "ฟอร์ม Login เปลี่ยนหรือข้อมูลยังไม่ครบ กรุณาตรวจหน้าเดิมแล้วส่งข้อมูลใหม่", "secret": False})
-                    input("ตรวจ/กรอก Login ใน Chrome เดิมแล้วกด Enter เพื่อ rescan: ")
+                    console_input("ตรวจ/กรอก Login ใน Chrome เดิมแล้วกด Enter เพื่อ rescan: ")
                     continue
                 login_submitted = True
                 transitioned = wait_for_post_login_transition(page, login_url)
@@ -2202,7 +2271,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     os.environ.pop("TICKET_USERNAME", None)
                     os.environ.pop("TICKET_PASSWORD", None)
                     record("input_required", {"field": "login", "stage": "waiting_login_retry", "prompt": "Login ยังไม่สำเร็จ ระบบรักษา session ไว้และรอข้อมูลใหม่", "secret": False})
-                    input("Login ยังไม่สำเร็จ ตรวจข้อความใน Chrome แล้วกด Enter เพื่อกรอกใหม่: ")
+                    console_input("Login ยังไม่สำเร็จ ตรวจข้อความใน Chrome แล้วกด Enter เพื่อกรอกใหม่: ")
                     login_submitted = False
                     continue
                 continue
@@ -2218,7 +2287,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 handoff_stage = "waiting_captcha" if state == "captcha_handoff" else "waiting_otp"
                 surface_browser_window(page, browser_profile, handoff_stage)
                 record("input_required", {"field": "captcha" if state == "captcha_handoff" else "otp", "stage": handoff_stage, "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว แก้ขั้นยืนยันและกลับมากดทำต่อ", "secret": False})
-                input("รับช่วงในหน้าต่าง Chrome เฉพาะขั้นนี้ แล้วกลับมากด Enter; บอทจะทำงานต่อด้วย session เดิม: ")
+                console_input("รับช่วงในหน้าต่าง Chrome เฉพาะขั้นนี้ แล้วกลับมากด Enter; บอทจะทำงานต่อด้วย session เดิม: ")
                 wait_for_page_change(page, page.url, timeout_ms=1500)
                 continue
             if state == "terms_conditions":
@@ -2230,7 +2299,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_terms_recovery")
                     record("input_required", {"field": "terms", "stage": "waiting_terms_recovery", "prompt": "AI ยังยืนยัน control ข้อตกลงไม่ได้ ระบบรักษา session ไว้ให้ตรวจ", "secret": False})
-                    input("ตรวจหน้าข้อตกลงแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจหน้าข้อตกลงแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 record("action", {"action": "terms_accepted_under_run_authorization", "same_session": True})
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
@@ -2244,7 +2313,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_zone_recovery")
                     record("input_required", {"field": "zone", "stage": "waiting_zone_recovery", "prompt": "AI ยังเลือกได้เฉพาะโซนที่อนุญาตแต่หา control ไม่พบ ระบบไม่ออกนอกโซน", "secret": False})
-                    input("ตรวจหน้าโซนเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจหน้าโซนเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
@@ -2257,7 +2326,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_quantity_recovery")
                     record("input_required", {"field": "quantity", "stage": "waiting_quantity_recovery", "prompt": "AI ยังใส่จำนวนบัตรที่ล็อกไว้ไม่ได้ ระบบไม่เปลี่ยนจำนวนเอง", "secret": False})
-                    input("ตรวจหน้าจำนวนบัตรแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจหน้าจำนวนบัตรแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
@@ -2277,7 +2346,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_seat_recovery")
                     record("input_required", {"field": "seat_recovery", "stage": "waiting_seat_recovery", "prompt": "AI ยังแก้ผังที่นั่งรูปแบบนี้ไม่ได้ ระบบรักษา session และชุดเงื่อนไขเดิมไว้", "secret": False})
-                    input("ตรวจผังเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจผังเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 if not semantic_click(page, ["ดำเนินการต่อ", "ถัดไป", "continue", "next", "ยืนยัน"]):
                     record("recovery", {"status": "CONTINUE_CONTROL_RESCAN", "same_session": True, "reservation_preserved": True})
@@ -2285,7 +2354,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     if not recovery["executed"]:
                         surface_browser_window(page, browser_profile, "waiting_manual_continue")
                         record("input_required", {"field": "continue", "stage": "waiting_manual_continue", "prompt": "ที่นั่งถูกยืนยันแล้วแต่ปุ่มดำเนินการต่อเปลี่ยน กรุณากดปุ่มต่อใน Chrome แล้วกดทำต่อ", "secret": False})
-                        input("กดดำเนินการต่อใน Chrome เดิมแล้วกลับมากด Enter: ")
+                        console_input("กดดำเนินการต่อใน Chrome เดิมแล้วกลับมากด Enter: ")
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "attendee_details":
@@ -2297,7 +2366,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_attendee_recovery")
                     record("input_required", {"field": "attendee", "stage": "waiting_attendee_recovery", "prompt": "AI ยังจับคู่ฟิลด์ข้อมูลผู้เข้าชมไม่ได้ ระบบไม่เดาค่าหรือเปลี่ยนผู้เข้าชม", "secret": False})
-                    input("ตรวจฟอร์มผู้เข้าชมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจฟอร์มผู้เข้าชมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
@@ -2311,7 +2380,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 if checkout_result is None:
                     surface_browser_window(page, browser_profile, "waiting_checkout_options")
                     record("input_required", {"field": "checkout_options", "stage": "waiting_checkout_options", "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว เลือกวิธีรับบัตร/QR และกดทำต่อ", "secret": False})
-                    input("เลือกวิธีรับบัตร/QR แล้ว ระบบหยุดก่อนสร้างคำสั่งซื้อ กด Enter เพื่อปิด หรือรันใหม่ด้วย --confirm-order: ")
+                    console_input("เลือกวิธีรับบัตร/QR แล้ว ระบบหยุดก่อนสร้างคำสั่งซื้อ กด Enter เพื่อปิด หรือรันใหม่ด้วย --confirm-order: ")
                     context.close()
                     return 0
                 if not checkout_result:
@@ -2321,7 +2390,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         continue
                     surface_browser_window(page, browser_profile, "waiting_checkout_recovery")
                     record("input_required", {"field": "checkout_options", "stage": "waiting_checkout_recovery", "prompt": "AI ยังจับคู่ตัวเลือก Checkout ไม่ได้ ระบบไม่เปลี่ยนวิธีรับบัตรหรือวิธีชำระ", "secret": False})
-                    input("ตรวจ Checkout เดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    console_input("ตรวจ Checkout เดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
@@ -2343,7 +2412,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         record("result", {"status": "STOPPED_WITHOUT_VERIFIED_PAYMENT_HANDOFF", "state": checkpoint["state"], "live_checkout_verified": False})
         surface_browser_window(page, browser_profile, "waiting_review")
         record("input_required", {"field": "review", "stage": "waiting_review", "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว: หลักฐานยังไม่พอ ตรวจแล้วกดทำต่อเพื่อปิด", "secret": False})
-        input("หลักฐานยังไม่พอ ระบบหยุดไว้ให้ตรวจใน Chrome กด Enter เพื่อปิด: ")
+        console_input("หลักฐานยังไม่พอ ระบบหยุดไว้ให้ตรวจใน Chrome กด Enter เพื่อปิด: ")
         context.close()
         return 3
 

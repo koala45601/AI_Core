@@ -36,10 +36,16 @@ ollama_ready() {
   curl --max-time 5 -fsS "$ALPHA_OLLAMA_URL/api/tags" >/dev/null 2>&1
 }
 
+warm_primary_model() {
+  curl --max-time 120 -fsS "$ALPHA_OLLAMA_URL/api/generate" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"qwen3.5:9b","prompt":"","stream":false,"keep_alive":-1}' >/dev/null 2>&1
+}
+
 tool_ready() {
   local health_json
   health_json="$(curl --max-time 5 -fsS -H "Authorization: Bearer $ALPHA_TOOL_TOKEN" http://127.0.0.1:4317/v1/health 2>/dev/null || true)"
-  [[ "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* ]]
+  [[ "$health_json" == *'"app_version":"'"$ALPHA_APP_VERSION"'"'* && "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* ]]
 }
 
 stop_pid_tree() {
@@ -61,6 +67,11 @@ pid_belongs_to_alpha() {
 }
 
 cd "$ALPHA_DIR"
+ALPHA_APP_VERSION="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$ALPHA_DIR/package.json" | head -n 1)"
+if [[ -z "$ALPHA_APP_VERSION" ]]; then
+  echo "อ่านเวอร์ชัน Alpha จาก package.json ไม่สำเร็จ"
+  exit 1
+fi
 if [[ -f "$ALPHA_DIR/.alpha-external-storage" ]]; then
   ALPHA_EXPECTED_VOLUME_UUID="$(sed -n 's/^volume_uuid=//p' "$ALPHA_DIR/.alpha-external-storage" | head -n 1)"
   ALPHA_VOLUME_DEVICE="$(df -P "$ALPHA_DIR" | awk 'END { print $1 }')"
@@ -114,6 +125,12 @@ fi
 if ! "$ALPHA_OLLAMA_BIN" list | awk '{print $1}' | grep -q '^qwen3:4b-instruct$'; then
   echo "กำลังดาวน์โหลด Qwen3 4B Instruct สำหรับโหมดเร็ว..."
   "$ALPHA_OLLAMA_BIN" pull qwen3:4b-instruct
+fi
+
+echo "กำลังเตรียมสมองหลักให้อยู่ในโหมด Standby..."
+if ! warm_primary_model; then
+  echo "โหลด Qwen3.5 9B เข้า RAM ไม่สำเร็จ กรุณาตรวจ Ollama และพื้นที่ RAM"
+  exit 1
 fi
 
 if command -v npm >/dev/null 2>&1; then
@@ -222,6 +239,11 @@ else
   read -r "?กด Enter เพื่อปิดหน้าต่าง..."
   exit 1
 fi
+
+# The generated Ticket Bot is executed from the installed learned-skill copy,
+# not directly from templates/. Keep that runtime copy on the exact app version
+# before deciding whether an already-running Tool Service can be reused.
+"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/sync-bundled-skills.mjs" "$ALPHA_DIR"
 
 if ! tool_ready; then
   launchctl remove "$ALPHA_TOOL_SERVICE" >/dev/null 2>&1 || true

@@ -251,7 +251,14 @@ function mapEvent(run, event) {
   run.updated_at = now();
 }
 
-export function createTicketRunManager({ programCreateDir, ticketBrowserProfileDir = "", shellPath = "/bin/zsh", logLimit = MAX_LOG_LINES, requiredGeneratorVersion = "" } = {}) {
+export function createTicketRunManager({
+  programCreateDir,
+  ticketBrowserProfileDir = "",
+  shellPath = "/bin/zsh",
+  logLimit = MAX_LOG_LINES,
+  requiredGeneratorVersion = "",
+  ollamaBaseUrl = "http://127.0.0.1:11435",
+} = {}) {
   if (!programCreateDir) throw new Error("programCreateDir is required");
   const runs = new Map();
 
@@ -358,6 +365,7 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
         ...(username ? { TICKET_USERNAME: username } : {}),
         ...(password ? { TICKET_PASSWORD: password } : {}),
         ...(ticketBrowserProfileDir ? { ALPHA_TICKET_BROWSER_PROFILE: resolve(ticketBrowserProfileDir) } : {}),
+        ALPHA_OLLAMA_BASE_URL: String(ollamaBaseUrl || "http://127.0.0.1:11435").replace(/\/$/, ""),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

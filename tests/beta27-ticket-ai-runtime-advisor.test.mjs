@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -28,6 +28,11 @@ test("beta27 analyzes every ticket state and learns verified recovery strategies
   assert.match(template, /"backgroundAdvisor": True/);
   assert.match(template, /"actionMode": "validated_autonomous"/);
   assert.match(template, /def schedule_ai_runtime_analysis\(page, checkpoint, context=None\):/);
+  assert.match(template, /AI_FUTURES = \{\}/);
+  assert.match(template, /max_workers=3/);
+  assert.match(template, /future\.add_done_callback/);
+  assert.match(template, /def console_input\(prompt=""\):/);
+  assert.doesNotMatch(template, /\binput\("/);
   assert.match(template, /schedule_ai_runtime_analysis\(page, checkpoint/);
   assert.match(template, /def execute_validated_ai_action\(page, checkpoint, decision, confirm_order=False\):/);
   assert.match(template, /if action not in ai_actions_for_state\(state\):/);
@@ -35,10 +40,13 @@ test("beta27 analyzes every ticket state and learns verified recovery strategies
   assert.match(template, /ticket-ai-recovery-strategies\.json/);
   assert.match(template, /credentials_included": False/);
   assert.match(template, /"payment_submitted": False/);
+  assert.match(template, /ALPHA_OLLAMA_BASE_URL/);
+  assert.doesNotMatch(template, /127\.0\.0\.1:11434/);
   assert.match(template, /state not in \{"queue", "captcha_handoff", "otp_handoff", "payment_handoff"\}/);
   assert.match(manager, /kind === "ai_analysis"/);
   assert.match(manager, /kind === "ai_action"/);
   assert.match(manager, /kind === "ai_strategy_learned"/);
+  assert.match(manager, /ALPHA_OLLAMA_BASE_URL:/);
   assert.match(page, /AI Learned/);
   assert.match(page, /AI วิเคราะห์/);
 });
@@ -81,7 +89,14 @@ class Response:
     def read(self):
         content = {"action":"rescan","diagnosis":"DOM changed","reason":"control moved","confidence":0.9,"next_expected_state":"sale_entry"}
         return json.dumps({"message":{"content":json.dumps(content)}}).encode()
-bot.urllib.request.urlopen = lambda request, timeout=0: Response()
+def fake_urlopen(request, timeout=0):
+    assert request.full_url == "http://127.0.0.1:11999/api/chat"
+    body = json.loads(request.data.decode())
+    assert body["think"] is False
+    assert body["keep_alive"] == "-1"
+    return Response()
+bot.urllib.request.urlopen = fake_urlopen
+bot.os.environ["ALPHA_OLLAMA_BASE_URL"] = "http://127.0.0.1:11999/"
 snapshot = {"state":"unknown","url":"https://tickets.test/event","body":"changed", "controls":[], "allowed_zones":["A"], "current_zone":"A"}
 decision = bot.query_local_ai(snapshot, ["rescan", "request_user"], {"phase":"fixture"}, 1)
 assert decision["action"] == "rescan"
@@ -99,4 +114,47 @@ bot.AI_EXECUTOR.shutdown(wait=False, cancel_futures=True)
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+});
+
+test("launcher rejects a stale Tool Service and synchronizes the installed ticket generator", async () => {
+  const launcher = await readFile(new URL("../start-alpha.command", import.meta.url), "utf8");
+  assert.match(launcher, /scripts\/sync-bundled-skills\.mjs/);
+  assert.match(launcher, /"app_version":"'"\$ALPHA_APP_VERSION"'"/);
+  assert.match(launcher, /warm_primary_model/);
+  assert.match(launcher, /"keep_alive":-1/);
+
+  const temporary = await mkdtemp(join(tmpdir(), "alpha-beta27-sync-"));
+  const skillDir = join(temporary, "outputs", "Alpha Outputs", "Learned Skills", "concert-ticket-purchase-assistant");
+  const workDir = join(temporary, "work");
+  const templateDir = join(temporary, "templates");
+  try {
+    await mkdir(skillDir, { recursive: true });
+    await mkdir(workDir, { recursive: true });
+    await mkdir(templateDir, { recursive: true });
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ version: "1.1.0-beta.27" }), "utf8");
+    await writeFile(join(templateDir, "concert-ticket-assistant.py"), "# beta27 runtime\n", "utf8");
+    await writeFile(join(skillDir, "main.py"), "# stale beta24 runtime\n", "utf8");
+    await writeFile(join(skillDir, "alpha-skill.json"), JSON.stringify({ id: "concert-ticket-purchase-assistant", version: 24, generator_version: "1.1.0-beta.24" }), "utf8");
+    await writeFile(join(workDir, "skills-index.json"), JSON.stringify([{ id: "concert-ticket-purchase-assistant", version: 24 }]), "utf8");
+
+    const synced = await run(process.execPath, [new URL("../scripts/sync-bundled-skills.mjs", import.meta.url).pathname, temporary]);
+    assert.equal(synced.code, 0, synced.stderr || synced.stdout);
+    assert.equal(await readFile(join(skillDir, "main.py"), "utf8"), "# beta27 runtime\n");
+    const manifest = JSON.parse(await readFile(join(skillDir, "alpha-skill.json"), "utf8"));
+    assert.equal(manifest.generator_version, "1.1.0-beta.27");
+    assert.equal(manifest.version, 27);
+    const index = JSON.parse(await readFile(join(workDir, "skills-index.json"), "utf8"));
+    assert.equal(index.at(-1).generator_version, "1.1.0-beta.27");
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Tool Service passes its configured Ollama endpoint to generated ticket runtimes", async () => {
+  const server = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
+  const manager = await readFile(new URL("../tool-service/ticket-run-manager.mjs", import.meta.url), "utf8");
+  assert.match(server, /OLLAMA_BASE_URL/);
+  assert.match(server, /ollamaBaseUrl,/);
+  assert.match(manager, /ollamaBaseUrl = "http:\/\/127\.0\.0\.1:11435"/);
+  assert.match(manager, /ALPHA_OLLAMA_BASE_URL: String\(ollamaBaseUrl/);
 });
