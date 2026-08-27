@@ -31,7 +31,7 @@ test("Ticket Run Manager validates Program_Create, streams handoff, redacts cred
   const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-runtime-"));
   const root = join(temp, "Program_Create");
   await mkdir(root);
-  const path = await project(root, "demo", `#!/bin/bash\necho '{"kind":"runtime","stage":"starting_browser"}'\necho "password=$TICKET_PASSWORD" >&2\necho '{"kind":"input_required","field":"zone","stage":"waiting_zone","options":["A1","A2"],"prompt":"เลือกโซน"}'\nIFS= read -r zone\necho '{"kind":"wait","state":"queue"}'\necho '{"kind":"result","status":"PAYMENT_HANDOFF","live_checkout_verified":true}'\necho '{"kind":"input_required","field":"payment","stage":"payment_handoff","prompt":"หยุดก่อนจ่าย"}'\nIFS= read -r done\nexit 0\n`);
+  const path = await project(root, "demo", `#!/bin/bash\necho '{"kind":"runtime","stage":"starting_browser"}'\necho "password=$TICKET_PASSWORD" >&2\necho '{"kind":"input_required","field":"zone","stage":"waiting_zone","options":["A1","A2"],"prompt":"เลือกโซน"}'\nIFS= read -r zone\necho '{"kind":"wait","state":"queue"}'\necho '{"kind":"reservation_verified","status":"SEAT_HOLD_VERIFIED","zone":"A1","selected":2,"wanted":2,"attempt":1}'\necho '{"kind":"result","status":"PAYMENT_HANDOFF","live_checkout_verified":true}'\necho '{"kind":"input_required","field":"payment","stage":"payment_handoff","prompt":"หยุดก่อนจ่าย"}'\nIFS= read -r done\nexit 0\n`);
   const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
   try {
     const started = await manager.start({ project_path: path, username: "demo@example.com", password: "super-secret-value" });
@@ -53,6 +53,7 @@ test("Ticket Run Manager validates Program_Create, streams handoff, redacts cred
       return run.status === "waiting_handoff" && run.stage === "payment_handoff" ? run : null;
     });
     assert.equal(payment.payment_handoff_verified, true);
+    assert.equal(payment.reservation_verified, true);
     assert.equal(payment.full_loop_verified, true);
     await manager.input(started.run.id, "");
     const completed = await waitFor(() => {
@@ -182,10 +183,10 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(template, /record\("input_required"/);
   assert.match(template, /"field": "captcha" if state == "captcha_handoff" else "otp"/);
   assert.match(template, /wait_for_post_login_transition\(page, login_url\)/);
-  assert.match(template, /TERMS_ACCEPTANCE_REQUIRED/);
+  assert.match(template, /terms_accepted_under_run_authorization/);
   assert.match(page, /"access_denied", "terms"/);
-  assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
+  assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import[^\n]*urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);
-  assert.equal(pkg.version, "1.1.0-beta.25");
+  assert.equal(pkg.version, "1.1.0-beta.26");
 });

@@ -76,7 +76,11 @@ function publicRun(run) {
     logs: [...run.logs],
     latest_url: run.latest_url,
     full_loop_verified: run.full_loop_verified === true,
+    reservation_verified: run.reservation_verified === true,
     payment_handoff_verified: run.payment_handoff_verified === true,
+    seat: { ...(run.seat || {}) },
+    queue: { ...(run.queue || {}) },
+    checkout_countdown_seconds: Number.isFinite(run.checkout_countdown_seconds) ? run.checkout_countdown_seconds : null,
     result_status: run.result_status,
     result_reason: run.result_reason,
     evidence_paths: [...(run.evidence_paths || [])],
@@ -113,6 +117,81 @@ function mapEvent(run, event) {
     run.status = "runtime_running";
     run.stage = "selecting_ticket";
     run.detail = safeText(event.reason, 500) || "กำลังเลือกบัตรตามเงื่อนไข";
+  } else if (kind === "seat_scan") {
+    run.status = "runtime_running";
+    run.stage = "seat_scan";
+    run.seat.current_zone = safeText(event.zone, 80);
+    run.seat.wanted = Math.max(0, Number(event.wanted || 0));
+    run.seat.available = Math.max(0, Number(event.available || 0));
+    run.seat.attempts = Math.max(run.seat.attempts || 0, Number(event.attempt || 0));
+    run.seat.next_action = "plan_complete_set";
+    run.detail = `กำลังสแกนโซน ${run.seat.current_zone || "ปัจจุบัน"} · ว่าง ${run.seat.available} · ต้องการ ${run.seat.wanted}`;
+  } else if (kind === "seat_set_planned") {
+    run.status = "runtime_running";
+    run.stage = "seat_set_planned";
+    run.seat.current_zone = safeText(event.zone, 80);
+    run.seat.candidate_set = Array.isArray(event.seats) ? event.seats.map((item) => safeText(item, 100)).filter(Boolean).slice(0, 20) : [];
+    run.seat.attempts = Math.max(run.seat.attempts || 0, Number(event.attempt || 0));
+    run.seat.next_action = "reserve_complete_set";
+    run.detail = `พบชุดครบ: ${run.seat.candidate_set.join(", ") || "กำลังยืนยัน"}`;
+  } else if (kind === "seat_attempt") {
+    run.status = "runtime_running";
+    run.stage = "seat_attempt";
+    run.seat.attempts = Math.max(run.seat.attempts || 0, Number(event.attempt || 0));
+    run.seat.next_action = "verify_reservation";
+    run.detail = `กำลังยืนยันชุดที่นั่งครั้งที่ ${run.seat.attempts}`;
+  } else if (kind === "seat_conflict") {
+    run.status = "runtime_running";
+    run.stage = "seat_conflict";
+    run.seat.current_zone = safeText(event.zone, 80) || run.seat.current_zone;
+    run.seat.selected = Math.max(0, Number(event.selected || 0));
+    run.seat.wanted = Math.max(0, Number(event.wanted || run.seat.wanted || 0));
+    run.seat.attempts = Math.max(run.seat.attempts || 0, Number(event.attempt || 0));
+    run.seat.reservation_status = safeText(event.status, 120) || "conflict";
+    run.seat.next_action = safeText(event.next_action, 120) || "release_partial_and_retry";
+    run.detail = `ที่นั่งถูกแย่งหรือชุดไม่ครบ ${run.seat.selected}/${run.seat.wanted} · กำลังลองชุดใหม่`;
+  } else if (kind === "partial_released") {
+    run.status = "runtime_running";
+    run.stage = "partial_released";
+    run.seat.selected = Math.max(0, Number(event.remaining || 0));
+    run.seat.next_action = "rescan_same_zone";
+    run.detail = `ปล่อย partial ${Math.max(0, Number(event.released || 0))} ที่นั่งแล้ว`;
+  } else if (kind === "zone_switch") {
+    run.status = "runtime_running";
+    run.stage = "zone_switch";
+    run.seat.current_zone = safeText(event.to_zone || event.zone, 80);
+    run.seat.next_action = "scan_next_allowed_zone";
+    run.detail = `เปลี่ยนไปโซน ${run.seat.current_zone || "ถัดไป"} เพราะโซนเดิมไม่มีชุดครบ`;
+  } else if (kind === "reservation_verified") {
+    run.status = "runtime_running";
+    run.stage = "reservation_verified";
+    run.reservation_verified = true;
+    run.seat.current_zone = safeText(event.zone, 80) || run.seat.current_zone;
+    run.seat.selected = Math.max(0, Number(event.selected || event.wanted || 0));
+    run.seat.wanted = Math.max(0, Number(event.wanted || run.seat.wanted || 0));
+    run.seat.reservation_status = safeText(event.status, 120) || "verified";
+    run.seat.next_action = "fast_checkout";
+    run.detail = `ยืนยันการถือบัตร ${run.seat.selected}/${run.seat.wanted} แล้ว · กำลัง Checkout`;
+  } else if (kind === "recovery") {
+    run.status = "runtime_running";
+    run.stage = "recovery";
+    run.seat.next_action = safeText(event.next_action || event.action, 120) || run.seat.next_action;
+    run.detail = safeText(event.reason, 500) || safeText(event.status, 200) || "กำลัง recovery ด้วย session เดิม";
+  } else if (kind === "queue_analysis") {
+    run.status = "runtime_running";
+    run.stage = "waiting_queue";
+    run.queue.position = Number.isFinite(Number(event.queue_position)) ? Number(event.queue_position) : null;
+    run.queue.position_verified = event.queue_position_verified === true;
+    run.queue.waited_seconds = Math.max(0, Number(event.waited_seconds || 0));
+    run.queue.server_status = Number(event.server_status || 0) || null;
+    run.queue.current_action = safeText(event.current_action, 120);
+    run.queue.next_action = safeText(event.next_action, 120);
+    run.detail = run.queue.position_verified ? `กำลังรอคิวลำดับ ${run.queue.position}` : "กำลังรอคิวเดิม · เว็บไซต์ยังไม่แสดงหมายเลข";
+  } else if (kind === "checkout_countdown") {
+    run.status = "waiting_handoff";
+    run.stage = "payment_handoff";
+    run.checkout_countdown_seconds = Math.max(0, Number(event.remaining_seconds || 0));
+    run.detail = `ถึงหน้า QR แล้ว · เหลือ ${run.checkout_countdown_seconds} วินาที · ระบบจะไม่ชำระเงินแทน`;
   } else if (kind === "evidence" || kind === "screenshot") {
     const evidencePath = safeText(event.path, 2_000);
     if (evidencePath && !run.evidence_paths.includes(evidencePath)) run.evidence_paths.push(evidencePath);
@@ -141,9 +220,10 @@ function mapEvent(run, event) {
       run.status = "waiting_handoff";
       run.stage = "payment_handoff";
       run.payment_handoff_verified = event.live_checkout_verified === true;
-      run.full_loop_verified = run.payment_handoff_verified;
+      run.checkout_countdown_seconds = Number.isFinite(Number(event.checkout_countdown_seconds)) ? Number(event.checkout_countdown_seconds) : null;
+      run.full_loop_verified = run.payment_handoff_verified && run.reservation_verified;
       run.handoff = { field: "payment", prompt: "ถึงหน้าชำระเงินแล้ว ระบบจะไม่ชำระเงินจริง ให้ผู้ใช้ตรวจและรับช่วง", options: [], secret: false };
-      run.detail = run.payment_handoff_verified ? "ยืนยันหลักฐาน PAYMENT_HANDOFF แล้ว" : "ถึง payment handoff แต่หลักฐาน checkout ยังไม่ครบ";
+      run.detail = run.full_loop_verified ? "ยืนยัน reservation_verified และ PAYMENT_HANDOFF ครบแล้ว" : "ถึง payment handoff แต่ยังขาดหลักฐาน reservation_verified หรือ checkout";
     } else {
       run.stage = upper ? upper.toLowerCase() : "result";
       run.detail = status || safeText(event.reason, 500) || "บอทรายงานผลลัพธ์";
@@ -278,7 +358,11 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
       logs: [],
       latest_url: "",
       full_loop_verified: false,
+      reservation_verified: false,
       payment_handoff_verified: false,
+      seat: { current_zone: "", candidate_set: [], selected: 0, wanted: 0, attempts: 0, reservation_status: "pending", next_action: "" },
+      queue: { position: null, position_verified: false, waited_seconds: 0, server_status: null, current_action: "", next_action: "" },
+      checkout_countdown_seconds: null,
       result_status: "",
       result_reason: "",
       evidence_paths: [],
@@ -320,10 +404,10 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
         run.detail = run.result_status
           ? `${run.result_status}${run.result_reason ? ` · ${run.result_reason}` : ""} (exit code ${code ?? 1})`
           : `Ticket Bot จบด้วย exit code ${code ?? 1}`;
-      } else if (run.payment_handoff_verified) {
+      } else if (run.full_loop_verified) {
         run.status = "completed";
         run.stage = "completed_payment_handoff";
-        run.detail = "process จบหลังยืนยัน PAYMENT_HANDOFF";
+        run.detail = "process จบหลังยืนยัน reservation_verified และ PAYMENT_HANDOFF";
       } else if (HANDLED_TERMINAL_RESULTS.has(run.result_status)) {
         run.status = "completed";
         run.stage = run.result_status.toLowerCase();

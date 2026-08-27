@@ -111,7 +111,8 @@ test("generated reserved-seat bot can defer zone choice and requires verified lo
     assert.match(bot, /credentials_persisted.*False/);
     assert.match(bot, /def wait_for_seat_controls/);
     assert.match(bot, /frame for frame in page\.frames if frame != page\.main_frame/);
-    assert.match(bot, /seat_locators\[index\]\.click\(\)/);
+    assert.match(bot, /def fast_reserved_seat_recovery\(page\):/);
+    assert.match(bot, /def click_candidate_set\(locators, metadata, indices\):/);
     assert.match(bot, /candidate_count/);
   } finally {
     await rm(temporary, { recursive: true, force: true });

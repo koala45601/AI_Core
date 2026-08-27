@@ -50,7 +50,7 @@ let storageError = "";
 let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
-const ticketRunManager = createTicketRunManager({ programCreateDir, ticketBrowserProfileDir, requiredGeneratorVersion: "1.1.0-beta.25" });
+const ticketRunManager = createTicketRunManager({ programCreateDir, ticketBrowserProfileDir, requiredGeneratorVersion: "1.1.0-beta.26" });
 
 if (token.length < 32) {
   console.error("ALPHA_TOOL_TOKEN is missing or too short");

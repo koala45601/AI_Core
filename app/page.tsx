@@ -255,7 +255,27 @@ interface TicketRunView {
   exit_code?: number | null;
   latest_url?: string;
   full_loop_verified?: boolean;
+  reservation_verified?: boolean;
   payment_handoff_verified?: boolean;
+  seat?: {
+    current_zone?: string;
+    candidate_set?: string[];
+    selected?: number;
+    wanted?: number;
+    available?: number;
+    attempts?: number;
+    reservation_status?: string;
+    next_action?: string;
+  };
+  queue?: {
+    position?: number | null;
+    position_verified?: boolean;
+    waited_seconds?: number;
+    server_status?: number | null;
+    current_action?: string;
+    next_action?: string;
+  };
+  checkout_countdown_seconds?: number | null;
   result_status?: string;
   result_reason?: string;
   evidence_paths?: string[];
@@ -352,6 +372,15 @@ function ticketRunLogLabel(text: string) {
     if (kind === "checkpoint") return `ตรวจหน้า: ${String(item.state || "unknown")} · ${String(item.url || "")}`;
     if (kind === "api") return `API: ${String(item.method || "GET")} ${String(item.url || "")} → ${String(item.status || "")}`;
     if (kind === "wait") return `กำลังรอ: ${String(item.state || "เงื่อนไขจากเว็บ")}`;
+    if (kind === "seat_scan") return `สแกนที่นั่ง: โซน ${String(item.zone || "ปัจจุบัน")} · ว่าง ${String(item.available || 0)} · ต้องการ ${String(item.wanted || 0)}`;
+    if (kind === "seat_set_planned") return `วางชุดที่นั่ง: ${Array.isArray(item.seats) ? item.seats.join(", ") : "กำลังยืนยัน"}`;
+    if (kind === "seat_attempt") return `ลองยืนยันชุดที่นั่งครั้งที่ ${String(item.attempt || 1)}`;
+    if (kind === "seat_conflict") return `ที่นั่งถูกแย่ง/ชุดไม่ครบ ${String(item.selected || 0)}/${String(item.wanted || 0)} — กำลัง recovery`;
+    if (kind === "partial_released") return `ปล่อยที่นั่งที่ค้าง ${String(item.released || 0)} ใบแล้ว`;
+    if (kind === "zone_switch") return `เปลี่ยนโซน: ${String(item.from_zone || "เดิม")} → ${String(item.to_zone || item.zone || "ถัดไป")}`;
+    if (kind === "reservation_verified") return `ยืนยันการถือบัตรแล้ว ${String(item.selected || item.wanted || 0)}/${String(item.wanted || 0)}`;
+    if (kind === "queue_analysis") return item.queue_position_verified ? `คิวลำดับ ${String(item.queue_position)}` : "กำลังรักษาคิวเดิม · ห้าม refresh";
+    if (kind === "recovery") return `Recovery: ${String(item.status || item.action || "กำลังแก้สถานะ")}`;
     if (kind === "result") return `ผล: ${String(item.status || "ยังไม่ยืนยัน")}${item.reason ? ` — ${String(item.reason)}` : ""}`;
     if (kind === "input_required") return `รอผู้ใช้: ${String(item.prompt || item.field || "ตรวจหน้า Browser")}`;
     if (kind === "runtime") return String(item.detail || "เปิด Browser แยกแล้ว");
@@ -1617,7 +1646,7 @@ export default function Home() {
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "1.1.0-beta.25"
+        && ticketBuildReport.generator_version === "1.1.0-beta.26"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -1830,6 +1859,7 @@ export default function Home() {
                           <section className="ticket-result-card chat-ticket-run">
                             <div><span>{message.ticketRun.status === "failed" ? "!" : message.ticketRun.status === "completed" ? "✓" : "▶"}</span><div><strong>Ticket Full Loop · {message.ticketRun.status}</strong><p>Stage: {message.ticketRun.stage}</p></div></div>
                             <small>{message.ticketRun.detail || "AI กำลังควบคุม Ticket Browser เบื้องหลัง"}</small>
+                            {message.ticketRun.seat && <div className="ticket-run-metrics"><span>โซน <strong>{message.ticketRun.seat.current_zone || "—"}</strong></span><span>ที่นั่ง <strong>{message.ticketRun.seat.selected || 0}/{message.ticketRun.seat.wanted || 0}</strong></span><span>ครั้งที่ <strong>{message.ticketRun.seat.attempts || 0}</strong></span><span>Hold <strong>{message.ticketRun.reservation_verified ? "ยืนยันแล้ว" : message.ticketRun.seat.reservation_status || "รอ"}</strong></span></div>}
                             {message.ticketRun.latest_url ? <code>{message.ticketRun.latest_url}</code> : null}
                             {message.ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{message.ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
                             {message.ticketRun.logs?.length ? <ol className="ticket-run-timeline">{message.ticketRun.logs.slice(-8).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
@@ -2065,7 +2095,7 @@ export default function Home() {
             <aside className="ticket-discovery-pane">
               <div className="ticket-pane-header">
                 <div><span className="section-kicker">STEP 1 · DISCOVER</span><h2>เลือกคอนเสิร์ต</h2></div>
-                <span className={`ticket-stage ${ticketStage}`}>{ticketRun?.payment_handoff_verified ? "Full Loop ผ่าน" : ticketRunActive ? "กำลังรันจริง" : ticketBuildReport ? "Fixture เท่านั้น" : ticketStage === "inspecting" || ticketStage === "form_inspecting" || ticketStage === "building" ? "กำลังทำงาน" : ticketStage === "error" ? "ไม่ผ่าน" : "รอข้อมูล"}</span>
+                <span className={`ticket-stage ${ticketStage}`}>{ticketRun?.full_loop_verified ? "Full Loop ผ่าน" : ticketRunActive ? "กำลังรันจริง" : ticketBuildReport ? "Fixture เท่านั้น" : ticketStage === "inspecting" || ticketStage === "form_inspecting" || ticketStage === "building" ? "กำลังทำงาน" : ticketStage === "error" ? "ไม่ผ่าน" : "รอข้อมูล"}</span>
               </div>
               <div className="ticket-source-form">
                 <label><span>หน้ารวมคอนเสิร์ตหรือหน้ากิจกรรม</span><input value={ticketSourceUrl} onChange={(event) => setTicketSourceUrl(event.target.value)} placeholder="https://www.thaiticketmajor.com/index.html" /></label>
@@ -2208,12 +2238,22 @@ export default function Home() {
                     {ticketBuildReport && <section className="ticket-result-card">
                       <div><span>≠</span><div><strong>ผ่านเฉพาะโครงสร้างและ fixture — ยังไม่ใช่ผลซื้อบัตรจริง</strong><p>{ticketBuildReport.project_path}</p></div></div>
                       <div className="ticket-result-files">{ticketBuildReport.created_files.map((file) => <span key={file}>{file}</span>)}</div>
-                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · Fixture: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · Runtime: {ticketRun ? ticketRun.stage : "ยังไม่เริ่ม"} · PAYMENT_HANDOFF: {ticketRun?.payment_handoff_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</small>
+                      <small>โครงสร้าง: {ticketBuildReport.verification?.structure_passed ? "ผ่าน" : "ไม่ผ่าน"} · Fixture: {ticketBuildReport.verification?.fixture_tests_passed ? "ผ่าน" : "ไม่ผ่าน"} · Runtime: {ticketRun ? ticketRun.stage : "ยังไม่เริ่ม"} · reservation_verified: {ticketRun?.reservation_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"} · PAYMENT_HANDOFF: {ticketRun?.payment_handoff_verified ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</small>
                     </section>}
 
                     {ticketRun && <section className="ticket-result-card">
                       <div><span>{ticketRun.status === "failed" ? "!" : ticketRun.status === "stopped" ? "■" : "▶"}</span><div><strong>Live Ticket Run · {ticketRun.status}</strong><p>Run {ticketRun.id} · PID {ticketRun.pid || "—"} · Stage {ticketRun.stage}</p></div></div>
                       <small>{ticketRun.detail || "กำลังรอ event จาก process"}{ticketRun.latest_url ? ` · ${ticketRun.latest_url}` : ""}</small>
+                      <div className="ticket-run-metrics">
+                        <span>โซน <strong>{ticketRun.seat?.current_zone || "—"}</strong></span>
+                        <span>ชุด <strong>{ticketRun.seat?.candidate_set?.join(", ") || "กำลังหา"}</strong></span>
+                        <span>เลือก <strong>{ticketRun.seat?.selected || 0}/{ticketRun.seat?.wanted || ticketQuantity}</strong></span>
+                        <span>Attempts <strong>{ticketRun.seat?.attempts || 0}</strong></span>
+                        <span>Reservation <strong>{ticketRun.reservation_verified ? "ยืนยันแล้ว" : ticketRun.seat?.reservation_status || "รอ"}</strong></span>
+                        <span>ถัดไป <strong>{ticketRun.seat?.next_action || ticketRun.queue?.next_action || "ตรวจ state"}</strong></span>
+                        {ticketRun.queue?.position_verified && <span>คิว <strong>{ticketRun.queue.position}</strong></span>}
+                        {ticketRun.checkout_countdown_seconds != null && <span>Checkout <strong>{Math.floor(ticketRun.checkout_countdown_seconds / 60)}:{String(ticketRun.checkout_countdown_seconds % 60).padStart(2, "0")}</strong></span>}
+                      </div>
                       {ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
                       {ticketRun.logs?.length ? <ol className="ticket-run-timeline">{ticketRun.logs.slice(-12).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
                       {ticketRun.status === "waiting_handoff" && <div className="confirm-row">

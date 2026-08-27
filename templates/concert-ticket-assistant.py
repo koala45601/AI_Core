@@ -110,7 +110,7 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "1.1.0-beta.25",
+        "generatorVersion": "1.1.0-beta.26",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -156,6 +156,15 @@ if not missing:
             "retryAfterSeconds": max(2, int(payload.get("retry_after_seconds", 3) or 3)),
             "maxBackoffSeconds": 30,
             "preserveSession": True,
+        },
+        "seatRecovery": {
+            "mode": "until_terminal",
+            "maxAttempts": 0,
+            "zoneOrder": zones,
+            "clickVerificationTimeoutMs": 2500,
+            "inventoryRescanIntervalMs": 750,
+            "releasePartialBeforeRetry": True,
+            "preserveGroupingRule": True,
         },
         "credentialEnvironment": {"username": "TICKET_USERNAME", "password": "TICKET_PASSWORD"},
         "handoffPoints": ["captcha", "otp", "payment"],
@@ -251,6 +260,8 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
         state, evidence = "server_unavailable", [f"http status {http_status}"]
     elif http_status in {401, 403} or re.search(r"access denied|you don'?t have permission to access|การเข้าถึงถูกปฏิเสธ", text):
         state, evidence = "access_denied", [f"server denied browser access ({http_status or 'page marker'})"]
+    elif re.search(r"seat\s*hold\s*(?:expired|released)|reservation\s*(?:expired|lost)|หมดเวลาการจอง|ที่นั่ง.*(?:หลุด|ถูกปล่อย)|session\s*expired", body):
+        state, evidence = "reservation_expired", ["server reports that the seat hold expired"]
     elif "close-sale" in url or re.search(r"ปิดจำหน่ายบัตรผ่านช่องทางออนไลน์|online\s+sale\s+is\s+closed", body):
         state, evidence = "sale_closed", ["server returned close-sale state"]
     elif re.search(r"ticket\s*status[\s\S]{0,120}sold\s*out|สถานะ(?:บัตร|การขาย)[\s\S]{0,120}(?:sold\s*out|บัตรหมด)|(?:^|\n)\s*sold\s*out\s*(?:$|\n)", body):
@@ -319,7 +330,8 @@ def next_action(checkpoint):
         "sale_entry": "activate_verified_purchase_control",
         "queue": "keep_same_session_and_wait_retry_after",
         "server_unavailable": "keep_same_session_and_wait_retry_after",
-        "access_denied": "show_server_denial_and_wait_for_user",
+        "access_denied": "keep_same_session_and_retry_adaptively",
+        "reservation_expired": "return_to_same_seat_map_and_recover",
         "sale_closed": "stop_and_report_sale_closed",
         "sold_out": "stop_and_report_sold_out",
         "login": "fill_credentials_or_prompt_securely",
@@ -350,9 +362,24 @@ def _preferred_seat_numbers(values):
     return list(dict.fromkeys(numbers))
 
 
+def expand_zone_preferences(values):
+    """Expand user-friendly zone ranges while preserving the requested order."""
+    expanded = []
+    for value in values or []:
+        text = str(value).strip().upper()
+        match = re.fullmatch(r"([A-Z])\s*-\s*([A-Z])", text)
+        if match:
+            start, end = ord(match.group(1)), ord(match.group(2))
+            step = 1 if start <= end else -1
+            expanded.extend(chr(code) for code in range(start, end + step, step))
+        elif text:
+            expanded.append(text)
+    return list(dict.fromkeys(expanded))
+
+
 def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=None, preferred_rows=None, preferred_numbers=None, fallback_mode="nearest"):
     wanted = max(1, int(quantity))
-    zones = [str(item).upper() for item in (preferred_zones or [])]
+    zones = expand_zone_preferences(preferred_zones)
     rows = [str(item).upper() for item in (preferred_rows or [])]
     numbers = _preferred_seat_numbers(preferred_numbers)
     available = []
@@ -406,27 +433,32 @@ def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=No
     bot_source = r'''import argparse
 import atexit
 import getpass
+import hashlib
 import json
 import os
 import pathlib
 import re
+import select
 import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from state_machine import choose_seat_indices, classify_snapshot, next_action, verified_payment_handoff
+from state_machine import choose_seat_indices, classify_snapshot, expand_zone_preferences, next_action, verified_payment_handoff
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 REPORT = ROOT / "run-report.jsonl"
 ACTIONABLE_SELECTOR = "button, a[href], area[href], input[type=button], input[type=submit], input[type=image], [role=button], [role=link], [onclick]"
-SEAT_SELECTOR = ".seatuncheck, [data-seat][data-seatk], [data-seat][data-available='true'], [data-seat][data-status='available'], [data-seat-number], [role='button'][aria-label*='seat' i]"
+SEAT_SELECTOR = ".seatuncheck, .seatcheck, [data-seat][data-seatk], [data-seat][data-available='true'], [data-seat][data-status='available'], [data-seat-number], [role='button'][aria-label*='seat' i]"
+SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
+LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "at": 0.0}
 
 
 def record(kind, payload):
@@ -656,15 +688,61 @@ def visible_seat_control_count(page):
 
 
 def wait_for_seat_controls(page, timeout_ms=12000):
-    deadline = time.monotonic() + max(0, timeout_ms) / 1000
-    while time.monotonic() < deadline:
+    count = visible_seat_control_count(page)
+    if not count:
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000
+        for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            if remaining_ms <= 1:
+                break
+            try:
+                scope.locator(SEAT_SELECTOR).first.wait_for(state="visible", timeout=remaining_ms)
+                break
+            except Exception:
+                continue
         count = visible_seat_control_count(page)
-        if count:
-            record("seat_map", {"status": "READY", "visible_seat_control_count": count, "frame_urls": [frame.url for frame in page.frames if frame != page.main_frame]})
-            return count
-        page.wait_for_timeout(250)
+    if count:
+        record("seat_map", {"status": "READY", "visible_seat_control_count": count, "frame_urls": [frame.url for frame in page.frames if frame != page.main_frame]})
+        return count
     record("seat_map", {"status": "CONTROLS_NOT_FOUND", "visible_seat_control_count": 0, "frame_urls": [frame.url for frame in page.frames if frame != page.main_frame]})
     return 0
+
+
+def wait_for_page_change(page, previous_url, timeout_ms=5000):
+    """Wait for navigation or a DOM mutation; do not insert a fixed checkout sleep."""
+    try:
+        page.wait_for_function("before => location.href !== before", previous_url, timeout=timeout_ms)
+        return "navigation"
+    except Exception:
+        pass
+    try:
+        return page.evaluate("""timeout => new Promise(resolve => {
+          const observer = new MutationObserver(() => { observer.disconnect(); resolve('mutation'); });
+          observer.observe(document.documentElement, {subtree: true, childList: true, attributes: true});
+          setTimeout(() => { observer.disconnect(); resolve('timeout'); }, timeout);
+        })""", min(1500, max(100, timeout_ms)))
+    except Exception:
+        return "unavailable"
+
+
+def wait_for_inventory_change(page, timeout_ms):
+    """Use DOM mutation notifications between rescans instead of sleeping blindly."""
+    observed = False
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        try:
+            result = scope.evaluate("""timeout => new Promise(resolve => {
+              const root = document.querySelector('[data-seat], .seatuncheck, .seatcheck, area') || document.body;
+              if (!root) { resolve(false); return; }
+              const observer = new MutationObserver(() => { observer.disconnect(); resolve(true); });
+              observer.observe(root, {subtree: true, childList: true, attributes: true});
+              setTimeout(() => { observer.disconnect(); resolve(false); }, timeout);
+            })""", max(100, int(timeout_ms)))
+            observed = observed or bool(result)
+            if observed:
+                break
+        except Exception:
+            continue
+    return observed
 
 
 def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None):
@@ -1033,7 +1111,8 @@ def accept_event_terms(page):
 
 
 def select_preferred_zone(page):
-    zones = [str(item).strip().upper() for item in CONFIG.get("preferredZones", []) if str(item).strip()]
+    recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
+    zones = expand_zone_preferences(recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
     area_nodes = page.locator("area[href*='#']")
     discovered = []
     for index in range(area_nodes.count()):
@@ -1053,6 +1132,9 @@ def select_preferred_zone(page):
         print("โซนที่พบจากหน้าจริง: " + (", ".join(discovered_names) if discovered_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
         if discovered_names:
             zones = [discovered_names[0]]
+            CONFIG["preferredZones"] = list(zones)
+            recovery["zoneOrder"] = list(zones)
+            CONFIG["seatRecovery"] = recovery
             record("selection", {"mode": "zone", "strategy": "auto_first_available", "selected": zones[0], "discovered": discovered_names, "complete": True, "reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"})
         else:
             record("selection", {"mode": "zone", "preferred": [], "discovered": discovered_names, "complete": False, "reason": "USER_ZONE_REQUIRED"})
@@ -1063,6 +1145,7 @@ def select_preferred_zone(page):
             if discovered_zone != zone:
                 continue
             locator.evaluate("element => element.click()")
+            CONFIG["_runtimeCurrentZone"] = zone
             record("action", {"action": "select_image_map_zone", "zone": zone, "selector": f"area[href$='#{zone}']"})
             wait_for_seat_controls(page)
             return True
@@ -1070,6 +1153,7 @@ def select_preferred_zone(page):
         try:
             if locator.count() and locator.is_visible(timeout=500) and locator.is_enabled():
                 locator.click()
+                CONFIG["_runtimeCurrentZone"] = zone
                 record("action", {"action": "select_zone", "zone": zone})
                 wait_for_seat_controls(page)
                 return True
@@ -1191,62 +1275,272 @@ def select_checkout_options(page, confirm_order=False):
     return clicked
 
 
+def current_zone_from_page(page):
+    parsed = urlsplit(page.url)
+    values = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    return str(values.get("zone") or values.get("section") or CONFIG.get("_runtimeCurrentZone") or "").strip().upper()
+
+
+def seat_is_selected(locator):
+    try:
+        class_tokens = set((locator.get_attribute("class") or "").casefold().split())
+        return bool(
+            class_tokens.intersection({"seatcheck", "seat-selected", "selected-seat", "selected", "active"})
+            or (locator.get_attribute("aria-pressed") or "").casefold() == "true"
+            or (locator.get_attribute("data-selected") or "").casefold() == "true"
+            or (locator.get_attribute("data-status") or "").casefold() == "selected"
+            or (locator.evaluate("element => Boolean(element.checked)") if locator.evaluate("element => 'checked' in element") else False)
+        )
+    except Exception:
+        return False
+
+
+def selected_seat_count(page):
+    total = 0
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        try:
+            total += int(scope.locator(SELECTED_SEAT_SELECTOR).count())
+        except Exception:
+            continue
+    return total
+
+
+def collect_seat_inventory(page, fallback_zone=""):
+    metadata = []
+    locators = []
+    scopes = [page, *[frame for frame in page.frames if frame != page.main_frame]]
+    blocked_tokens = {"seatsold", "sold", "occupied", "reserved", "unavailable", "disabled", "x"}
+    for scope_index, scope in enumerate(scopes):
+        seats = scope.locator(SEAT_SELECTOR)
+        try:
+            count = min(seats.count(), 1000 - len(locators))
+        except Exception:
+            continue
+        for control_index in range(count):
+            seat = seats.nth(control_index)
+            locators.append(seat)
+            try:
+                raw_seat = (
+                    seat.get_attribute("data-seat")
+                    or seat.get_attribute("data-seat-number")
+                    or seat.get_attribute("data-seatk")
+                    or seat.get_attribute("aria-label")
+                    or seat.get_attribute("title")
+                    or seat.get_attribute("id")
+                    or ""
+                )
+                parsed = re.search(r"(?:^|\b)([A-Za-z]+)[-_ ]?(\d+)(?:\b|$)", raw_seat)
+                class_tokens = set((seat.get_attribute("class") or "").casefold().split())
+                selected = seat_is_selected(seat)
+                zone = str(seat.get_attribute("data-zone") or seat.get_attribute("data-section") or fallback_zone).strip().upper()
+                row = str(seat.get_attribute("data-row") or (parsed.group(1) if parsed else "")).strip().upper()
+                number = str(seat.get_attribute("data-seat-number") or (parsed.group(2) if parsed else raw_seat)).strip()
+                available = bool(seat.is_visible(timeout=100) and seat.is_enabled(timeout=100) and not selected and class_tokens.isdisjoint(blocked_tokens))
+                metadata.append({
+                    "zone": zone,
+                    "row": row,
+                    "number": number,
+                    "label": "-".join(item for item in (zone, row, number) if item)[:120],
+                    "available": available,
+                    "selected": selected,
+                    "scope_index": scope_index,
+                    "control_index": control_index,
+                })
+            except Exception:
+                metadata.append({"available": False, "scope_index": scope_index, "control_index": control_index})
+    return metadata, locators, scopes
+
+
+def reservation_token_fingerprint(page):
+    parsed = urlsplit(page.url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    token = str(query.get("k") or query.get("reservation") or query.get("order") or "")
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
+
+
+def wait_for_selected_count(page, wanted, timeout_ms):
+    if selected_seat_count(page) >= wanted:
+        return True
+    deadline = time.monotonic() + max(1, timeout_ms) / 1000
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        remaining = max(1, int((deadline - time.monotonic()) * 1000))
+        if remaining <= 1:
+            break
+        try:
+            scope.wait_for_function(
+                "args => document.querySelectorAll(args.selector).length >= args.wanted",
+                {"selector": SELECTED_SEAT_SELECTOR, "wanted": wanted},
+                timeout=remaining,
+            )
+            if selected_seat_count(page) >= wanted:
+                return True
+        except Exception:
+            continue
+    response_status = int(LATEST_RESERVATION_RESPONSE.get("status") or 0)
+    return 200 <= response_status < 300 and selected_seat_count(page) >= wanted
+
+
+def release_partial_selection(page, timeout_ms=1500):
+    before = selected_seat_count(page)
+    if not before:
+        return 0
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        try:
+            scope.locator(SELECTED_SEAT_SELECTOR).evaluate_all("elements => elements.forEach(element => element.click())")
+        except Exception:
+            continue
+    try:
+        page.wait_for_function("selector => document.querySelectorAll(selector).length === 0", SELECTED_SEAT_SELECTOR, timeout=max(1, timeout_ms))
+    except Exception:
+        pass
+    remaining = selected_seat_count(page)
+    record("partial_released", {"released": max(0, before - remaining), "remaining": remaining, "complete": remaining == 0})
+    return remaining
+
+
+def switch_to_allowed_zone(page, zone):
+    wanted = str(zone or "").strip().upper()
+    if not wanted or current_zone_from_page(page) == wanted:
+        return True
+    for selector in (f"area[href$='#{wanted}']", f"[data-zone='{wanted}']", f"[data-section='{wanted}']"):
+        try:
+            locator = page.locator(selector).first
+            if locator.count() and locator.is_enabled(timeout=200):
+                previous_url = page.url
+                locator.evaluate("element => element.click()")
+                CONFIG["_runtimeCurrentZone"] = wanted
+                wait_for_page_change(page, previous_url, timeout_ms=3000)
+                wait_for_seat_controls(page, timeout_ms=3000)
+                return True
+        except Exception:
+            continue
+    try:
+        locator = page.get_by_text(wanted, exact=True).first
+        if locator.count() and locator.is_visible(timeout=200) and locator.is_enabled(timeout=200):
+            previous_url = page.url
+            locator.click(no_wait_after=True)
+            CONFIG["_runtimeCurrentZone"] = wanted
+            wait_for_page_change(page, previous_url, timeout_ms=3000)
+            wait_for_seat_controls(page, timeout_ms=3000)
+            return True
+    except Exception:
+        pass
+    parsed = urlsplit(page.url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    zone_key = "zone" if "zone" in query else "section" if "section" in query else ""
+    if zone_key:
+        query[zone_key] = wanted
+        target = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+        page.goto(target, wait_until="domcontentloaded", timeout=15000)
+        CONFIG["_runtimeCurrentZone"] = wanted
+        wait_for_seat_controls(page, timeout_ms=3000)
+        return current_zone_from_page(page) == wanted or visible_seat_control_count(page) > 0
+    return False
+
+
+def click_candidate_set(locators, metadata, indices):
+    """Click a complete candidate set back-to-back with no model call or fixed sleep."""
+    errors = []
+    for index in indices:
+        try:
+            locators[index].evaluate("element => element.click()")
+        except Exception as error:
+            errors.append(str(error)[:180])
+    return errors
+
+
+def fast_reserved_seat_recovery(page):
+    wanted = max(1, int(CONFIG.get("quantity", 1)))
+    rows = [str(item).strip().upper() for item in CONFIG.get("preferredRows", []) if str(item).strip()]
+    seat_numbers = [str(item).strip().upper() for item in CONFIG.get("preferredSeatNumbers", []) if str(item).strip()]
+    grouping = str(CONFIG.get("seatGrouping", "adjacent"))
+    fallback_mode = str(CONFIG.get("seatFallbackMode", "nearest"))
+    recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
+    zones = expand_zone_preferences(recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
+    max_attempts = max(0, int(recovery.get("maxAttempts", 0) or 0))
+    verify_timeout = max(250, int(recovery.get("clickVerificationTimeoutMs", 2500) or 2500))
+    rescan_interval = max(100, int(recovery.get("inventoryRescanIntervalMs", 750) or 750))
+    release_partial = recovery.get("releasePartialBeforeRetry", True) is not False
+    attempt = 0
+    zone_cursor = 0
+    exhausted_rounds = 0
+    wait_for_seat_controls(page, timeout_ms=3000)
+    current_zone = current_zone_from_page(page)
+    if not zones and current_zone:
+        zones = [current_zone]
+
+    while max_attempts == 0 or attempt < max_attempts:
+        checkpoint = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+        if checkpoint["state"] in {"sold_out", "sale_closed"}:
+            return {"ok": False, "terminal": checkpoint["state"], "attempts": attempt}
+        active_zone = zones[zone_cursor] if zones else current_zone_from_page(page)
+        if active_zone and current_zone_from_page(page) not in {"", active_zone}:
+            if not switch_to_allowed_zone(page, active_zone):
+                record("zone_switch", {"status": "ZONE_CONTROL_NOT_AVAILABLE", "zone": active_zone, "attempt": attempt})
+                zone_cursor = (zone_cursor + 1) % max(1, len(zones))
+                continue
+        current_zone = current_zone_from_page(page) or active_zone
+        metadata, locators, scopes = collect_seat_inventory(page, current_zone)
+        available_count = sum(1 for item in metadata if item.get("available"))
+        record("seat_scan", {"zone": current_zone, "available": available_count, "candidate_count": len(metadata), "wanted": wanted, "attempt": attempt + 1, "scope_count": len(scopes)})
+        zone_filter = [current_zone] if current_zone else zones
+        indices = choose_seat_indices(metadata, wanted, grouping, zone_filter, rows, seat_numbers, fallback_mode)
+        if len(indices) != wanted:
+            if zones and zone_cursor + 1 < len(zones):
+                previous_zone = current_zone
+                zone_cursor += 1
+                next_zone = zones[zone_cursor]
+                switched = switch_to_allowed_zone(page, next_zone)
+                record("zone_switch", {"status": "SWITCHED" if switched else "CONTROL_NOT_AVAILABLE", "from_zone": previous_zone, "to_zone": next_zone, "reason": "NO_COMPLETE_SET", "wanted": wanted})
+                continue
+            exhausted_rounds += 1
+            zone_cursor = 0
+            record("recovery", {"status": "WAITING_FOR_COMPLETE_SET", "zones": zones or [current_zone], "wanted": wanted, "round": exhausted_rounds, "next_action": "rescan_inventory", "terminal": False})
+            wait_for_inventory_change(page, rescan_interval)
+            continue
+
+        attempt += 1
+        planned = [str(metadata[index].get("label") or metadata[index].get("number") or index) for index in indices]
+        record("seat_set_planned", {"zone": current_zone, "seats": planned, "wanted": wanted, "grouping": grouping, "attempt": attempt})
+        if release_partial and selected_seat_count(page):
+            release_partial_selection(page, verify_timeout)
+        LATEST_RESERVATION_RESPONSE.update({"status": None, "url": "", "at": time.monotonic()})
+        errors = click_candidate_set(locators, metadata, indices)
+        record("seat_attempt", {"zone": current_zone, "seats": planned, "wanted": wanted, "attempt": attempt, "click_errors": errors})
+        complete = not errors and wait_for_selected_count(page, wanted, verify_timeout)
+        selected = selected_seat_count(page)
+        if complete:
+            record("reservation_verified", {
+                "status": "SEAT_HOLD_VERIFIED",
+                "zone": current_zone,
+                "seats": planned,
+                "selected": selected,
+                "wanted": wanted,
+                "attempt": attempt,
+                "reservation_token_fingerprint": reservation_token_fingerprint(page),
+                "verification": "selected DOM controls or successful reservation response",
+            })
+            return {"ok": True, "terminal": None, "attempts": attempt, "zone": current_zone, "seats": planned, "selected": selected}
+        record("seat_conflict", {
+            "status": "SET_REJECTED_OR_INCOMPLETE",
+            "zone": current_zone,
+            "seats": planned,
+            "selected": selected,
+            "wanted": wanted,
+            "attempt": attempt,
+            "http_status": LATEST_RESERVATION_RESPONSE.get("status"),
+            "next_action": "release_partial_and_rescan_same_zone",
+        })
+        if release_partial:
+            release_partial_selection(page, verify_timeout)
+        wait_for_inventory_change(page, rescan_interval)
+    return {"ok": False, "terminal": "attempt_limit", "attempts": attempt}
+
+
 def apply_ticket_preferences(page):
     wanted = max(1, int(CONFIG.get("quantity", 1)))
-    zones = [str(item) for item in CONFIG.get("preferredZones", []) if str(item)]
-    rows = [str(item) for item in CONFIG.get("preferredRows", []) if str(item)]
-    seat_numbers = [str(item) for item in CONFIG.get("preferredSeatNumbers", []) if str(item)]
-    fallback_mode = str(CONFIG.get("seatFallbackMode", "nearest"))
-    for zone in zones:
-        try:
-            locator = page.get_by_text(zone, exact=True).first
-            if locator.is_visible(timeout=500) and locator.is_enabled():
-                locator.click()
-                record("action", {"action": "select_zone", "zone": zone})
-                break
-        except Exception:
-            pass
     if CONFIG.get("seatMode") == "reserved":
-        wait_for_seat_controls(page, timeout_ms=3000)
-        zone_match = re.search(r"[?&]zone=([^&#]+)", page.url, re.I)
-        current_zone = (zone_match.group(1) if zone_match else "") or (zones[0] if zones else "")
-        metadata = []
-        seat_locators = []
-        scopes = [page, *[frame for frame in page.frames if frame != page.main_frame]]
-        for scope_index, scope in enumerate(scopes):
-            seats = scope.locator(SEAT_SELECTOR)
-            for index in range(min(seats.count(), 1000 - len(seat_locators))):
-                seat = seats.nth(index)
-                seat_locators.append(seat)
-                try:
-                    raw_seat = (
-                        seat.get_attribute("data-seat")
-                        or seat.get_attribute("data-seat-number")
-                        or seat.get_attribute("data-seatk")
-                        or seat.get_attribute("aria-label")
-                        or seat.get_attribute("title")
-                        or seat.get_attribute("id")
-                        or ""
-                    )
-                    parsed = re.search(r"(?:^|\b)([A-Za-z]+)[-_ ]?(\d+)(?:\b|$)", raw_seat)
-                    class_tokens = set((seat.get_attribute("class") or "").lower().split())
-                    blocked_tokens = {"seatcheck", "seatsold", "sold", "occupied", "reserved", "unavailable", "disabled"}
-                    metadata.append({
-                        "zone": seat.get_attribute("data-zone") or seat.get_attribute("data-section") or current_zone,
-                        "row": seat.get_attribute("data-row") or (parsed.group(1) if parsed else ""),
-                        "number": seat.get_attribute("data-seat-number") or (parsed.group(2) if parsed else raw_seat),
-                        "available": seat.is_visible() and seat.is_enabled() and class_tokens.isdisjoint(blocked_tokens),
-                        "scope_index": scope_index,
-                    })
-                except Exception:
-                    metadata.append({"available": False, "scope_index": scope_index})
-        grouping = str(CONFIG.get("seatGrouping", "adjacent"))
-        selected_indices = choose_seat_indices(metadata, wanted, grouping, zones, rows, seat_numbers, fallback_mode)
-        for index in selected_indices:
-            seat_locators[index].click()
-        selected = len(selected_indices)
-        record("selection", {"mode": "reserved", "grouping": grouping, "wanted": wanted, "selected": selected, "indices": selected_indices, "candidate_count": len(seat_locators), "scope_count": len(scopes), "preferred_zones": zones, "preferred_rows": rows, "preferred_seat_numbers": seat_numbers, "fallback_mode": fallback_mode, "complete": selected == wanted})
-        return selected == wanted
+        return fast_reserved_seat_recovery(page)
     label_pattern = re.compile(r"quantity|qty|จำนวน", re.I)
     locator = page.get_by_label(label_pattern).first
     try:
@@ -1256,11 +1550,93 @@ def apply_ticket_preferences(page):
                 locator.select_option(str(wanted))
             else:
                 locator.fill(str(wanted))
-            record("selection", {"mode": CONFIG.get("seatMode"), "wanted": wanted, "selected": wanted, "complete": True})
-            return True
+            record("reservation_verified", {"status": "QUANTITY_VERIFIED", "mode": CONFIG.get("seatMode"), "wanted": wanted, "selected": wanted})
+            return {"ok": True, "terminal": None, "attempts": 1, "selected": wanted}
     except Exception:
         pass
-    record("selection", {"mode": CONFIG.get("seatMode"), "wanted": wanted, "selected": 0, "complete": False})
+    record("seat_conflict", {"status": "QUANTITY_CONTROL_NOT_AVAILABLE", "mode": CONFIG.get("seatMode"), "wanted": wanted, "selected": 0})
+    return {"ok": False, "terminal": None, "attempts": 1}
+
+
+def sanitized_recovery_snapshot(page, checkpoint):
+    body = str(snapshot(page).get("body", ""))[:6000]
+    body = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[EMAIL]", body, flags=re.I)
+    body = re.sub(r"\b(?:\d[ -]*?){8,19}\b", "[NUMBER]", body)
+    body = re.sub(r"(?i)(password|รหัสผ่าน|otp|token)\s*[:=]?\s*\S+", r"\1=[REDACTED]", body)
+    return {
+        "state": checkpoint.get("state"),
+        "url": urlunsplit((*urlsplit(page.url)[:3], "", "")),
+        "body": body,
+        "allowed_zones": expand_zone_preferences((CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", [])),
+    }
+
+
+def request_ai_recovery_action(page, checkpoint, allowed_actions):
+    """Ask the local model only after deterministic recovery is exhausted."""
+    model = os.environ.get("ALPHA_RECOVERY_MODEL", "qwen3.5:9b").strip() or "qwen3.5:9b"
+    prompt = {
+        "role": "ticket_workflow_recovery",
+        "snapshot": sanitized_recovery_snapshot(page, checkpoint),
+        "allowed_actions": list(allowed_actions),
+        "instruction": "Return JSON only: {\"action\": one allowed action, \"reason\": short evidence-based reason}. Never change event, performance, quantity or allowed zones.",
+    }
+    request = urllib.request.Request(
+        "http://127.0.0.1:11434/api/chat",
+        data=json.dumps({"model": model, "stream": False, "format": "json", "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}], "options": {"temperature": 0}}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        content = json.loads(str((payload.get("message") or {}).get("content") or "{}"))
+        action = str(content.get("action", ""))
+        if action not in allowed_actions:
+            raise ValueError("model returned an action outside the allowlist")
+        result = {"action": action, "reason": str(content.get("reason", ""))[:300], "model": model}
+    except Exception as error:
+        result = {"action": "request_user" if "request_user" in allowed_actions else allowed_actions[0], "reason": f"local recovery model unavailable: {str(error)[:180]}", "model": model}
+    record("recovery", {"status": "AI_RECOVERY_DECISION", **result, "credentials_included": False, "screenshot_included": False})
+    return result
+
+
+def adaptive_retry_delay(checkpoint, attempt):
+    retry_after = checkpoint.get("retry_after_seconds")
+    configured = int((CONFIG.get("queue") or {}).get("retryAfterSeconds", 3) or 3)
+    maximum = int((CONFIG.get("queue") or {}).get("maxBackoffSeconds", 30) or 30)
+    return min(maximum, max(2, int(retry_after or configured), min(2 ** min(attempt, 5), maximum)))
+
+
+def wait_for_payment_review(countdown_seconds=None):
+    """Keep the QR browser alive until user input or the server hold countdown ends."""
+    if countdown_seconds is None:
+        input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
+        return "user_done"
+    deadline = time.monotonic() + max(0, int(countdown_seconds))
+    while time.monotonic() < deadline:
+        remaining = max(0, int(deadline - time.monotonic()))
+        record("checkout_countdown", {"remaining_seconds": remaining, "payment_submitted": False})
+        readable, _, _ = select.select([sys.stdin], [], [], min(5, max(0.1, remaining)))
+        if readable:
+            sys.stdin.readline()
+            return "user_done"
+    record("result", {"status": "ORDER_EXPIRED_AFTER_PAYMENT_HANDOFF", "payment_submitted": False, "live_checkout_verified": True})
+    return "order_expired"
+
+
+def return_to_same_seat_map(page):
+    """Recover an expired hold without opening a new tab or changing performance."""
+    for step in range(6):
+        checkpoint = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+        if checkpoint["state"] in {"ticket_selection", "quantity_selection", "zone_selection"}:
+            record("recovery", {"status": "RETURNED_TO_SEAT_FLOW", "state": checkpoint["state"], "steps": step, "same_session": True})
+            return True
+        previous_url = page.url
+        try:
+            page.go_back(wait_until="domcontentloaded", timeout=10000)
+        except Exception:
+            return False
+        wait_for_page_change(page, previous_url, timeout_ms=2500)
     return False
 
 
@@ -1309,6 +1685,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         login_verified = False
 
         def on_response(response):
+            global LATEST_RESERVATION_RESPONSE
             value = response.headers.get("retry-after")
             if value and str(value).isdigit():
                 observed["retry_after"] = int(value)
@@ -1318,6 +1695,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             elif response.request.resource_type in {"xhr", "fetch"}:
                 parsed = urlsplit(response.url)
                 safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if re.search(r"seat|reserve|reservation|booking|ticket", parsed.path, re.I):
+                    LATEST_RESERVATION_RESPONSE = {"status": response.status, "url": safe_url, "at": time.monotonic()}
                 key = (response.request.method, safe_url, response.status)
                 if key not in observed_api and len(observed_api) < 100:
                     observed_api.add(key)
@@ -1360,9 +1739,11 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
         queue_rounds = 0
+        access_denied_rounds = 0
         pre_sale_rounds = 0
         discovery_rounds = 0
         workflow_steps = 0
+        unknown_recovery_rounds = 0
         while True:
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
@@ -1375,9 +1756,6 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 record("authentication", {"status": "LOGIN_VERIFIED", "method": "successful_form_transition", "credentials_persisted": False})
             if state not in {"pre_sale", "armed_pre_sale", "queue", "server_unavailable", "unknown"}:
                 workflow_steps += 1
-                if workflow_steps > 30:
-                    record("result", {"status": "WORKFLOW_TRANSITION_LIMIT", "live_checkout_verified": False})
-                    break
             if state in {"pre_sale", "armed_pre_sale"}:
                 pre_sale_rounds += 1
                 wait_seconds = 10 if state == "armed_pre_sale" else 30
@@ -1395,6 +1773,17 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 continue
             if state == "unknown" and CONFIG.get("runtimeDiscoveryRequired"):
                 discovery_rounds += 1
+                unknown_recovery_rounds += 1
+                if unknown_recovery_rounds % 4 == 0:
+                    decision = request_ai_recovery_action(page, checkpoint, ["rescan", "reload_same_url", "wait", "request_user"])
+                    if decision["action"] == "reload_same_url":
+                        page.reload(wait_until="domcontentloaded")
+                        continue
+                    if decision["action"] == "request_user":
+                        surface_browser_window(page, browser_profile, "waiting_unknown_layout")
+                        record("input_required", {"field": "unknown_layout", "stage": "waiting_unknown_layout", "prompt": "รูปแบบหน้าเว็บเปลี่ยนและ recovery ปกติระบุขั้นต่อไปไม่ได้ กรุณาตรวจหน้าเดิมแล้วกดทำต่อ", "secret": False})
+                        input("ตรวจหน้าเดิมแล้วกด Enter เพื่อให้ AI rescan ด้วย session เดิม: ")
+                        continue
                 wait_seconds = 15
                 record("wait", {
                     "state": "runtime_discovery",
@@ -1408,8 +1797,22 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 if discovery_rounds % 4 == 0:
                     page.reload(wait_until="domcontentloaded")
                 continue
+            if state == "unknown":
+                unknown_recovery_rounds += 1
+                decision = request_ai_recovery_action(page, checkpoint, ["rescan", "reload_same_url", "wait", "request_user"])
+                if decision["action"] == "reload_same_url":
+                    page.reload(wait_until="domcontentloaded")
+                    continue
+                if decision["action"] in {"rescan", "wait"}:
+                    wait_for_page_change(page, page.url, timeout_ms=1500)
+                    continue
+                surface_browser_window(page, browser_profile, "waiting_unknown_layout")
+                record("input_required", {"field": "unknown_layout", "stage": "waiting_unknown_layout", "prompt": "AI ระบุขั้นต่อไปจากหลักฐานไม่ได้ กรุณาตรวจหน้าเดิมแล้วกดทำต่อ", "secret": False})
+                input("ตรวจหน้าเดิมแล้วกด Enter เพื่อ rescan: ")
+                continue
             if state == "waiting_room_entry":
                 selected_queue_entry = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
+                previous_url = page.url
                 activated_page = activate_selected_performance(page) if selected_queue_entry else None
                 activated = bool(activated_page) if selected_queue_entry else semantic_click(page, ["Join waiting room", "Join the queue", "Join queue", "เข้าห้องรอ", "กดรับคิว", "รับคิว"])
                 if not activated:
@@ -1425,13 +1828,22 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 if activated_page:
                     page = activated_page
                 record("queue", {"status": "WAITING_ROOM_JOINED", "clicked_once": True, "same_session": True, "selected_schedule": CONFIG.get("schedule"), "selected_performance": CONFIG.get("selectedPerformance")})
-                page.wait_for_timeout(1000)
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state in {"queue", "server_unavailable"}:
                 queue_rounds += 1
                 wait_seconds = checkpoint.get("retry_after_seconds") or CONFIG["queue"]["retryAfterSeconds"]
                 wait_seconds = min(CONFIG["queue"]["maxBackoffSeconds"], max(2, wait_seconds))
                 if state == "queue":
+                    record("queue_analysis", {
+                        "queue_position": checkpoint.get("queue_position"),
+                        "queue_position_verified": checkpoint.get("queue_position_verified", False),
+                        "waited_seconds": queue_rounds * wait_seconds,
+                        "server_status": observed.get("http_status"),
+                        "current_action": "preserve_active_queue_session",
+                        "next_action": "wait_for_server_auto_update",
+                        "page_refresh": False,
+                    })
                     record("wait", {"state": state, "seconds": wait_seconds, "same_session": True, "round": queue_rounds, "page_refresh": False, "auto_update": True, "queue_position": checkpoint.get("queue_position"), "queue_position_verified": checkpoint.get("queue_position_verified", False)})
                     page.wait_for_timeout(wait_seconds * 1000)
                 else:
@@ -1440,6 +1852,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     page.reload(wait_until="domcontentloaded")
                 continue
             if state == "sale_entry":
+                previous_url = page.url
                 activated_page = activate_selected_performance(page, prefer_target_navigation=True)
                 if not activated_page:
                     record("result", {"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE", "reason": "ไม่พบปุ่มที่ตรงกับวัน/เวลาที่เลือก จึงไม่เลือกรอบอื่นแทน", "selected_performance": CONFIG.get("selectedPerformance"), "same_queue_session": True, "live_checkout_verified": False})
@@ -1449,7 +1862,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     context.close()
                     return 2
                 page = activated_page
-                page.wait_for_timeout(1000)
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "sale_closed":
                 evidence_path = capture_status_evidence(page, "SALE_CLOSED_BY_SERVER")
@@ -1462,27 +1875,42 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 context.close()
                 return 0
             if state == "access_denied":
-                record("handoff", {"status": "SERVER_ACCESS_DENIED", "resume_supported": True, "same_session": True, "url": page.url})
-                surface_browser_window(page, browser_profile, "waiting_access_denied")
-                record("input_required", {"field": "access_denied", "stage": "waiting_access_denied", "prompt": "เว็บตอบ 403 และเปิด Chrome ของบอทค้างไว้แล้ว รอให้หน้าเว็บกลับมาใช้งานได้แล้วกดทำต่อ", "secret": False})
-                input("เว็บตอบ 403 ระบบค้างหน้าต่างและ session ไว้ ไม่ยิงซ้ำ; เมื่อหน้าเว็บกลับมาแล้วกด Enter เพื่อทำต่อ: ")
-                page.wait_for_timeout(500)
+                access_denied_rounds += 1
+                if access_denied_rounds == 1:
+                    surface_browser_window(page, browser_profile, "waiting_access_denied")
+                    record("browser_state", {"field": "access_denied", "stage": "waiting_access_denied", "prompt": "เซิร์ฟเวอร์ปฏิเสธคำขอชั่วคราว บอทจะแสดงหน้าต่างเดิมและ retry โดยรักษา session", "same_session": True, "new_tab": False})
+                wait_seconds = adaptive_retry_delay(checkpoint, access_denied_rounds)
+                record("recovery", {"status": "ACCESS_DENIED_RETRY_SCHEDULED", "attempt": access_denied_rounds, "seconds": wait_seconds, "same_session": True, "same_url": True, "retry_after_honored": checkpoint.get("retry_after_seconds") is not None, "new_tab": False})
+                time.sleep(wait_seconds)
+                page.reload(wait_until="domcontentloaded")
+                continue
+            if state == "reservation_expired":
+                record("recovery", {"status": "SEAT_HOLD_EXPIRED", "next_action": "return_to_same_seat_map", "same_session": True})
+                if return_to_same_seat_map(page):
+                    continue
+                surface_browser_window(page, browser_profile, "waiting_reservation_recovery")
+                record("input_required", {"field": "reservation_recovery", "stage": "waiting_reservation_recovery", "prompt": "ที่นั่งหลุดและระบบย้อนกลับผังเดิมไม่ได้ กรุณากลับหน้าผังใน browser เดิมแล้วกดทำต่อ", "secret": False})
+                input("กลับไปหน้าผังที่นั่งใน Chrome เดิมแล้วกด Enter: ")
                 continue
             if state == "login":
                 login_url = page.url
                 observed["http_status"] = None
                 if not fill_login(page):
-                    record("result", {"status": "LOGIN_FORM_NOT_VERIFIED", "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    surface_browser_window(page, browser_profile, "waiting_login_form")
+                    record("input_required", {"field": "login", "stage": "waiting_login_form", "prompt": "ฟอร์ม Login เปลี่ยนหรือข้อมูลยังไม่ครบ กรุณาตรวจหน้าเดิมแล้วส่งข้อมูลใหม่", "secret": False})
+                    input("ตรวจ/กรอก Login ใน Chrome เดิมแล้วกด Enter เพื่อ rescan: ")
+                    continue
                 login_submitted = True
                 transitioned = wait_for_post_login_transition(page, login_url)
                 after_login = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
                 record("authentication", {"status": "POST_LOGIN_SETTLED" if transitioned else "POST_LOGIN_TIMEOUT", "from_url": login_url, "to_url": page.url, "state": after_login["state"], "credentials_persisted": False})
                 if after_login["state"] == "login":
-                    record("result", {"status": "LOGIN_FAILED_OR_FORM_STILL_VISIBLE", "live_checkout_verified": False, "credentials_persisted": False})
-                    context.close()
-                    return 2
+                    os.environ.pop("TICKET_USERNAME", None)
+                    os.environ.pop("TICKET_PASSWORD", None)
+                    record("input_required", {"field": "login", "stage": "waiting_login_retry", "prompt": "Login ยังไม่สำเร็จ ระบบรักษา session ไว้และรอข้อมูลใหม่", "secret": False})
+                    input("Login ยังไม่สำเร็จ ตรวจข้อความใน Chrome แล้วกด Enter เพื่อกรอกใหม่: ")
+                    login_submitted = False
+                    continue
                 continue
             if state in {"captcha_handoff", "otp_handoff"}:
                 if state == "captcha_handoff" and login_submitted:
@@ -1497,61 +1925,69 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 surface_browser_window(page, browser_profile, handoff_stage)
                 record("input_required", {"field": "captcha" if state == "captcha_handoff" else "otp", "stage": handoff_stage, "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว แก้ขั้นยืนยันและกลับมากดทำต่อ", "secret": False})
                 input("รับช่วงในหน้าต่าง Chrome เฉพาะขั้นนี้ แล้วกลับมากด Enter; บอทจะทำงานต่อด้วย session เดิม: ")
-                page.wait_for_timeout(500)
+                wait_for_page_change(page, page.url, timeout_ms=1500)
                 continue
             if state == "terms_conditions":
-                record("handoff", {"status": "TERMS_ACCEPTANCE_REQUIRED", "resume_supported": True, "same_session": True, "url": page.url})
-                surface_browser_window(page, browser_profile, "waiting_terms_acceptance")
-                record("input_required", {"field": "terms", "stage": "waiting_terms_acceptance", "prompt": "อ่านเงื่อนไขของงานแล้วกดทำต่อเพื่อยอมรับและไปขั้นเลือกบัตร", "secret": False})
-                input("อ่านเงื่อนไขใน Chrome แล้วกด Enter เพื่อยอมรับและทำต่อ: ")
-                refreshed = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
-                if refreshed["state"] != "terms_conditions":
-                    record("recovery", {"status": "TERMS_COMPLETED_BY_USER", "current_state": refreshed["state"], "url": page.url})
-                    continue
+                previous_url = page.url
                 if not accept_event_terms(page):
                     record("result", {"status": "TERMS_CONTINUE_CONTROL_NOT_VERIFIED", "live_checkout_verified": False})
                     context.close()
                     return 2
-                page.wait_for_timeout(1000)
+                record("action", {"action": "terms_accepted_under_run_authorization", "same_session": True})
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "zone_selection":
+                previous_url = page.url
                 if not select_preferred_zone(page):
                     record("result", {"status": "ZONE_NOT_SELECTED", "preferred_zones": CONFIG.get("preferredZones", []), "live_checkout_verified": False})
                     context.close()
                     return 2
-                page.wait_for_timeout(1000)
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "quantity_selection":
+                previous_url = page.url
                 if not select_ticket_quantity(page):
                     record("result", {"status": "TICKET_QUANTITY_NOT_COMPLETE", "wanted": CONFIG.get("quantity"), "live_checkout_verified": False})
                     context.close()
                     return 2
-                page.wait_for_timeout(1000)
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "ticket_selection":
-                if not apply_ticket_preferences(page):
-                    record("result", {"status": "TICKET_QUANTITY_NOT_COMPLETE", "wanted": CONFIG.get("quantity"), "live_checkout_verified": False})
-                    record("input_required", {"field": "ticket_selection", "stage": "waiting_ticket_selection", "prompt": "เลือกบัตรให้ครบใน Chrome แล้วกดทำต่อ", "secret": False})
-                    input("เลือกบัตรให้ครบใน Chrome แล้วกลับมากด Enter เพื่อให้บอททำต่อ: ")
-                    continue
+                previous_url = page.url
+                seat_result = apply_ticket_preferences(page)
+                if not seat_result.get("ok"):
+                    terminal = seat_result.get("terminal")
+                    if terminal in {"sold_out", "sale_closed"}:
+                        evidence_path = capture_status_evidence(page, terminal.upper())
+                        record("result", {"status": "SOLD_OUT_BY_SERVER" if terminal == "sold_out" else "SALE_CLOSED_BY_SERVER", "wanted": CONFIG.get("quantity"), "evidence_path": evidence_path, "live_checkout_verified": False})
+                        context.close()
+                        return 0
+                    record("result", {"status": "SEAT_RECOVERY_ATTEMPT_LIMIT", "wanted": CONFIG.get("quantity"), "attempts": seat_result.get("attempts"), "live_checkout_verified": False})
+                    context.close()
+                    return 2
                 if not semantic_click(page, ["ดำเนินการต่อ", "ถัดไป", "continue", "next", "ยืนยัน"]):
-                    record("result", {"status": "CONTINUE_CONTROL_NOT_VERIFIED", "live_checkout_verified": False})
-                    record("input_required", {"field": "continue", "stage": "waiting_manual_continue", "prompt": "ตรวจรายการและกดดำเนินการต่อใน Chrome แล้วกดทำต่อ", "secret": False})
-                    input("ตรวจรายการและกดดำเนินการต่อใน Chrome แล้วกลับมากด Enter: ")
-                page.wait_for_timeout(1000)
+                    record("recovery", {"status": "CONTINUE_CONTROL_RESCAN", "same_session": True, "reservation_preserved": True})
+                    decision = request_ai_recovery_action(page, checkpoint, ["rescan", "request_user"])
+                    if decision["action"] == "request_user":
+                        surface_browser_window(page, browser_profile, "waiting_manual_continue")
+                        record("input_required", {"field": "continue", "stage": "waiting_manual_continue", "prompt": "ที่นั่งถูกยืนยันแล้วแต่ปุ่มดำเนินการต่อเปลี่ยน กรุณากดปุ่มต่อใน Chrome แล้วกดทำต่อ", "secret": False})
+                        input("กดดำเนินการต่อใน Chrome เดิมแล้วกลับมากด Enter: ")
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "attendee_details":
+                previous_url = page.url
                 if not fill_attendee_details(page):
                     record("result", {"status": "ATTENDEE_DETAILS_INCOMPLETE", "live_checkout_verified": False})
                     context.close()
                     return 2
-                page.wait_for_timeout(1000)
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "checkout_options":
                 if not login_verified:
                     record("result", {"status": "LOGIN_REQUIRED_BEFORE_CHECKOUT", "live_checkout_verified": False, "credentials_persisted": False})
                     context.close()
                     return 2
+                previous_url = page.url
                 checkout_result = select_checkout_options(page, confirm_order=confirm_order)
                 if checkout_result is None:
                     surface_browser_window(page, browser_profile, "waiting_checkout_options")
@@ -1563,17 +1999,20 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     record("result", {"status": "CHECKOUT_OPTIONS_INCOMPLETE", "live_checkout_verified": False})
                     context.close()
                     return 2
-                page.wait_for_timeout(1500)
+                wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "payment_handoff":
                 if not login_verified:
                     record("result", {"status": "LOGIN_REQUIRED_BEFORE_PAYMENT", "live_checkout_verified": False, "credentials_persisted": False})
                     context.close()
                     return 2
-                record("result", {"status": "PAYMENT_HANDOFF", "login_verified": True, "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True, "payment_evidence_count": checkpoint.get("payment_evidence_count")})
+                evidence_path = capture_status_evidence(page, "PAYMENT_HANDOFF")
+                countdown_match = re.search(r"(?:remaining\s*time|เหลือเวลา|ภายในเวลา)\D{0,30}(\d{1,2})(?::(\d{2}))?", str(snapshot(page).get("body", "")), re.I)
+                countdown_seconds = (int(countdown_match.group(1)) * 60 + int(countdown_match.group(2) or 0)) if countdown_match else None
+                record("result", {"status": "PAYMENT_HANDOFF", "login_verified": True, "live_checkout_verified": verified_payment_handoff(checkpoint), "payment_not_submitted": True, "payment_evidence_count": checkpoint.get("payment_evidence_count"), "checkout_countdown_seconds": countdown_seconds, "evidence_path": evidence_path})
                 surface_browser_window(page, browser_profile, "payment_handoff")
                 record("input_required", {"field": "payment", "stage": "payment_handoff", "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว: ถึงหน้าชำระเงินจริง ระบบหยุดก่อนจ่าย", "secret": False})
-                input("ถึงหน้าชำระเงินจริงแล้ว ระบบหยุดก่อนจ่าย กด Enter เมื่อพี่ตรวจเสร็จ: ")
+                wait_for_payment_review(countdown_seconds)
                 context.close()
                 return 0
             break
@@ -1611,7 +2050,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from state_machine import choose_seat_indices, classify_snapshot, next_action, verified_payment_handoff
+from state_machine import choose_seat_indices, classify_snapshot, expand_zone_preferences, next_action, verified_payment_handoff
 
 
 class TicketStateMachineTests(unittest.TestCase):
@@ -1627,7 +2066,7 @@ class TicketStateMachineTests(unittest.TestCase):
     def test_access_denied_is_reported_explicitly(self):
         result = self.state("Access Denied You don't have permission to access this page", status=403)
         self.assertEqual(result["state"], "access_denied")
-        self.assertEqual(next_action(result), "show_server_denial_and_wait_for_user")
+        self.assertEqual(next_action(result), "keep_same_session_and_retry_adaptively")
 
     def test_sale_within_thirty_minutes_is_armed(self):
         result = classify_snapshot(
@@ -1779,6 +2218,22 @@ class TicketStateMachineTests(unittest.TestCase):
         self.assertEqual(choose_seat_indices(seats, 2, "adjacent", ["A"]), [0, 1])
         self.assertEqual(choose_seat_indices(seats, 3, "adjacent", ["A"]), [])
 
+    def test_zone_range_expands_in_user_order(self):
+        self.assertEqual(expand_zone_preferences(["A-K"]), list("ABCDEFGHIJK"))
+        self.assertEqual(expand_zone_preferences(["C-A"]), ["C", "B", "A"])
+
+    def test_complete_set_is_required_before_any_index_is_returned(self):
+        seats = [{"zone": "A", "row": "K", "number": "10", "available": True}]
+        self.assertEqual(choose_seat_indices(seats, 2, "same_zone", ["A"]), [])
+
+    def test_rejected_inventory_member_is_not_planned(self):
+        seats = [
+            {"zone": "A", "row": "K", "number": "10", "available": True},
+            {"zone": "A", "row": "K", "number": "11", "available": False},
+            {"zone": "A", "row": "K", "number": "12", "available": True},
+        ]
+        self.assertEqual(choose_seat_indices(seats, 2, "adjacent", ["A"]), [])
+
     def test_same_zone_can_be_non_adjacent(self):
         seats = [
             {"zone": "A", "row": "R1", "number": "1"},
@@ -1873,6 +2328,14 @@ Evidence-backed Python + Playwright ticket assistant for **{event_name}**.
 - `python3 bot.py --wait-for-window`: keep one Chrome session, enter the normal queue window, respect Retry-After, complete Login from environment/secure prompt, and stop only for CAPTCHA/OTP/payment handoff.
 - `./run-full-loop.command`: run the verified browser loop through terms, zone, quantity, event-specific attendee fields, delivery/payment options, and stop on the generated QR page before payment.
 
+## Fast Seat Recovery (beta.26)
+
+- The runtime plans a complete seat set before clicking any seat.
+- A rejected or partial set is released, rescanned, and retried in the same allowed zone before moving to the next zone in `seatRecovery.zoneOrder`.
+- `maxAttempts: 0` means retry until an explicit terminal server state or user Stop. `A-K` zone ranges are expanded in the exact requested order.
+- No local-model call, screenshot, or fixed delay is inserted between seat clicks and checkout. The local 9B model is reserved for an unknown layout after deterministic recovery fails.
+- A run is Full Loop only when both `reservation_verified` and `PAYMENT_HANDOFF` are present in runtime evidence. The browser stays open at QR and never submits payment.
+
 Fixture verification does not mean a live queue or checkout was observed. `CHECKOUT_READY` is never emitted without payment-page evidence.
 
 Public inspection does not require Login. A real run must verify either an existing member session or a successful Login-form transition before Checkout. Set `TICKET_USERNAME` and `TICKET_PASSWORD` in the Terminal session or enter them at the secure prompt; the password is never written to config, reports, or memory.
@@ -1929,7 +2392,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "1.1.0-beta.25",
+        "generator_version": "1.1.0-beta.26",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),
