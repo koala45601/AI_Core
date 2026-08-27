@@ -110,7 +110,7 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "1.1.0-beta.26",
+        "generatorVersion": "1.1.0-beta.27",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -165,6 +165,15 @@ if not missing:
             "inventoryRescanIntervalMs": 750,
             "releasePartialBeforeRetry": True,
             "preserveGroupingRule": True,
+        },
+        "aiRuntime": {
+            "enabled": True,
+            "analyzeEveryState": True,
+            "backgroundAdvisor": True,
+            "actionMode": "validated_autonomous",
+            "strategyMemory": True,
+            "maxStrategyEntries": 200,
+            "model": "qwen3.5:9b",
         },
         "credentialEnvironment": {"username": "TICKET_USERNAME", "password": "TICKET_PASSWORD"},
         "handoffPoints": ["captcha", "otp", "payment"],
@@ -445,6 +454,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -459,6 +469,13 @@ SEAT_SELECTOR = ".seatuncheck, .seatcheck, [data-seat][data-seatk], [data-seat][
 SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
 LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "at": 0.0}
+AI_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alpha-ticket-ai")
+AI_FUTURE = None
+AI_FUTURE_META = {}
+AI_LAST_DECISION = {}
+AI_LAST_STATE = ""
+AI_LAST_SUBMITTED = {}
+AI_STRATEGY_PATH = Path(os.environ.get("ALPHA_TICKET_STRATEGY_PATH") or (ROOT.parent.parent / "work" / "ticket-ai-recovery-strategies.json"))
 
 
 def record(kind, payload):
@@ -1471,6 +1488,14 @@ def fast_reserved_seat_recovery(page):
 
     while max_attempts == 0 or attempt < max_attempts:
         checkpoint = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+        schedule_ai_runtime_analysis(page, checkpoint, {
+            "phase": "fast_seat_recovery",
+            "attempt": attempt,
+            "wanted": wanted,
+            "grouping": grouping,
+            "allowed_zones": zones,
+            "critical_path": True,
+        })
         if checkpoint["state"] in {"sold_out", "sale_closed"}:
             return {"ok": False, "terminal": checkpoint["state"], "attempts": attempt}
         active_zone = zones[zone_cursor] if zones else current_zone_from_page(page)
@@ -1531,6 +1556,14 @@ def fast_reserved_seat_recovery(page):
             "http_status": LATEST_RESERVATION_RESPONSE.get("status"),
             "next_action": "release_partial_and_rescan_same_zone",
         })
+        schedule_ai_runtime_analysis(page, checkpoint, {
+            "phase": "seat_conflict",
+            "attempt": attempt,
+            "selected": selected,
+            "wanted": wanted,
+            "http_status": LATEST_RESERVATION_RESPONSE.get("status"),
+            "critical_path": True,
+        })
         if release_partial:
             release_partial_selection(page, verify_timeout)
         wait_for_inventory_change(page, rescan_interval)
@@ -1558,46 +1591,294 @@ def apply_ticket_preferences(page):
     return {"ok": False, "terminal": None, "attempts": 1}
 
 
+def redact_ai_text(value):
+    text = str(value or "")
+    text = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[EMAIL]", text, flags=re.I)
+    text = re.sub(r"\b(?:\d[ -]*?){8,19}\b", "[NUMBER]", text)
+    text = re.sub(r"(?i)(password|รหัสผ่าน|otp|token)\s*[:=]?\s*\S+", r"\1=[REDACTED]", text)
+    return text
+
+
 def sanitized_recovery_snapshot(page, checkpoint):
-    body = str(snapshot(page).get("body", ""))[:6000]
-    body = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[EMAIL]", body, flags=re.I)
-    body = re.sub(r"\b(?:\d[ -]*?){8,19}\b", "[NUMBER]", body)
-    body = re.sub(r"(?i)(password|รหัสผ่าน|otp|token)\s*[:=]?\s*\S+", r"\1=[REDACTED]", body)
+    page_snapshot = snapshot(page)
+    body = redact_ai_text(page_snapshot.get("body", ""))[:6000]
+    controls = []
+    for index, item in enumerate(page_snapshot.get("actionable_controls", [])[:80]):
+        controls.append({
+            "control_id": f"control-{index}",
+            "label": redact_ai_text(item.get("label", ""))[:200],
+            "tag": str(item.get("tag", ""))[:30],
+        })
     return {
         "state": checkpoint.get("state"),
         "url": urlunsplit((*urlsplit(page.url)[:3], "", "")),
         "body": body,
+        "controls": controls,
+        "seat_control_count": page_snapshot.get("seat_control_count", 0),
+        "selected_count": selected_seat_count(page),
+        "wanted_count": max(1, int(CONFIG.get("quantity", 1))),
+        "current_zone": current_zone_from_page(page),
         "allowed_zones": expand_zone_preferences((CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", [])),
+        "locked_event": str(CONFIG.get("eventName", ""))[:200],
+        "locked_schedule": str(CONFIG.get("schedule", ""))[:120],
     }
 
 
-def request_ai_recovery_action(page, checkpoint, allowed_actions):
-    """Ask the local model only after deterministic recovery is exhausted."""
-    model = os.environ.get("ALPHA_RECOVERY_MODEL", "qwen3.5:9b").strip() or "qwen3.5:9b"
+def ai_actions_for_state(state):
+    actions = {
+        "pre_sale": ["wait", "rescan"],
+        "armed_pre_sale": ["wait", "rescan"],
+        "waiting_room_entry": ["activate_verified_control", "rescan", "wait", "reload_same_url", "request_user"],
+        "queue": ["wait"],
+        "server_unavailable": ["wait", "reload_same_url"],
+        "sale_entry": ["activate_locked_performance", "rescan", "wait", "reload_same_url", "request_user"],
+        "access_denied": ["wait", "reload_same_url"],
+        "reservation_expired": ["return_seat_map", "rescan"],
+        "login": ["fill_login", "rescan", "request_user"],
+        "captcha_handoff": ["request_user"],
+        "otp_handoff": ["request_user"],
+        "terms_conditions": ["accept_terms", "rescan", "wait", "request_user"],
+        "zone_selection": ["select_allowed_zone", "rescan", "wait", "request_user"],
+        "quantity_selection": ["apply_locked_quantity", "rescan", "wait", "request_user"],
+        "ticket_selection": ["fast_seat_engine", "rescan_inventory", "release_partial", "switch_allowed_zone", "rescan", "wait", "request_user"],
+        "attendee_details": ["fill_locked_attendees", "rescan", "wait", "request_user"],
+        "checkout_options": ["apply_locked_checkout", "rescan", "wait", "request_user"],
+        "payment_handoff": ["notify_user"],
+        "sold_out": ["stop"],
+        "sale_closed": ["stop"],
+        "unknown": ["rescan", "reload_same_url", "wait", "request_user"],
+    }
+    return actions.get(str(state), ["rescan", "wait", "request_user"])
+
+
+def ai_strategy_key(snapshot_data):
+    source = "|".join([
+        str(snapshot_data.get("state", "")),
+        str(urlsplit(str(snapshot_data.get("url", ""))).path),
+        str(snapshot_data.get("current_zone", "")),
+        " ".join(item.get("label", "") for item in snapshot_data.get("controls", [])[:12]),
+    ])
+    return hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()[:20]
+
+
+def load_ai_strategies():
+    try:
+        payload = json.loads(AI_STRATEGY_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, list) else []
+    except Exception:
+        return []
+
+
+def matching_ai_strategies(strategy_key, state):
+    return [
+        item for item in load_ai_strategies()
+        if item.get("strategy_key") == strategy_key or item.get("state") == state
+    ][-5:]
+
+
+def remember_ai_strategy(decision, from_state, to_state):
+    if not (CONFIG.get("aiRuntime") or {}).get("strategyMemory", True) or not decision:
+        return
+    action = str(decision.get("action", ""))
+    if action in {"", "wait", "rescan", "request_user", "notify_user", "stop"}:
+        return
+    strategies = load_ai_strategies()
+    key = str(decision.get("strategy_key", ""))
+    matched = next((item for item in strategies if item.get("strategy_key") == key and item.get("action") == action), None)
+    if matched:
+        matched["success_count"] = int(matched.get("success_count", 0)) + 1
+        matched["last_success_at"] = datetime.now().astimezone().isoformat()
+        matched["to_state"] = to_state
+    else:
+        strategies.append({
+            "strategy_key": key,
+            "state": from_state,
+            "action": action,
+            "reason": str(decision.get("reason", ""))[:300],
+            "to_state": to_state,
+            "success_count": 1,
+            "last_success_at": datetime.now().astimezone().isoformat(),
+        })
+    maximum = max(1, int((CONFIG.get("aiRuntime") or {}).get("maxStrategyEntries", 200) or 200))
+    try:
+        AI_STRATEGY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = AI_STRATEGY_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(strategies[-maximum:], ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(AI_STRATEGY_PATH)
+        record("ai_strategy_learned", {"state": from_state, "to_state": to_state, "action": action, "strategy_key": key, "verified_by": "observed_state_transition"})
+    except Exception as error:
+        record("ai_strategy_learned", {"state": from_state, "to_state": to_state, "action": action, "strategy_key": key, "saved": False, "reason": str(error)[:300]})
+
+
+def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds=20):
+    runtime = CONFIG.get("aiRuntime") if isinstance(CONFIG.get("aiRuntime"), dict) else {}
+    model = os.environ.get("ALPHA_RECOVERY_MODEL", str(runtime.get("model") or "qwen3.5:9b")).strip() or "qwen3.5:9b"
+    strategy_key = ai_strategy_key(snapshot_data)
     prompt = {
-        "role": "ticket_workflow_recovery",
-        "snapshot": sanitized_recovery_snapshot(page, checkpoint),
+        "role": "ticket_runtime_advisor",
+        "snapshot": snapshot_data,
+        "runtime_context": context or {},
         "allowed_actions": list(allowed_actions),
-        "instruction": "Return JSON only: {\"action\": one allowed action, \"reason\": short evidence-based reason}. Never change event, performance, quantity or allowed zones.",
+        "learned_strategies": matching_ai_strategies(strategy_key, snapshot_data.get("state")),
+        "instruction": "Analyze the current state and return JSON only with action, diagnosis, reason, confidence, and next_expected_state. Choose exactly one allowed action. Never change the locked event, performance, quantity, payment method, or allowed zones. Never solve CAPTCHA/OTP or submit payment.",
     }
     request = urllib.request.Request(
         "http://127.0.0.1:11434/api/chat",
-        data=json.dumps({"model": model, "stream": False, "format": "json", "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}], "options": {"temperature": 0}}).encode("utf-8"),
+        data=json.dumps({"model": model, "stream": False, "format": "json", "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}], "options": {"temperature": 0, "num_predict": 128}}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=max(1, int(timeout_seconds))) as response:
             payload = json.loads(response.read().decode("utf-8"))
         content = json.loads(str((payload.get("message") or {}).get("content") or "{}"))
         action = str(content.get("action", ""))
         if action not in allowed_actions:
             raise ValueError("model returned an action outside the allowlist")
-        result = {"action": action, "reason": str(content.get("reason", ""))[:300], "model": model}
+        result = {
+            "action": action,
+            "diagnosis": str(content.get("diagnosis", ""))[:500],
+            "reason": str(content.get("reason", ""))[:500],
+            "confidence": max(0.0, min(1.0, float(content.get("confidence", 0) or 0))),
+            "next_expected_state": str(content.get("next_expected_state", ""))[:80],
+            "model": model,
+            "state": snapshot_data.get("state"),
+            "strategy_key": strategy_key,
+        }
     except Exception as error:
-        result = {"action": "request_user" if "request_user" in allowed_actions else allowed_actions[0], "reason": f"local recovery model unavailable: {str(error)[:180]}", "model": model}
+        fallback = "wait" if "wait" in allowed_actions else "rescan" if "rescan" in allowed_actions else "request_user" if "request_user" in allowed_actions else allowed_actions[0]
+        result = {"action": fallback, "diagnosis": "local AI unavailable", "reason": str(error)[:300], "confidence": 0.0, "next_expected_state": "", "model": model, "state": snapshot_data.get("state"), "strategy_key": strategy_key, "unavailable": True}
+    return result
+
+
+def collect_ai_runtime_analysis(wait_seconds=0):
+    global AI_FUTURE, AI_FUTURE_META, AI_LAST_DECISION
+    if AI_FUTURE is None:
+        return None
+    if wait_seconds <= 0 and not AI_FUTURE.done():
+        return None
+    try:
+        result = AI_FUTURE.result(timeout=max(0, wait_seconds))
+    except FutureTimeoutError:
+        return None
+    except Exception as error:
+        result = {"action": "wait", "diagnosis": "advisor task failed", "reason": str(error)[:300], "confidence": 0.0, **AI_FUTURE_META}
+    AI_FUTURE = None
+    AI_FUTURE_META = {}
+    AI_LAST_DECISION = result
+    record("ai_analysis", {**result, "background": True, "credentials_included": False, "screenshot_included": False})
+    return result
+
+
+def schedule_ai_runtime_analysis(page, checkpoint, context=None):
+    global AI_FUTURE, AI_FUTURE_META
+    runtime = CONFIG.get("aiRuntime") if isinstance(CONFIG.get("aiRuntime"), dict) else {}
+    collect_ai_runtime_analysis()
+    if runtime.get("enabled", True) is False or runtime.get("analyzeEveryState", True) is False or AI_FUTURE is not None:
+        return
+    snapshot_data = sanitized_recovery_snapshot(page, checkpoint)
+    strategy_key = ai_strategy_key(snapshot_data)
+    now = time.monotonic()
+    if now - float(AI_LAST_SUBMITTED.get(strategy_key, 0)) < 10:
+        return
+    AI_LAST_SUBMITTED[strategy_key] = now
+    allowed_actions = ai_actions_for_state(checkpoint.get("state"))
+    AI_FUTURE_META = {"state": checkpoint.get("state"), "strategy_key": strategy_key}
+    AI_FUTURE = AI_EXECUTOR.submit(query_local_ai, snapshot_data, allowed_actions, context or {}, 8)
+    record("ai_analysis", {"status": "QUEUED", "state": checkpoint.get("state"), "allowed_actions": allowed_actions, "background": True, "critical_path_blocked": False})
+
+
+def note_ai_state_transition(current_state):
+    global AI_LAST_STATE
+    previous = AI_LAST_STATE
+    if previous and previous != current_state and AI_LAST_DECISION.get("state") == previous:
+        remember_ai_strategy(AI_LAST_DECISION, previous, current_state)
+    AI_LAST_STATE = current_state
+
+
+def request_ai_recovery_action(page, checkpoint, allowed_actions, context=None):
+    """Use the all-state advisor result, waiting only when deterministic recovery is exhausted."""
+    result = collect_ai_runtime_analysis(wait_seconds=20)
+    current_key = ai_strategy_key(sanitized_recovery_snapshot(page, checkpoint))
+    if not result or result.get("strategy_key") != current_key or result.get("action") not in allowed_actions:
+        result = query_local_ai(sanitized_recovery_snapshot(page, checkpoint), allowed_actions, context or {})
+        record("ai_analysis", {**result, "background": False, "credentials_included": False, "screenshot_included": False})
     record("recovery", {"status": "AI_RECOVERY_DECISION", **result, "credentials_included": False, "screenshot_included": False})
     return result
+
+
+def execute_validated_ai_action(page, checkpoint, decision, confirm_order=False):
+    """Execute only bounded actions against the locked run configuration."""
+    action = str((decision or {}).get("action", ""))
+    state = str(checkpoint.get("state", "unknown"))
+    if action not in ai_actions_for_state(state):
+        record("ai_action", {"state": state, "action": action, "validated": False, "executed": False, "detail": "action rejected by runtime allowlist", "payment_submitted": False})
+        return False
+    success = False
+    detail = ""
+    try:
+        if action in {"rescan", "wait"}:
+            wait_for_page_change(page, page.url, timeout_ms=1000)
+            success = True
+        elif action == "rescan_inventory":
+            success = wait_for_inventory_change(page, int((CONFIG.get("seatRecovery") or {}).get("inventoryRescanIntervalMs", 750)))
+        elif action == "reload_same_url" and state not in {"queue", "captcha_handoff", "otp_handoff", "payment_handoff"}:
+            page.reload(wait_until="domcontentloaded", timeout=45000)
+            success = True
+        elif action == "activate_verified_control" and state == "waiting_room_entry":
+            success = semantic_click(page, ["Join waiting room", "Join the queue", "Join queue", "เข้าห้องรอ", "กดรับคิว", "รับคิว"])
+        elif action == "activate_locked_performance" and state in {"sale_entry", "unknown"}:
+            success = bool(activate_selected_performance(page, prefer_target_navigation=True))
+        elif action == "return_seat_map" and state == "reservation_expired":
+            success = return_to_same_seat_map(page)
+        elif action == "fill_login" and state == "login":
+            success = fill_login(page)
+        elif action == "accept_terms" and state == "terms_conditions":
+            success = accept_event_terms(page)
+        elif action == "select_allowed_zone" and state == "zone_selection":
+            success = select_preferred_zone(page)
+        elif action == "apply_locked_quantity" and state == "quantity_selection":
+            success = select_ticket_quantity(page)
+        elif action == "fast_seat_engine" and state == "ticket_selection":
+            success = bool(fast_reserved_seat_recovery(page).get("ok"))
+        elif action == "release_partial" and state == "ticket_selection":
+            success = release_partial_selection(page) == 0
+        elif action == "switch_allowed_zone" and state == "ticket_selection":
+            allowed = expand_zone_preferences((CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", []))
+            current = current_zone_from_page(page)
+            candidates = allowed[allowed.index(current) + 1:] if current in allowed else allowed
+            success = bool(candidates and switch_to_allowed_zone(page, candidates[0]))
+            detail = candidates[0] if candidates else "no remaining allowed zone"
+        elif action == "fill_locked_attendees" and state == "attendee_details":
+            success = fill_attendee_details(page)
+        elif action == "apply_locked_checkout" and state == "checkout_options":
+            success = bool(select_checkout_options(page, confirm_order=confirm_order))
+        elif action in {"request_user", "notify_user", "stop"}:
+            success = False
+            detail = "human or terminal action"
+        else:
+            detail = "action rejected by runtime validator"
+    except Exception as error:
+        detail = str(error)[:300]
+        success = False
+    record("ai_action", {
+        "state": state,
+        "action": action,
+        "validated": True,
+        "executed": success,
+        "detail": detail,
+        "locked_event": CONFIG.get("eventName"),
+        "locked_schedule": CONFIG.get("schedule"),
+        "locked_quantity": CONFIG.get("quantity"),
+        "payment_submitted": False,
+    })
+    return success
+
+
+def autonomous_ai_recovery(page, checkpoint, allowed_actions, confirm_order=False, context=None):
+    decision = request_ai_recovery_action(page, checkpoint, allowed_actions, context=context)
+    executed = execute_validated_ai_action(page, checkpoint, decision, confirm_order=confirm_order)
+    return {"decision": decision, "executed": executed}
 
 
 def adaptive_retry_delay(checkpoint, attempt):
@@ -1744,10 +2025,20 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         discovery_rounds = 0
         workflow_steps = 0
         unknown_recovery_rounds = 0
+        recovery_failures = {}
         while True:
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
             state = checkpoint["state"]
+            collect_ai_runtime_analysis()
+            note_ai_state_transition(state)
+            schedule_ai_runtime_analysis(page, checkpoint, {
+                "workflow_steps": workflow_steps,
+                "queue_rounds": queue_rounds,
+                "access_denied_rounds": access_denied_rounds,
+                "login_verified": login_verified,
+                "confirm_unpaid_order_authorized": confirm_order,
+            })
             if not login_verified and (authenticated_account_marker(page) or authenticated_booking_session(page, state)):
                 login_verified = True
                 record("authentication", {"status": "EXISTING_SESSION_VERIFIED", "method": "account_marker_or_private_booking_step", "credentials_persisted": False})
@@ -1775,11 +2066,10 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 discovery_rounds += 1
                 unknown_recovery_rounds += 1
                 if unknown_recovery_rounds % 4 == 0:
-                    decision = request_ai_recovery_action(page, checkpoint, ["rescan", "reload_same_url", "wait", "request_user"])
-                    if decision["action"] == "reload_same_url":
-                        page.reload(wait_until="domcontentloaded")
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["rescan", "reload_same_url", "wait", "request_user"], context={"failure": "runtime_layout_not_classified", "round": unknown_recovery_rounds})
+                    if recovery["executed"]:
                         continue
-                    if decision["action"] == "request_user":
+                    if recovery["decision"].get("action") == "request_user":
                         surface_browser_window(page, browser_profile, "waiting_unknown_layout")
                         record("input_required", {"field": "unknown_layout", "stage": "waiting_unknown_layout", "prompt": "รูปแบบหน้าเว็บเปลี่ยนและ recovery ปกติระบุขั้นต่อไปไม่ได้ กรุณาตรวจหน้าเดิมแล้วกดทำต่อ", "secret": False})
                         input("ตรวจหน้าเดิมแล้วกด Enter เพื่อให้ AI rescan ด้วย session เดิม: ")
@@ -1799,12 +2089,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 continue
             if state == "unknown":
                 unknown_recovery_rounds += 1
-                decision = request_ai_recovery_action(page, checkpoint, ["rescan", "reload_same_url", "wait", "request_user"])
-                if decision["action"] == "reload_same_url":
-                    page.reload(wait_until="domcontentloaded")
-                    continue
-                if decision["action"] in {"rescan", "wait"}:
-                    wait_for_page_change(page, page.url, timeout_ms=1500)
+                recovery = autonomous_ai_recovery(page, checkpoint, ["rescan", "reload_same_url", "wait", "request_user"], context={"failure": "unknown_state", "round": unknown_recovery_rounds})
+                if recovery["executed"]:
                     continue
                 surface_browser_window(page, browser_profile, "waiting_unknown_layout")
                 record("input_required", {"field": "unknown_layout", "stage": "waiting_unknown_layout", "prompt": "AI ระบุขั้นต่อไปจากหลักฐานไม่ได้ กรุณาตรวจหน้าเดิมแล้วกดทำต่อ", "secret": False})
@@ -1820,11 +2106,16 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     record("recovery", {"status": "WAITING_ROOM_CONTROL_CHANGED", "previous_state": state, "current_state": refreshed["state"], "actionable_control_count": refreshed.get("actionable_control_count", 0)})
                     if refreshed["state"] != "waiting_room_entry":
                         checkpoint = refreshed
-                        page.wait_for_timeout(500)
+                        wait_for_page_change(page, previous_url, timeout_ms=500)
                         continue
-                    record("result", {"status": "WAITING_ROOM_CONTROL_NOT_VERIFIED", "live_queue_observed": False, "live_checkout_verified": False, "reason": "visible control disappeared or could not be activated"})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["activate_verified_control", "rescan", "wait", "reload_same_url", "request_user"], context={"failure": "waiting_room_control_changed", "attempt": recovery_failures[state]})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_queue_recovery")
+                    record("input_required", {"field": "queue_recovery", "stage": "waiting_queue_recovery", "prompt": "AI วิเคราะห์แล้วแต่ยังยืนยันปุ่มรับคิวไม่ได้ ระบบรักษา session เดิมไว้ให้ตรวจ", "secret": False})
+                    input("ตรวจหน้าคิวเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 if activated_page:
                     page = activated_page
                 record("queue", {"status": "WAITING_ROOM_JOINED", "clicked_once": True, "same_session": True, "selected_schedule": CONFIG.get("schedule"), "selected_performance": CONFIG.get("selectedPerformance")})
@@ -1855,12 +2146,15 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 previous_url = page.url
                 activated_page = activate_selected_performance(page, prefer_target_navigation=True)
                 if not activated_page:
-                    record("result", {"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE", "reason": "ไม่พบปุ่มที่ตรงกับวัน/เวลาที่เลือก จึงไม่เลือกรอบอื่นแทน", "selected_performance": CONFIG.get("selectedPerformance"), "same_queue_session": True, "live_checkout_verified": False})
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    record("recovery", {"status": "SELECTED_PERFORMANCE_NOT_AVAILABLE", "reason": "ไม่พบ control ที่ตรงกับวัน/เวลาที่ล็อกไว้", "selected_performance": CONFIG.get("selectedPerformance"), "same_queue_session": True, "terminal": False})
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["activate_locked_performance", "rescan", "wait", "reload_same_url", "request_user"], context={"failure": "locked_performance_control_missing", "attempt": recovery_failures[state]})
+                    if recovery["executed"]:
+                        continue
                     surface_browser_window(page, browser_profile, "waiting_selected_performance")
-                    record("input_required", {"field": "performance", "stage": "waiting_selected_performance", "prompt": "เปิด Chrome ของบอทขึ้นหน้าแล้ว: รอบที่เลือกยังไม่ปรากฏ ระบบค้าง session เดิมไว้ให้ตรวจและจะไม่เลือกรอบอื่นแทน", "secret": False})
-                    input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อปิด โดยไม่เปลี่ยนไปรอบอื่น: ")
-                    context.close()
-                    return 2
+                    record("input_required", {"field": "performance", "stage": "waiting_selected_performance", "prompt": "AI ยังหารอบที่ล็อกไว้ไม่พบ ระบบไม่เลือกรอบอื่นแทนและรักษา session เดิมไว้", "secret": False})
+                    input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ โดยไม่เปลี่ยนรอบ: ")
+                    continue
                 page = activated_page
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
@@ -1930,26 +2224,41 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             if state == "terms_conditions":
                 previous_url = page.url
                 if not accept_event_terms(page):
-                    record("result", {"status": "TERMS_CONTINUE_CONTROL_NOT_VERIFIED", "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["accept_terms", "rescan", "wait", "request_user"], context={"failure": "terms_control_changed", "attempt": recovery_failures[state]})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_terms_recovery")
+                    record("input_required", {"field": "terms", "stage": "waiting_terms_recovery", "prompt": "AI ยังยืนยัน control ข้อตกลงไม่ได้ ระบบรักษา session ไว้ให้ตรวจ", "secret": False})
+                    input("ตรวจหน้าข้อตกลงแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 record("action", {"action": "terms_accepted_under_run_authorization", "same_session": True})
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "zone_selection":
                 previous_url = page.url
                 if not select_preferred_zone(page):
-                    record("result", {"status": "ZONE_NOT_SELECTED", "preferred_zones": CONFIG.get("preferredZones", []), "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["select_allowed_zone", "rescan", "wait", "request_user"], context={"failure": "allowed_zone_control_missing", "attempt": recovery_failures[state], "allowed_zones": CONFIG.get("preferredZones", [])})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_zone_recovery")
+                    record("input_required", {"field": "zone", "stage": "waiting_zone_recovery", "prompt": "AI ยังเลือกได้เฉพาะโซนที่อนุญาตแต่หา control ไม่พบ ระบบไม่ออกนอกโซน", "secret": False})
+                    input("ตรวจหน้าโซนเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "quantity_selection":
                 previous_url = page.url
                 if not select_ticket_quantity(page):
-                    record("result", {"status": "TICKET_QUANTITY_NOT_COMPLETE", "wanted": CONFIG.get("quantity"), "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["apply_locked_quantity", "rescan", "wait", "request_user"], context={"failure": "quantity_control_changed", "attempt": recovery_failures[state], "locked_quantity": CONFIG.get("quantity")})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_quantity_recovery")
+                    record("input_required", {"field": "quantity", "stage": "waiting_quantity_recovery", "prompt": "AI ยังใส่จำนวนบัตรที่ล็อกไว้ไม่ได้ ระบบไม่เปลี่ยนจำนวนเอง", "secret": False})
+                    input("ตรวจหน้าจำนวนบัตรแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "ticket_selection":
@@ -1962,13 +2271,18 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         record("result", {"status": "SOLD_OUT_BY_SERVER" if terminal == "sold_out" else "SALE_CLOSED_BY_SERVER", "wanted": CONFIG.get("quantity"), "evidence_path": evidence_path, "live_checkout_verified": False})
                         context.close()
                         return 0
-                    record("result", {"status": "SEAT_RECOVERY_ATTEMPT_LIMIT", "wanted": CONFIG.get("quantity"), "attempts": seat_result.get("attempts"), "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["rescan_inventory", "release_partial", "switch_allowed_zone", "fast_seat_engine", "request_user"], context={"failure": terminal or "seat_recovery_unresolved", "attempt": recovery_failures[state], "wanted": CONFIG.get("quantity")})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_seat_recovery")
+                    record("input_required", {"field": "seat_recovery", "stage": "waiting_seat_recovery", "prompt": "AI ยังแก้ผังที่นั่งรูปแบบนี้ไม่ได้ ระบบรักษา session และชุดเงื่อนไขเดิมไว้", "secret": False})
+                    input("ตรวจผังเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 if not semantic_click(page, ["ดำเนินการต่อ", "ถัดไป", "continue", "next", "ยืนยัน"]):
                     record("recovery", {"status": "CONTINUE_CONTROL_RESCAN", "same_session": True, "reservation_preserved": True})
-                    decision = request_ai_recovery_action(page, checkpoint, ["rescan", "request_user"])
-                    if decision["action"] == "request_user":
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["rescan", "wait", "request_user"], context={"failure": "continue_control_changed", "reservation_verified": True})
+                    if not recovery["executed"]:
                         surface_browser_window(page, browser_profile, "waiting_manual_continue")
                         record("input_required", {"field": "continue", "stage": "waiting_manual_continue", "prompt": "ที่นั่งถูกยืนยันแล้วแต่ปุ่มดำเนินการต่อเปลี่ยน กรุณากดปุ่มต่อใน Chrome แล้วกดทำต่อ", "secret": False})
                         input("กดดำเนินการต่อใน Chrome เดิมแล้วกลับมากด Enter: ")
@@ -1977,9 +2291,14 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             if state == "attendee_details":
                 previous_url = page.url
                 if not fill_attendee_details(page):
-                    record("result", {"status": "ATTENDEE_DETAILS_INCOMPLETE", "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["fill_locked_attendees", "rescan", "wait", "request_user"], context={"failure": "attendee_form_changed", "attempt": recovery_failures[state], "values_locked": True})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_attendee_recovery")
+                    record("input_required", {"field": "attendee", "stage": "waiting_attendee_recovery", "prompt": "AI ยังจับคู่ฟิลด์ข้อมูลผู้เข้าชมไม่ได้ ระบบไม่เดาค่าหรือเปลี่ยนผู้เข้าชม", "secret": False})
+                    input("ตรวจฟอร์มผู้เข้าชมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "checkout_options":
@@ -1996,9 +2315,14 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     context.close()
                     return 0
                 if not checkout_result:
-                    record("result", {"status": "CHECKOUT_OPTIONS_INCOMPLETE", "live_checkout_verified": False})
-                    context.close()
-                    return 2
+                    recovery_failures[state] = recovery_failures.get(state, 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["apply_locked_checkout", "rescan", "wait", "request_user"], confirm_order=confirm_order, context={"failure": "checkout_controls_changed", "attempt": recovery_failures[state], "payment_method_locked": CONFIG.get("paymentMethod")})
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_checkout_recovery")
+                    record("input_required", {"field": "checkout_options", "stage": "waiting_checkout_recovery", "prompt": "AI ยังจับคู่ตัวเลือก Checkout ไม่ได้ ระบบไม่เปลี่ยนวิธีรับบัตรหรือวิธีชำระ", "secret": False})
+                    input("ตรวจ Checkout เดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "payment_handoff":
@@ -2328,12 +2652,14 @@ Evidence-backed Python + Playwright ticket assistant for **{event_name}**.
 - `python3 bot.py --wait-for-window`: keep one Chrome session, enter the normal queue window, respect Retry-After, complete Login from environment/secure prompt, and stop only for CAPTCHA/OTP/payment handoff.
 - `./run-full-loop.command`: run the verified browser loop through terms, zone, quantity, event-specific attendee fields, delivery/payment options, and stop on the generated QR page before payment.
 
-## Fast Seat Recovery (beta.26)
+## Fast Seat Recovery + AI Runtime Advisor (beta.27)
 
 - The runtime plans a complete seat set before clicking any seat.
 - A rejected or partial set is released, rescanned, and retried in the same allowed zone before moving to the next zone in `seatRecovery.zoneOrder`.
 - `maxAttempts: 0` means retry until an explicit terminal server state or user Stop. `A-K` zone ranges are expanded in the exact requested order.
-- No local-model call, screenshot, or fixed delay is inserted between seat clicks and checkout. The local 9B model is reserved for an unknown layout after deterministic recovery fails.
+- No blocking local-model call, screenshot, or fixed delay is inserted between seat clicks and checkout. Fast Seat Engine remains deterministic on the critical path.
+- Local AI analyzes every runtime state in a background worker. When normal recovery fails it selects and executes a validated action without changing the locked event, schedule, quantity, allowed zones, or payment method.
+- A recovery followed by a verified state transition is saved to the shared `work/ticket-ai-recovery-strategies.json` and supplied to later bots and analyses. CAPTCHA, OTP, and actual payment remain explicit human handoffs.
 - A run is Full Loop only when both `reservation_verified` and `PAYMENT_HANDOFF` are present in runtime evidence. The browser stays open at QR and never submits payment.
 
 Fixture verification does not mean a live queue or checkout was observed. `CHECKOUT_READY` is never emitted without payment-page evidence.
@@ -2392,7 +2718,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "1.1.0-beta.26",
+        "generator_version": "1.1.0-beta.27",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

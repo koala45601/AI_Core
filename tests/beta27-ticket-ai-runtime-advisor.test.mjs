@@ -1,0 +1,102 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+
+function run(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test("beta27 analyzes every ticket state and learns verified recovery strategies", async () => {
+  const template = await readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8");
+  const manager = await readFile(new URL("../tool-service/ticket-run-manager.mjs", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  assert.equal(pkg.version, "1.1.0-beta.27");
+  assert.match(template, /"analyzeEveryState": True/);
+  assert.match(template, /"backgroundAdvisor": True/);
+  assert.match(template, /"actionMode": "validated_autonomous"/);
+  assert.match(template, /def schedule_ai_runtime_analysis\(page, checkpoint, context=None\):/);
+  assert.match(template, /schedule_ai_runtime_analysis\(page, checkpoint/);
+  assert.match(template, /def execute_validated_ai_action\(page, checkpoint, decision, confirm_order=False\):/);
+  assert.match(template, /if action not in ai_actions_for_state\(state\):/);
+  assert.match(template, /def remember_ai_strategy\(decision, from_state, to_state\):/);
+  assert.match(template, /ticket-ai-recovery-strategies\.json/);
+  assert.match(template, /credentials_included": False/);
+  assert.match(template, /"payment_submitted": False/);
+  assert.match(template, /state not in \{"queue", "captcha_handoff", "otp_handoff", "payment_handoff"\}/);
+  assert.match(manager, /kind === "ai_analysis"/);
+  assert.match(manager, /kind === "ai_action"/);
+  assert.match(manager, /kind === "ai_strategy_learned"/);
+  assert.match(page, /AI Learned/);
+  assert.match(page, /AI วิเคราะห์/);
+});
+
+test("generated beta27 advisor accepts local JSON decisions, learns, and rejects an unsafe state action", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "alpha-beta27-advisor-"));
+  const output = join(temporary, "output");
+  const programs = join(temporary, "Program_Create");
+  const payload = {
+    event_candidates: [{ id: "fixture", name: "Fixture", url: "https://tickets.test/event", sale_status: "open" }],
+    selected_event_id: "fixture",
+    event_url: "https://tickets.test/event",
+    schedule: "2026-08-28T19:00:00+07:00",
+    sale_open_at: "2026-08-27T10:00:00+07:00",
+    event_facts: { sale_status: "open", sale_open_at: "2026-08-27T10:00:00+07:00", evidence: ["fixture"] },
+    functional_preflight: { public_page_verified: true, runtime_discovery_required: false },
+    quantity: 2,
+    seat_mode: "reserved",
+    seat_grouping: "adjacent",
+    preferred_zones: ["A-K"],
+    seat_fallback_mode: "nearest",
+    delivery_method: "pickup",
+    payment_method: "qr",
+    project_name: "beta27-advisor-fixture",
+  };
+  try {
+    const generated = await run("python3", [new URL("../templates/concert-ticket-assistant.py", import.meta.url).pathname, JSON.stringify(payload)], {
+      env: { ...process.env, ALPHA_OUTPUT_DIR: output, ALPHA_PROGRAM_CREATE_DIR: programs },
+    });
+    assert.equal(generated.code, 0, generated.stderr || generated.stdout);
+    const result = JSON.parse(generated.stdout.trim().split("\n").at(-1));
+    const project = result.created_project_path;
+    const probe = String.raw`
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import bot
+class Response:
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+    def read(self):
+        content = {"action":"rescan","diagnosis":"DOM changed","reason":"control moved","confidence":0.9,"next_expected_state":"sale_entry"}
+        return json.dumps({"message":{"content":json.dumps(content)}}).encode()
+bot.urllib.request.urlopen = lambda request, timeout=0: Response()
+snapshot = {"state":"unknown","url":"https://tickets.test/event","body":"changed", "controls":[], "allowed_zones":["A"], "current_zone":"A"}
+decision = bot.query_local_ai(snapshot, ["rescan", "request_user"], {"phase":"fixture"}, 1)
+assert decision["action"] == "rescan"
+assert decision["confidence"] == 0.9
+bot.AI_STRATEGY_PATH = pathlib.Path(sys.argv[1]) / "strategy-fixture.json"
+decision.update({"action":"reload_same_url", "strategy_key":"fixture-key"})
+bot.remember_ai_strategy(decision, "access_denied", "sale_entry")
+saved = json.loads(bot.AI_STRATEGY_PATH.read_text())
+assert saved[0]["success_count"] == 1
+assert bot.execute_validated_ai_action(object(), {"state":"queue"}, {"action":"reload_same_url"}) is False
+bot.AI_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+`;
+    const checked = await run("python3", ["-c", probe, project], { cwd: project });
+    assert.equal(checked.code, 0, checked.stderr || checked.stdout);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

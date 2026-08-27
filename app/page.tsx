@@ -275,6 +275,17 @@ interface TicketRunView {
     current_action?: string;
     next_action?: string;
   };
+  ai?: {
+    status?: string;
+    state?: string;
+    action?: string;
+    diagnosis?: string;
+    confidence?: number | null;
+    background?: boolean;
+    last_action_executed?: boolean;
+    learned_strategy_count?: number;
+    last_learned_action?: string;
+  };
   checkout_countdown_seconds?: number | null;
   result_status?: string;
   result_reason?: string;
@@ -381,6 +392,9 @@ function ticketRunLogLabel(text: string) {
     if (kind === "reservation_verified") return `ยืนยันการถือบัตรแล้ว ${String(item.selected || item.wanted || 0)}/${String(item.wanted || 0)}`;
     if (kind === "queue_analysis") return item.queue_position_verified ? `คิวลำดับ ${String(item.queue_position)}` : "กำลังรักษาคิวเดิม · ห้าม refresh";
     if (kind === "recovery") return `Recovery: ${String(item.status || item.action || "กำลังแก้สถานะ")}`;
+    if (kind === "ai_analysis") return item.status === "QUEUED" ? `AI กำลังวิเคราะห์ ${String(item.state || "หน้าเว็บ")} เบื้องหลัง` : `AI วิเคราะห์: ${String(item.diagnosis || item.reason || item.action || "เสร็จแล้ว")}`;
+    if (kind === "ai_action") return `AI ${item.executed ? "แก้สำเร็จ" : "กำลังหาวิธีถัดไป"}: ${String(item.action || "recovery")}`;
+    if (kind === "ai_strategy_learned") return `AI จำวิธีแก้ ${String(item.action || "strategy")} สำหรับครั้งต่อไปแล้ว`;
     if (kind === "result") return `ผล: ${String(item.status || "ยังไม่ยืนยัน")}${item.reason ? ` — ${String(item.reason)}` : ""}`;
     if (kind === "input_required") return `รอผู้ใช้: ${String(item.prompt || item.field || "ตรวจหน้า Browser")}`;
     if (kind === "runtime") return String(item.detail || "เปิด Browser แยกแล้ว");
@@ -1646,7 +1660,7 @@ export default function Home() {
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "1.1.0-beta.26"
+        && ticketBuildReport.generator_version === "1.1.0-beta.27"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -1860,6 +1874,7 @@ export default function Home() {
                             <div><span>{message.ticketRun.status === "failed" ? "!" : message.ticketRun.status === "completed" ? "✓" : "▶"}</span><div><strong>Ticket Full Loop · {message.ticketRun.status}</strong><p>Stage: {message.ticketRun.stage}</p></div></div>
                             <small>{message.ticketRun.detail || "AI กำลังควบคุม Ticket Browser เบื้องหลัง"}</small>
                             {message.ticketRun.seat && <div className="ticket-run-metrics"><span>โซน <strong>{message.ticketRun.seat.current_zone || "—"}</strong></span><span>ที่นั่ง <strong>{message.ticketRun.seat.selected || 0}/{message.ticketRun.seat.wanted || 0}</strong></span><span>ครั้งที่ <strong>{message.ticketRun.seat.attempts || 0}</strong></span><span>Hold <strong>{message.ticketRun.reservation_verified ? "ยืนยันแล้ว" : message.ticketRun.seat.reservation_status || "รอ"}</strong></span></div>}
+                            {message.ticketRun.ai && <small>AI: {message.ticketRun.ai.status || "idle"}{message.ticketRun.ai.action ? ` · ${message.ticketRun.ai.action}` : ""}{message.ticketRun.ai.diagnosis ? ` — ${message.ticketRun.ai.diagnosis}` : ""}</small>}
                             {message.ticketRun.latest_url ? <code>{message.ticketRun.latest_url}</code> : null}
                             {message.ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{message.ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
                             {message.ticketRun.logs?.length ? <ol className="ticket-run-timeline">{message.ticketRun.logs.slice(-8).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
@@ -2253,7 +2268,11 @@ export default function Home() {
                         <span>ถัดไป <strong>{ticketRun.seat?.next_action || ticketRun.queue?.next_action || "ตรวจ state"}</strong></span>
                         {ticketRun.queue?.position_verified && <span>คิว <strong>{ticketRun.queue.position}</strong></span>}
                         {ticketRun.checkout_countdown_seconds != null && <span>Checkout <strong>{Math.floor(ticketRun.checkout_countdown_seconds / 60)}:{String(ticketRun.checkout_countdown_seconds % 60).padStart(2, "0")}</strong></span>}
+                        <span>AI <strong>{ticketRun.ai?.status || "idle"}</strong></span>
+                        {ticketRun.ai?.action && <span>AI Action <strong>{ticketRun.ai.action}</strong></span>}
+                        <span>AI Learned <strong>{ticketRun.ai?.learned_strategy_count || 0}</strong></span>
                       </div>
+                      {ticketRun.ai?.diagnosis && <small>AI วิเคราะห์: {ticketRun.ai.diagnosis}{ticketRun.ai.confidence != null ? ` · confidence ${Math.round(ticketRun.ai.confidence * 100)}%` : ""}</small>}
                       {ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
                       {ticketRun.logs?.length ? <ol className="ticket-run-timeline">{ticketRun.logs.slice(-12).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
                       {ticketRun.status === "waiting_handoff" && <div className="confirm-row">

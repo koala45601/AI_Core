@@ -31,7 +31,7 @@ test("Ticket Run Manager validates Program_Create, streams handoff, redacts cred
   const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-runtime-"));
   const root = join(temp, "Program_Create");
   await mkdir(root);
-  const path = await project(root, "demo", `#!/bin/bash\necho '{"kind":"runtime","stage":"starting_browser"}'\necho "password=$TICKET_PASSWORD" >&2\necho '{"kind":"input_required","field":"zone","stage":"waiting_zone","options":["A1","A2"],"prompt":"เลือกโซน"}'\nIFS= read -r zone\necho '{"kind":"wait","state":"queue"}'\necho '{"kind":"reservation_verified","status":"SEAT_HOLD_VERIFIED","zone":"A1","selected":2,"wanted":2,"attempt":1}'\necho '{"kind":"result","status":"PAYMENT_HANDOFF","live_checkout_verified":true}'\necho '{"kind":"input_required","field":"payment","stage":"payment_handoff","prompt":"หยุดก่อนจ่าย"}'\nIFS= read -r done\nexit 0\n`);
+  const path = await project(root, "demo", `#!/bin/bash\necho '{"kind":"runtime","stage":"starting_browser"}'\necho "password=$TICKET_PASSWORD" >&2\necho '{"kind":"input_required","field":"zone","stage":"waiting_zone","options":["A1","A2"],"prompt":"เลือกโซน"}'\nIFS= read -r zone\necho '{"kind":"wait","state":"queue"}'\necho '{"kind":"ai_analysis","status":"READY","state":"ticket_selection","action":"fast_seat_engine","diagnosis":"complete set available","confidence":0.95,"background":true}'\necho '{"kind":"ai_action","state":"ticket_selection","action":"fast_seat_engine","executed":true}'\necho '{"kind":"ai_strategy_learned","state":"ticket_selection","to_state":"checkout_options","action":"fast_seat_engine"}'\necho '{"kind":"reservation_verified","status":"SEAT_HOLD_VERIFIED","zone":"A1","selected":2,"wanted":2,"attempt":1}'\necho '{"kind":"result","status":"PAYMENT_HANDOFF","live_checkout_verified":true}'\necho '{"kind":"input_required","field":"payment","stage":"payment_handoff","prompt":"หยุดก่อนจ่าย"}'\nIFS= read -r done\nexit 0\n`);
   const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
   try {
     const started = await manager.start({ project_path: path, username: "demo@example.com", password: "super-secret-value" });
@@ -55,6 +55,9 @@ test("Ticket Run Manager validates Program_Create, streams handoff, redacts cred
     assert.equal(payment.payment_handoff_verified, true);
     assert.equal(payment.reservation_verified, true);
     assert.equal(payment.full_loop_verified, true);
+    assert.equal(payment.ai.action, "fast_seat_engine");
+    assert.equal(payment.ai.last_action_executed, true);
+    assert.equal(payment.ai.learned_strategy_count, 1);
     await manager.input(started.run.id, "");
     const completed = await waitFor(() => {
       const run = manager.get(started.run.id).run;
@@ -188,5 +191,5 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import[^\n]*urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);
-  assert.equal(pkg.version, "1.1.0-beta.26");
+  assert.equal(pkg.version, "1.1.0-beta.27");
 });

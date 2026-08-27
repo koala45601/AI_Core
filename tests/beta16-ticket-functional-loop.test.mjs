@@ -280,7 +280,8 @@ test("generated project verifies queue, outage, multiple tickets, and never fake
   assert.match(template, /"page_refresh": False/);
   assert.match(template, /queue_position_verified/);
   assert.match(template, /server_unavailable/);
-  assert.match(template, /TICKET_QUANTITY_NOT_COMPLETE/);
+  assert.match(template, /failure": "quantity_control_changed"/);
+  assert.match(template, /autonomous_ai_recovery/);
   assert.match(template, /choose_seat_indices/);
   assert.match(template, /seatGrouping/);
   assert.match(template, /test_adjacent_seats_require_consecutive_numbers/);

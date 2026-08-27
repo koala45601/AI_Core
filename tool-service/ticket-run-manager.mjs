@@ -80,6 +80,7 @@ function publicRun(run) {
     payment_handoff_verified: run.payment_handoff_verified === true,
     seat: { ...(run.seat || {}) },
     queue: { ...(run.queue || {}) },
+    ai: { ...(run.ai || {}) },
     checkout_countdown_seconds: Number.isFinite(run.checkout_countdown_seconds) ? run.checkout_countdown_seconds : null,
     result_status: run.result_status,
     result_reason: run.result_reason,
@@ -192,6 +193,24 @@ function mapEvent(run, event) {
     run.stage = "payment_handoff";
     run.checkout_countdown_seconds = Math.max(0, Number(event.remaining_seconds || 0));
     run.detail = `ถึงหน้า QR แล้ว · เหลือ ${run.checkout_countdown_seconds} วินาที · ระบบจะไม่ชำระเงินแทน`;
+  } else if (kind === "ai_analysis") {
+    run.ai.status = safeText(event.status, 80) || "analyzed";
+    run.ai.state = safeText(event.state, 80);
+    run.ai.action = safeText(event.action, 120);
+    run.ai.diagnosis = safeText(event.diagnosis || event.reason, 500);
+    run.ai.confidence = Number.isFinite(Number(event.confidence)) ? Number(event.confidence) : null;
+    run.ai.background = event.background === true;
+    if (event.status === "QUEUED") run.detail = `AI กำลังวิเคราะห์ state ${run.ai.state || run.stage} เบื้องหลัง`;
+  } else if (kind === "ai_action") {
+    run.ai.status = event.executed === true ? "executed" : "not_executed";
+    run.ai.state = safeText(event.state, 80);
+    run.ai.action = safeText(event.action, 120);
+    run.ai.last_action_executed = event.executed === true;
+    run.detail = event.executed === true ? `AI ใช้ recovery ${run.ai.action} สำเร็จ` : `AI วิเคราะห์แล้ว แต่ action ${run.ai.action || "unknown"} ยังแก้ state ไม่ได้`;
+  } else if (kind === "ai_strategy_learned") {
+    run.ai.learned_strategy_count = Math.max(0, Number(run.ai.learned_strategy_count || 0)) + (event.saved === false ? 0 : 1);
+    run.ai.last_learned_action = safeText(event.action, 120);
+    run.detail = event.saved === false ? "AI ใช้ strategy ได้แต่บันทึกความจำไม่สำเร็จ" : `AI จำ recovery ${run.ai.last_learned_action} สำหรับใช้รอบถัดไปแล้ว`;
   } else if (kind === "evidence" || kind === "screenshot") {
     const evidencePath = safeText(event.path, 2_000);
     if (evidencePath && !run.evidence_paths.includes(evidencePath)) run.evidence_paths.push(evidencePath);
@@ -362,6 +381,7 @@ export function createTicketRunManager({ programCreateDir, ticketBrowserProfileD
       payment_handoff_verified: false,
       seat: { current_zone: "", candidate_set: [], selected: 0, wanted: 0, attempts: 0, reservation_status: "pending", next_action: "" },
       queue: { position: null, position_verified: false, waited_seconds: 0, server_status: null, current_action: "", next_action: "" },
+      ai: { status: "idle", state: "", action: "", diagnosis: "", confidence: null, background: true, last_action_executed: false, learned_strategy_count: 0, last_learned_action: "" },
       checkout_countdown_seconds: null,
       result_status: "",
       result_reason: "",
