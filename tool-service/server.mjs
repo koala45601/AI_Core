@@ -38,6 +38,8 @@ const skillsIndexFile = resolve(workDir, "skills-index.json");
 const browserProfileDir = resolve(workDir, "alpha-browser-profile");
 const publicInspectionProfileDir = resolve(workDir, "public-inspection-profile");
 const ticketBrowserProfileDir = resolve(workDir, "ticket-browser-profile");
+const ticketRunsJournalDir = resolve(workDir, "ticket-runs-v2");
+const ticketRepairDir = resolve(workDir, "ticket-repairs");
 const composeFile = resolve(appDir, "infra", "searxng", "docker-compose.yml");
 const artifacts = new Map();
 const pending = new Map();
@@ -55,10 +57,15 @@ let autoLearnJob = null;
 let autoLearnAbort = null;
 let autoLearnLoopPromise = null;
 const ticketRunManager = createTicketRunManager({
+  appDir,
   programCreateDir,
   ticketBrowserProfileDir,
-  requiredGeneratorVersion: "1.1.0-beta.28",
+  requiredGeneratorVersion: "2.0.0-alpha.1",
   ollamaBaseUrl,
+  journalDir: ticketRunsJournalDir,
+  repairDir: ticketRepairDir,
+  repairSkillsDir: learnedSkillsDir,
+  skillsIndexFile,
 });
 
 if (token.length < 32) {
@@ -75,6 +82,9 @@ await fs.mkdir(learnedResultsDir, { recursive: true });
 await fs.mkdir(autoLearnWorkDir, { recursive: true });
 await fs.mkdir(autoLearnOutputDir, { recursive: true });
 await fs.mkdir(autoLearnRunsDir, { recursive: true });
+await fs.mkdir(ticketRunsJournalDir, { recursive: true });
+await fs.mkdir(ticketRepairDir, { recursive: true });
+await ticketRunManager.ready();
 
 const mimeByExtension = {
   ".py": "text/x-python", ".js": "text/javascript", ".mjs": "text/javascript", ".sh": "text/x-shellscript", // alpha-beta4-shell-artifacts-v1
@@ -113,6 +123,35 @@ function json(response, status, payload, headers = {}) {
     ...headers,
   });
   response.end(JSON.stringify(payload));
+}
+
+function ticketRunEventStream(request, response, runId, cursor = 0) {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+    "Access-Control-Allow-Origin": "*",
+  });
+  const send = (event, payload) => {
+    response.write(`event: ${event}\n`);
+    response.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+  const initial = ticketRunManager.events(runId, cursor);
+  send("snapshot", initial);
+  for (const event of initial.events) send("runtime_event", event);
+  let lastCursor = initial.cursor;
+  const unsubscribe = ticketRunManager.subscribe(runId, (payload) => {
+    const delta = ticketRunManager.events(runId, lastCursor);
+    for (const event of delta.events) send("runtime_event", event);
+    lastCursor = delta.cursor;
+    send("run", payload);
+  });
+  const heartbeat = setInterval(() => response.write(`: heartbeat ${Date.now()}\n\n`), 15_000);
+  heartbeat.unref?.();
+  const close = () => { clearInterval(heartbeat); unsubscribe(); };
+  request.once("close", close);
+  request.once("aborted", close);
 }
 
 async function readJson(request, maxBytes = 25 * 1024 * 1024) {
@@ -1710,7 +1749,7 @@ async function installLearnedSkill(skill, candidateDirectory, report, origin = "
       ...skill,
       version: 1,
       enabled: true,
-      origin: origin === "auto_learn" ? "auto_learn" : "skill_lab",
+      origin: origin === "auto_learn" ? "auto_learn" : origin === "runtime_repair" ? "runtime_repair" : "skill_lab",
       installed_at: now,
       updated_at: now,
       verification_status: verifiedPassRate === 100 && (!hiddenTests.length || hiddenPassed === hiddenTests.length) ? "verified" : verifiedPassRate > 0 ? "partial" : "failed",
@@ -2688,6 +2727,19 @@ const server = http.createServer(async (request, response) => {
     if (!authenticated(request)) return json(response, 401, { error: "ไม่ได้รับอนุญาต" });
     if (url.pathname === "/v1/health" && request.method === "GET") return json(response, 200, await toolHealth());
     if (!await refreshStorageState() && url.pathname !== "/v1/shutdown") return json(response, 503, { error: storageError, storage_connected: false });
+    if (url.pathname === "/v2/ticket-runs" && request.method === "POST") return json(response, 200, await ticketRunManager.start(await readJson(request, 64 * 1024)));
+    const ticketRunV2Match = url.pathname.match(/^\/v2\/ticket-runs\/([^/]+)(?:\/(events|input|stop|resume|repair))?$/);
+    if (ticketRunV2Match && request.method === "GET" && ticketRunV2Match[2] === "events") {
+      return ticketRunEventStream(request, response, decodeURIComponent(ticketRunV2Match[1]), Math.max(0, Number(url.searchParams.get("cursor")) || 0));
+    }
+    if (ticketRunV2Match && request.method === "GET" && !ticketRunV2Match[2]) return json(response, 200, ticketRunManager.get(decodeURIComponent(ticketRunV2Match[1])));
+    if (ticketRunV2Match && request.method === "POST" && ticketRunV2Match[2] === "input") { const body = await readJson(request, 16 * 1024); return json(response, 200, await ticketRunManager.input(decodeURIComponent(ticketRunV2Match[1]), String(body.value ?? ""))); }
+    if (ticketRunV2Match && request.method === "POST" && ticketRunV2Match[2] === "stop") return json(response, 200, await ticketRunManager.stop(decodeURIComponent(ticketRunV2Match[1])));
+    if (ticketRunV2Match && request.method === "POST" && ticketRunV2Match[2] === "resume") return json(response, 200, await ticketRunManager.resume(decodeURIComponent(ticketRunV2Match[1])));
+    if (ticketRunV2Match && request.method === "POST" && ticketRunV2Match[2] === "repair") return json(response, 200, await ticketRunManager.repair(decodeURIComponent(ticketRunV2Match[1])));
+    const repairV2Match = url.pathname.match(/^\/v2\/repairs\/([^/]+)\/(promote|rollback)$/);
+    if (repairV2Match && request.method === "POST" && repairV2Match[2] === "promote") return json(response, 200, await ticketRunManager.promoteRepair(decodeURIComponent(repairV2Match[1])));
+    if (repairV2Match && request.method === "POST" && repairV2Match[2] === "rollback") return json(response, 200, await ticketRunManager.rollbackRepair(decodeURIComponent(repairV2Match[1])));
     if (url.pathname === "/v1/ticket-runs" && request.method === "POST") return json(response, 200, await ticketRunManager.start(await readJson(request, 64 * 1024)));
     const ticketRunMatch = url.pathname.match(/^\/v1\/ticket-runs\/([^/]+)(?:\/(input|stop))?$/);
     if (ticketRunMatch && request.method === "GET" && !ticketRunMatch[2]) return json(response, 200, ticketRunManager.get(decodeURIComponent(ticketRunMatch[1])));

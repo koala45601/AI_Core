@@ -14,8 +14,9 @@ test("beta5+ enables adaptive thinking without slowing trivial local chat", asyn
   ]);
 
   const version = String(JSON.parse(pkgText).version || "");
-  assert.match(version, /^1\.1\.0-beta\.\d+$/, "preview version must remain in the 1.1.0-beta.x line");
-  assert.ok(Number(version.split(".").at(-1)) >= 5, "adaptive reasoning requires beta.5 or newer");
+  assert.match(version, /^(?:1\.1\.0-beta\.\d+|2\.0\.0-alpha\.\d+)$/, "version must remain on a supported preview line");
+  const betaNumber = version.match(/beta\.(\d+)$/)?.[1];
+  assert.ok(version.startsWith("2.0.0-alpha.") || Number(betaNumber) >= 5, "adaptive reasoning requires beta.5 or Alpha 2.0+");
   assert.match(patcher, /alpha-beta5-adaptive-reasoning-v1/);
   assert.match(patcher, /purpose === \"tool\"/);
   assert.match(patcher, /think: true/);

@@ -1,11 +1,11 @@
 import { domainAllowed } from "@/lib/policy.js";
 import { getSettings } from "@/lib/settings-store";
-import { executeTool, getTicketRun, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult } from "@/lib/tool-client"; // alpha-beta21-ticket-runtime-v1
+import { executeTool, getTicketRun, promoteTicketRepair, repairTicketRun, resumeTicketRun, rollbackTicketRepair, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult } from "@/lib/tool-client"; // alpha-v2-autonomous-runtime
 import { AppSettings } from "@/lib/types";
 import { loadTicketScheduleCache, saveTicketScheduleCache } from "@/lib/ticket-event-cache";
 import { evaluateTicketPreflight, extractTicketPageFacts } from "@/lib/ticket-workflow.js";
 
-type TicketAction = "inspect" | "inspect_form" | "build" | "run" | "run_status" | "run_input" | "run_stop";
+type TicketAction = "inspect" | "inspect_form" | "build" | "run" | "run_status" | "run_input" | "run_stop" | "run_resume" | "run_repair" | "repair_promote" | "repair_rollback";
 type TicketSaleStatus = "open" | "upcoming" | "sold_out" | "closed" | "ended" | "cancelled" | "unknown";
 
 interface TicketPerformanceOption {
@@ -343,7 +343,7 @@ async function inspectPublicDetailText(url: string, settings: AppSettings): Prom
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { action?: unknown; url?: unknown; source_url?: unknown; event_id?: unknown; event_name?: unknown; input?: TicketBuildInput; discover_api?: unknown; run_id?: unknown; project_path?: unknown; username?: unknown; password?: unknown; value?: unknown; inspect_only?: unknown };
+    const body = await request.json() as { action?: unknown; url?: unknown; source_url?: unknown; event_id?: unknown; event_name?: unknown; input?: TicketBuildInput; discover_api?: unknown; run_id?: unknown; repair_id?: unknown; idempotency_key?: unknown; project_path?: unknown; username?: unknown; password?: unknown; value?: unknown; inspect_only?: unknown };
     const action = asText(body.action, 30) as TicketAction;
     const settings = await getSettings();
 
@@ -356,6 +356,7 @@ export async function POST(request: Request) {
         username: asText(body.username, 500),
         password: typeof body.password === "string" ? body.password : "",
         inspect_only: body.inspect_only === true,
+        idempotency_key: asText(body.idempotency_key, 200),
       });
       return Response.json(result);
     }
@@ -373,6 +374,26 @@ export async function POST(request: Request) {
       const runId = asText(body.run_id, 200);
       if (!runId) throw new Error("ไม่พบ run_id");
       return Response.json(await stopTicketRun(runId));
+    }
+    if (action === "run_resume") {
+      const runId = asText(body.run_id, 200);
+      if (!runId) throw new Error("ไม่พบ run_id");
+      return Response.json(await resumeTicketRun(runId));
+    }
+    if (action === "run_repair") {
+      const runId = asText(body.run_id, 200);
+      if (!runId) throw new Error("ไม่พบ run_id");
+      return Response.json(await repairTicketRun(runId));
+    }
+    if (action === "repair_promote") {
+      const repairId = asText(body.repair_id, 200);
+      if (!repairId) throw new Error("ไม่พบ repair_id");
+      return Response.json(await promoteTicketRepair(repairId));
+    }
+    if (action === "repair_rollback") {
+      const repairId = asText(body.repair_id, 200);
+      if (!repairId) throw new Error("ไม่พบ repair_id");
+      return Response.json(await rollbackTicketRepair(repairId));
     }
 
     if (action === "inspect") {

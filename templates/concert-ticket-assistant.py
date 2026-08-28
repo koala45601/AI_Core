@@ -110,7 +110,7 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "1.1.0-beta.28",
+        "generatorVersion": "2.0.0-alpha.1",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -163,8 +163,23 @@ if not missing:
             "zoneOrder": zones,
             "clickVerificationTimeoutMs": 2500,
             "inventoryRescanIntervalMs": 750,
+            "conflictBlacklistTtlMs": 5000,
             "releasePartialBeforeRetry": True,
             "preserveGroupingRule": True,
+        },
+        "seatAvailability": {
+            "enabled": seat_mode == "reserved",
+            "sourcePolicy": "official_page_session",
+            "minimumAvailable": quantity,
+        },
+        "manualIntervention": {
+            "policy": "observe_then_resume",
+            "idleResumeMs": 2000,
+        },
+        "autonomy": {
+            "scope": "project",
+            "transientRecovery": "automatic",
+            "sourcePatchPromotion": "confirm",
         },
         "aiRuntime": {
             "enabled": True,
@@ -481,6 +496,13 @@ SEAT_SELECTOR = ".seatuncheck, .seatcheck, [data-seat][data-seatk], [data-seat][
 SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
 LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "at": 0.0}
+LATEST_ZONE_AVAILABILITY_RESPONSE = {"zones": {}, "url": "", "at": 0.0}
+SEAT_CONFLICT_BLACKLIST = {}
+NAVIGATION_STATE = {"generation": 0, "last_url": "", "last_event_at": 0.0, "closed": False}
+NAVIGATION_LOCK = threading.RLock()
+OBSERVED_PAGE_IDS = set()
+ACTIVE_RUNTIME_PAGE = {"page": None}
+RUNTIME_HEARTBEAT_STARTED = False
 AI_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alpha-ticket-ai")
 AI_FUTURES = {}
 AI_LOCK = threading.RLock()
@@ -502,6 +524,35 @@ def record(kind, payload):
         print(json.dumps(item, ensure_ascii=False), flush=True)
 
 
+def start_runtime_heartbeat(page):
+    global RUNTIME_HEARTBEAT_STARTED
+    ACTIVE_RUNTIME_PAGE["page"] = page
+    with NAVIGATION_LOCK:
+        if RUNTIME_HEARTBEAT_STARTED:
+            return None
+        RUNTIME_HEARTBEAT_STARTED = True
+
+    def heartbeat_loop():
+        sequence = 0
+        while True:
+            current_page = ACTIVE_RUNTIME_PAGE.get("page")
+            sequence += 1
+            marker = navigation_marker(current_page)
+            record("runtime_heartbeat", {
+                "sequence": sequence,
+                "process_alive": True,
+                "browser_connected": page_is_alive(current_page),
+                "url": marker.get("url", ""),
+                "navigation_generation": marker.get("generation", 0),
+                "ai_ready": bool((CONFIG.get("aiRuntime") or {}).get("enabled", True)),
+                "ai_mode": "standby",
+            })
+            time.sleep(5)
+    thread = threading.Thread(target=heartbeat_loop, name="alpha-ticket-heartbeat", daemon=True)
+    thread.start()
+    return thread
+
+
 def page_is_alive(page):
     try:
         return page is not None and not page.is_closed()
@@ -516,6 +567,106 @@ def safe_page_url(page, fallback=""):
         return str(page.url or fallback or "")
     except Exception:
         return str(fallback or "")
+
+
+def bind_navigation_observer(page):
+    """Track page/frame changes without taking over the user's mouse."""
+    ACTIVE_RUNTIME_PAGE["page"] = page
+    page_id = id(page)
+    with NAVIGATION_LOCK:
+        if page_id in OBSERVED_PAGE_IDS:
+            return
+        OBSERVED_PAGE_IDS.add(page_id)
+
+    def changed(frame=None):
+        with NAVIGATION_LOCK:
+            NAVIGATION_STATE["generation"] = int(NAVIGATION_STATE.get("generation", 0)) + 1
+            NAVIGATION_STATE["last_url"] = safe_page_url(page, NAVIGATION_STATE.get("last_url", ""))
+            NAVIGATION_STATE["last_event_at"] = time.monotonic()
+            NAVIGATION_STATE["closed"] = not page_is_alive(page)
+
+    try:
+        page.on("framenavigated", changed)
+        page.on("popup", lambda popup: changed())
+        page.on("close", lambda: changed())
+    except Exception:
+        pass
+    try:
+        page.add_init_script("""
+          (() => {
+            if (window.__alphaRuntimeObserverInstalled) return;
+            window.__alphaRuntimeObserverInstalled = true;
+            window.__alphaLastUserInputAt = 0;
+            window.__alphaDomGeneration = 0;
+            const mark = event => {
+              if (event && event.isTrusted) window.__alphaLastUserInputAt = Date.now();
+            };
+            for (const name of ['pointerdown', 'mousedown', 'touchstart', 'keydown', 'wheel']) {
+              addEventListener(name, mark, {capture: true, passive: true});
+            }
+            new MutationObserver(records => {
+              if (records.some(record => record.type === 'childList' && record.target === document.documentElement)) {
+                window.__alphaDomGeneration += 1;
+              }
+            }).observe(document.documentElement, {childList: true, subtree: false});
+          })();
+        """)
+    except Exception:
+        pass
+    changed()
+
+
+def navigation_marker(page):
+    with NAVIGATION_LOCK:
+        generation = int(NAVIGATION_STATE.get("generation", 0))
+    marker = {"generation": generation, "url": safe_page_url(page), "dom_generation": 0, "last_user_input_at": 0}
+    if not page_is_alive(page):
+        return marker
+    try:
+        browser_values = page.evaluate("""() => ({
+          domGeneration: Number(window.__alphaDomGeneration || 0),
+          lastUserInputAt: Number(window.__alphaLastUserInputAt || 0),
+        })""")
+        marker["dom_generation"] = int(browser_values.get("domGeneration") or 0)
+        marker["last_user_input_at"] = int(browser_values.get("lastUserInputAt") or 0)
+    except Exception:
+        pass
+    return marker
+
+
+def wait_for_manual_idle(page, previous_state, current_state):
+    settings = CONFIG.get("manualIntervention") if isinstance(CONFIG.get("manualIntervention"), dict) else {}
+    idle_ms = max(250, int(settings.get("idleResumeMs", 2000) or 2000))
+    record("navigation_interrupt", {
+        "from_state": previous_state,
+        "to_state": current_state,
+        "url": safe_page_url(page),
+        "navigation_generation": navigation_marker(page).get("generation"),
+        "old_task_cancelled": True,
+    })
+    announced = False
+    # A navigation can replace the document and reset the browser-side input
+    # timestamp. Always preserve a full quiet window after the interruption,
+    # then extend it whenever a new trusted user interaction is observed.
+    quiet_deadline = time.monotonic() + idle_ms / 1000
+    latest_input_at = 0
+    while page_is_alive(page):
+        marker = navigation_marker(page)
+        browser_input_at = int(marker.get("last_user_input_at") or 0)
+        if browser_input_at > latest_input_at:
+            latest_input_at = browser_input_at
+            quiet_deadline = time.monotonic() + idle_ms / 1000
+        remaining = quiet_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not announced:
+            record("manual_control", {"active": True, "policy": "observe_then_resume", "idle_resume_ms": idle_ms})
+            announced = True
+        time.sleep(min(0.1, max(0.02, remaining)))
+    if announced:
+        record("manual_control", {"active": False, "policy": "observe_then_resume"})
+    record("state_resumed", {"state": current_state, "url": safe_page_url(page), "preserved_preferences": True})
+    return current_state
 
 
 def console_input(prompt=""):
@@ -1189,9 +1340,107 @@ def accept_event_terms(page):
     return clicked
 
 
+def normalize_zone_availability(value):
+    """Extract zone/count pairs from the official page response without replaying it."""
+    result = {}
+    if isinstance(value, dict):
+        zone = str(value.get("zone") or value.get("zone_name") or value.get("section") or value.get("name") or "").strip().upper()
+        count_value = value.get("available_count", value.get("available", value.get("qty", value.get("count"))))
+        if zone and len(zone) <= 30 and isinstance(count_value, (int, float, str)):
+            digits = re.sub(r"[^0-9]", "", str(count_value))
+            if digits:
+                result[zone] = int(digits)
+        for child in value.values():
+            result.update(normalize_zone_availability(child))
+    elif isinstance(value, list):
+        for child in value:
+            result.update(normalize_zone_availability(child))
+    return result
+
+
+def parse_zone_availability_modal(page):
+    zones = {}
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        for selector in ("[role='dialog'] tr", ".modal:visible tr", ".modal-dialog tr", "table tr"):
+            try:
+                rows = scope.locator(selector)
+                for index in range(min(rows.count(), 200)):
+                    row = rows.nth(index)
+                    if not row.is_visible(timeout=100):
+                        continue
+                    cells = [re.sub(r"\s+", " ", item).strip() for item in row.locator("th, td").all_text_contents()]
+                    if len(cells) < 2:
+                        continue
+                    zone = cells[0].strip().upper()
+                    count_text = re.sub(r"[^0-9]", "", cells[-1])
+                    if re.fullmatch(r"[A-Z][A-Z0-9._/-]{0,29}", zone) and count_text:
+                        zones[zone] = int(count_text)
+            except Exception:
+                continue
+    return zones
+
+
+def collect_zone_availability(page, force=False):
+    settings = CONFIG.get("seatAvailability") if isinstance(CONFIG.get("seatAvailability"), dict) else {}
+    if settings.get("enabled", CONFIG.get("seatMode") == "reserved") is False or CONFIG.get("seatMode") != "reserved":
+        return {}
+    cached = CONFIG.get("_runtimeZoneAvailability") if isinstance(CONFIG.get("_runtimeZoneAvailability"), dict) else {}
+    if cached and not force:
+        return dict(cached)
+    button = None
+    pattern = re.compile(r"ที่นั่งว่าง|จำนวนที่นั่งว่าง|available\s+seats?|seat\s+availability", re.I)
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        for role in ("button", "link"):
+            try:
+                candidate = scope.get_by_role(role, name=pattern).first
+                if candidate.count() and candidate.is_visible(timeout=150) and candidate.is_enabled(timeout=150):
+                    button = candidate
+                    break
+            except Exception:
+                continue
+        if button is not None:
+            break
+    if button is None:
+        record("seat_availability", {"source": "official_page_session", "available": False, "reason": "CONTROL_NOT_PRESENT", "standing_flow": False})
+        return dict(cached)
+    try:
+        button.click(no_wait_after=True)
+    except Exception as error:
+        record("seat_availability", {"source": "official_page_session", "available": False, "reason": "CONTROL_CLICK_FAILED", "error": str(error)[:300]})
+        return dict(cached)
+    deadline = time.monotonic() + 3
+    zones = {}
+    while time.monotonic() < deadline and not zones:
+        zones = parse_zone_availability_modal(page)
+        if not zones:
+            time.sleep(0.05)
+    response_zones = LATEST_ZONE_AVAILABILITY_RESPONSE.get("zones") if isinstance(LATEST_ZONE_AVAILABILITY_RESPONSE.get("zones"), dict) else {}
+    zones = {**response_zones, **zones}
+    generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
+    CONFIG["_runtimeInventoryGeneration"] = generation
+    CONFIG["_runtimeZoneAvailability"] = zones
+    record("seat_availability", {
+        "source": "official_page_session",
+        "available": bool(zones),
+        "zones": zones,
+        "checked_at": datetime.now().astimezone().isoformat(),
+        "inventory_generation": generation,
+    })
+    record("inventory_generation", {"generation": generation, "source": "seat_availability_modal", "zones": zones})
+    try:
+        close = page.locator("[role='dialog'] button, .modal-dialog button, .modal button").filter(has_text=re.compile(r"ปิด|close|×", re.I)).first
+        if close.count() and close.is_visible(timeout=150):
+            close.click(no_wait_after=True)
+        else:
+            page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return zones
+
+
 def select_preferred_zone(page):
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
-    zones = expand_zone_preferences(recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
+    zones = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
     area_nodes = page.locator("area[href*='#']")
     discovered = []
     for index in range(area_nodes.count()):
@@ -1221,7 +1470,14 @@ def select_preferred_zone(page):
         else:
             record("selection", {"mode": "zone", "preferred": [], "discovered": discovered_names, "complete": False, "reason": "USER_ZONE_REQUIRED"})
             return False
-    ordered = zones
+    availability = collect_zone_availability(page, force=True)
+    minimum = max(1, int(CONFIG.get("quantity", 1)))
+    ordered = [zone for zone in zones if zone not in availability or int(availability.get(zone, 0)) >= minimum]
+    CONFIG["_runtimeAllowedZones"] = list(zones)
+    CONFIG["_runtimeAvailableZones"] = list(ordered)
+    if availability and not ordered:
+        record("selection", {"mode": "zone", "preferred": zones, "availability": availability, "complete": False, "reason": "NO_ZONE_HAS_COMPLETE_SET", "wanted": minimum})
+        return False
     for zone in ordered:
         for discovered_zone, locator in discovered:
             if discovered_zone != zone:
@@ -1392,7 +1648,34 @@ def selected_seat_count(page):
     return total
 
 
+def seat_conflict_key(seat):
+    return "|".join(str(seat.get(key) or "").strip().upper() for key in ("zone", "row", "number", "label"))
+
+
+def purge_conflict_blacklist():
+    now_value = time.monotonic()
+    expired = [key for key, expires_at in SEAT_CONFLICT_BLACKLIST.items() if float(expires_at or 0) <= now_value]
+    for key in expired:
+        SEAT_CONFLICT_BLACKLIST.pop(key, None)
+
+
+def blacklist_conflicted_seats(seats):
+    recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
+    ttl_ms = max(250, int(recovery.get("conflictBlacklistTtlMs", 5000) or 5000))
+    expires_at = time.monotonic() + ttl_ms / 1000
+    labels = []
+    for seat in seats:
+        key = seat_conflict_key(seat)
+        if key.strip("|"):
+            SEAT_CONFLICT_BLACKLIST[key] = expires_at
+            labels.append(str(seat.get("label") or seat.get("number") or key)[:120])
+    purge_conflict_blacklist()
+    if labels:
+        record("seat_blacklisted", {"seats": labels, "ttl_ms": ttl_ms, "blacklist_size": len(SEAT_CONFLICT_BLACKLIST)})
+
+
 def collect_seat_inventory(page, fallback_zone=""):
+    purge_conflict_blacklist()
     metadata = []
     locators = []
     scopes = [page, *[frame for frame in page.frames if frame != page.main_frame]]
@@ -1423,7 +1706,7 @@ def collect_seat_inventory(page, fallback_zone=""):
                 row = str(seat.get_attribute("data-row") or (parsed.group(1) if parsed else "")).strip().upper()
                 number = str(seat.get_attribute("data-seat-number") or (parsed.group(2) if parsed else raw_seat)).strip()
                 available = bool(seat.is_visible(timeout=100) and seat.is_enabled(timeout=100) and not selected and class_tokens.isdisjoint(blocked_tokens))
-                metadata.append({
+                item = {
                     "zone": zone,
                     "row": row,
                     "number": number,
@@ -1432,7 +1715,11 @@ def collect_seat_inventory(page, fallback_zone=""):
                     "selected": selected,
                     "scope_index": scope_index,
                     "control_index": control_index,
-                })
+                }
+                if seat_conflict_key(item) in SEAT_CONFLICT_BLACKLIST:
+                    item["available"] = False
+                    item["blacklisted"] = True
+                metadata.append(item)
             except Exception:
                 metadata.append({"available": False, "scope_index": scope_index, "control_index": control_index})
     return metadata, locators, scopes
@@ -1624,10 +1911,14 @@ def fast_reserved_seat_recovery(page):
         zones = [current_zone]
 
     while max_attempts == 0 or attempt < max_attempts:
+        loop_marker = navigation_marker(page)
         checkpoint = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
         if checkpoint["state"] == "browser_lost":
             record("recovery", {"status": "BROWSER_LOST_DURING_SEAT_RECOVERY", "terminal": False, "next_action": "relaunch_same_profile_and_resume", "attempt": attempt})
             return {"ok": False, "terminal": "browser_lost", "attempts": attempt}
+        if checkpoint["state"] != "ticket_selection":
+            wait_for_manual_idle(page, "ticket_selection", checkpoint["state"])
+            return {"ok": False, "terminal": "state_changed", "state": checkpoint["state"], "attempts": attempt}
         schedule_ai_runtime_analysis(page, checkpoint, {
             "phase": "fast_seat_recovery",
             "attempt": attempt,
@@ -1666,6 +1957,12 @@ def fast_reserved_seat_recovery(page):
             exhausted_rounds += 1
             zone_cursor = 0
             record("recovery", {"status": "WAITING_FOR_COMPLETE_SET", "zones": zones or [current_zone], "wanted": wanted, "round": exhausted_rounds, "next_action": "rescan_inventory", "terminal": False})
+            if zones and semantic_click(page, ["เลือกโซนอื่น", "เลือกโซน", "choose another zone", "back to zones"]):
+                wait_for_page_change(page, loop_marker.get("url", ""), timeout_ms=3000)
+                changed = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+                if changed["state"] != "ticket_selection":
+                    wait_for_manual_idle(page, "ticket_selection", changed["state"])
+                    return {"ok": False, "terminal": "state_changed", "state": changed["state"], "attempts": attempt}
             if unknown_layout_rounds >= max(2, len(zones) or 1):
                 visual_context = {
                     "phase": "unknown_seat_layout",
@@ -1696,6 +1993,14 @@ def fast_reserved_seat_recovery(page):
         attempt += 1
         planned = [str(metadata[index].get("label") or metadata[index].get("number") or index) for index in indices]
         record("seat_set_planned", {"zone": current_zone, "seats": planned, "wanted": wanted, "grouping": grouping, "attempt": attempt})
+        before_click = navigation_marker(page)
+        if before_click.get("generation") != loop_marker.get("generation") or before_click.get("url") != loop_marker.get("url"):
+            changed = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+            record("navigation_interrupt", {"from_state": "ticket_selection", "to_state": changed["state"], "url": safe_page_url(page), "old_task_cancelled": True, "phase": "before_seat_click"})
+            if changed["state"] != "ticket_selection":
+                wait_for_manual_idle(page, "ticket_selection", changed["state"])
+                return {"ok": False, "terminal": "state_changed", "state": changed["state"], "attempts": attempt}
+            continue
         if release_partial and selected_seat_count(page):
             release_partial_selection(page, verify_timeout)
         LATEST_RESERVATION_RESPONSE.update({"status": None, "url": "", "at": time.monotonic()})
@@ -1725,6 +2030,7 @@ def fast_reserved_seat_recovery(page):
             "http_status": LATEST_RESERVATION_RESPONSE.get("status"),
             "next_action": "release_partial_and_rescan_same_zone",
         })
+        blacklist_conflicted_seats([metadata[index] for index in indices])
         schedule_ai_runtime_analysis(page, checkpoint, {
             "phase": "seat_conflict",
             "attempt": attempt,
@@ -2225,6 +2531,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         browser, context, cdp_port = launch_ticket_browser(runtime, browser_profile)
         record("runtime", {"mouse_control": False, "background_window": False, "browser_visible": True, "profile": "persistent_ticket_session", "transport": "cdp_attached_normal_chrome", "cdp_host": "127.0.0.1", "cdp_port": cdp_port, "detail": "เปิด Chrome แบบปกติแล้วเชื่อม Playwright ภายหลัง เพื่อแสดงทุกขั้นโดยไม่ขยับเมาส์ระบบ"})
         page = context.pages[-1] if context.pages else context.new_page()
+        bind_navigation_observer(page)
+        start_runtime_heartbeat(page)
         surface_browser_window(page, browser_profile, "runtime_started")
         observed = {"retry_after": None, "http_status": None, "server_date": None}
         observed_api = set()
@@ -2232,7 +2540,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         login_verified = False
 
         def on_response(response):
-            global LATEST_RESERVATION_RESPONSE
+            global LATEST_RESERVATION_RESPONSE, LATEST_ZONE_AVAILABILITY_RESPONSE
             value = response.headers.get("retry-after")
             if value and str(value).isdigit():
                 observed["retry_after"] = int(value)
@@ -2244,6 +2552,12 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                 if re.search(r"seat|reserve|reservation|booking|ticket", parsed.path, re.I):
                     LATEST_RESERVATION_RESPONSE = {"status": response.status, "url": safe_url, "at": time.monotonic()}
+                    try:
+                        zone_counts = normalize_zone_availability(response.json())
+                    except Exception:
+                        zone_counts = {}
+                    if zone_counts:
+                        LATEST_ZONE_AVAILABILITY_RESPONSE = {"zones": zone_counts, "url": safe_url, "at": time.monotonic()}
                 key = (response.request.method, safe_url, response.status)
                 if key not in observed_api and len(observed_api) < 100:
                     observed_api.add(key)
@@ -2327,6 +2641,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 try:
                     browser, context, cdp_port = launch_ticket_browser(runtime, browser_profile)
                     page = context.pages[-1] if context.pages else context.new_page()
+                    bind_navigation_observer(page)
+                    start_runtime_heartbeat(page)
                     page.on("response", on_response)
                     page.goto(last_safe_url or CONFIG["eventUrl"], wait_until="domcontentloaded", timeout=45000)
                     surface_browser_window(page, browser_profile, "browser_recovered")
@@ -2426,6 +2742,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     continue
                 if activated_page:
                     page = activated_page
+                    bind_navigation_observer(page)
                 record("queue", {"status": "WAITING_ROOM_JOINED", "clicked_once": True, "same_session": True, "selected_schedule": CONFIG.get("schedule"), "selected_performance": CONFIG.get("selectedPerformance")})
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
@@ -2464,6 +2781,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     console_input("ตรวจรอบใน Chrome แล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ โดยไม่เปลี่ยนรอบ: ")
                     continue
                 page = activated_page
+                bind_navigation_observer(page)
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "sale_closed":
@@ -2584,6 +2902,9 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 seat_result = apply_ticket_preferences(page)
                 if not seat_result.get("ok"):
                     terminal = seat_result.get("terminal")
+                    if terminal == "state_changed":
+                        record("recovery", {"status": "SEAT_ENGINE_RETURNED_CONTROL", "state": seat_result.get("state"), "terminal": False, "preserved_preferences": True})
+                        continue
                     if terminal == "browser_lost":
                         record("recovery", {"status": "BROWSER_LOST_RETURN_TO_MAIN_LOOP", "terminal": False, "same_profile": True})
                         continue
@@ -3054,7 +3375,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "1.1.0-beta.28",
+        "generator_version": "2.0.0-alpha.1",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

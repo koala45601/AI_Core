@@ -68,7 +68,7 @@ export interface AppSettings {
 }
 
 export type SkillVerificationStatus = "verified" | "partial" | "failed" | "stale" | "untested";
-export type SkillOrigin = "auto_learn" | "skill_lab";
+export type SkillOrigin = "auto_learn" | "skill_lab" | "runtime_repair";
 
 export interface SkillSummary {
   id: string;

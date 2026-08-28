@@ -161,24 +161,53 @@ export interface TicketRunView extends Record<string, unknown> {
   detail?: string;
   logs?: Array<{ at: number; stream: string; text: string }>;
   handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
+  event_cursor?: number;
+  heartbeat?: Record<string, unknown>;
+  supervisor?: Record<string, unknown>;
+  manual_control?: Record<string, unknown>;
+  repair?: Record<string, unknown> | null;
 }
 
 export async function startTicketRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await toolFetch("/v1/ticket-runs", { method: "POST", body: JSON.stringify(input) }, 15_000);
+  const response = await toolFetch("/v2/ticket-runs", { method: "POST", body: JSON.stringify(input) }, 15_000);
   return payload(response);
 }
 
 export async function getTicketRun(id: string): Promise<Record<string, unknown>> {
-  const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}`, { method: "GET", headers: headers(false) }, 5_000);
+  const response = await toolFetch(`/v2/ticket-runs/${encodeURIComponent(id)}`, { method: "GET", headers: headers(false) }, 5_000);
   return payload(response);
 }
 
 export async function sendTicketRunInput(id: string, value = ""): Promise<Record<string, unknown>> {
-  const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}/input`, { method: "POST", body: JSON.stringify({ value }) }, 5_000);
+  const response = await toolFetch(`/v2/ticket-runs/${encodeURIComponent(id)}/input`, { method: "POST", body: JSON.stringify({ value }) }, 5_000);
   return payload(response);
 }
 
 export async function stopTicketRun(id: string): Promise<Record<string, unknown>> {
-  const response = await toolFetch(`/v1/ticket-runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" }, 10_000);
+  const response = await toolFetch(`/v2/ticket-runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" }, 10_000);
   return payload(response);
+}
+
+export async function resumeTicketRun(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v2/ticket-runs/${encodeURIComponent(id)}/resume`, { method: "POST", body: "{}" }, 10_000);
+  return payload(response);
+}
+
+export async function repairTicketRun(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v2/ticket-runs/${encodeURIComponent(id)}/repair`, { method: "POST", body: "{}" }, 480_000);
+  return payload(response);
+}
+
+export async function promoteTicketRepair(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v2/repairs/${encodeURIComponent(id)}/promote`, { method: "POST", body: "{}" }, 480_000);
+  return payload(response);
+}
+
+export async function rollbackTicketRepair(id: string): Promise<Record<string, unknown>> {
+  const response = await toolFetch(`/v2/repairs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: "{}" }, 15_000);
+  return payload(response);
+}
+
+export async function ticketRunEventsResponse(id: string, cursor = 0): Promise<Response> {
+  return toolFetch(`/v2/ticket-runs/${encodeURIComponent(id)}/events?cursor=${Math.max(0, cursor)}`, { method: "GET", headers: headers(false) }, 24 * 60 * 60_000);
 }

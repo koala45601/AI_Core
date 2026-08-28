@@ -357,6 +357,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px
 .ticket-run-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; margin-top: 10px; }
 .ticket-run-metrics span { display: flex; flex-direction: column; min-width: 0; padding: 7px 8px; border: 1px solid #c3dccf; border-radius: 9px; background: rgba(255,255,255,.7); color: #6d8279; font-size: 8px; }
 .ticket-run-metrics strong { overflow: hidden; color: #24483b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.ticket-supervisor-panel, .ticket-repair-proposal { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid #bad8ca; border-radius: 10px; background: rgba(255,255,255,.72); }
+.ticket-supervisor-panel > div:first-child { display: grid; gap: 3px; }
+.ticket-supervisor-panel small { color: #557064; }
+.ticket-repair-proposal pre { max-height: 180px; margin: 0; padding: 8px; overflow: auto; border-radius: 8px; background: #14241e; color: #dff2e8; font-size: 8px; white-space: pre-wrap; }
+.ticket-repair-proposal ul { max-height: 130px; margin: 0; padding-left: 18px; overflow-y: auto; color: #49675a; font-size: 8px; }
 .ticket-build-actions { position: sticky; bottom: -18px; z-index: 3; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 0 4px; background: linear-gradient(transparent, white 25%); }.ticket-build-actions .secondary-action { margin: 0; }.ticket-build-actions .save-button { min-width: 180px; }
 .ticket-build-hint { align-self: center; margin-right: auto; color: #65736b; font-size: 8px; line-height: 1.4; }
 

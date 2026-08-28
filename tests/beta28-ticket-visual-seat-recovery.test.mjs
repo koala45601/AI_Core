@@ -39,7 +39,7 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   const template = await readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
-  assert.equal(pkg.version, "1.1.0-beta.28");
+  assert.equal(pkg.version, "2.0.0-alpha.1");
   assert.match(template, /zones = list\(discovered_names\)/);
   assert.match(template, /"fallbacks": zones\[1:\]/);
   assert.match(template, /def visible_human_challenge\(page\):/);
@@ -81,6 +81,12 @@ class ClosedPage:
 closed = bot.snapshot(ClosedPage())
 assert closed["browser_closed"] is True
 assert bot.classify_snapshot(closed)["state"] == "browser_lost"
+
+class OpenPage:
+    url = "https://tickets.test/seat-map"
+    def is_closed(self): return False
+
+assert bot.safe_page_url(OpenPage()) == "https://tickets.test/seat-map"
 
 class Response:
     def __enter__(self): return self

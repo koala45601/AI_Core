@@ -164,7 +164,7 @@ test("Ticket Run Manager shares one persistent ticket profile and blocks competi
   }
 });
 
-test("beta21 source wires local runtime endpoints, UI polling, handoff input and truthful fixture wording", async () => {
+test("ticket runtime wires compatibility endpoints, SSE with polling fallback, handoff input and truthful fixture wording", async () => {
   const server = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
   const client = await readFile(new URL("../lib/tool-client.ts", import.meta.url), "utf8");
   const route = await readFile(new URL("../app/api/ticket-bot/route.ts", import.meta.url), "utf8");
@@ -181,7 +181,8 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(route, /"run_stop"/);
   assert.match(page, /สร้างและเริ่มบอท/);
   assert.match(page, /Live Ticket Run/);
-  assert.match(page, /window\.setInterval\(\(\) => void poll\(\), 1_000\)/);
+  assert.match(page, /new EventSource\(`/);
+  assert.match(page, /window\.setInterval\(\(\) => void poll\(\), 5_000\)/);
   assert.match(page, /ผ่านเฉพาะโครงสร้างและ fixture — ยังไม่ใช่ผลซื้อบัตรจริง/);
   assert.match(template, /record\("input_required"/);
   assert.match(template, /"field": "captcha" if state == "captcha_handoff" else "otp"/);
@@ -191,5 +192,5 @@ test("beta21 source wires local runtime endpoints, UI polling, handoff input and
   assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import[^\n]*urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);
-  assert.equal(pkg.version, "1.1.0-beta.28");
+  assert.equal(pkg.version, "2.0.0-alpha.1");
 });

@@ -25,7 +25,7 @@ async function fileExists(path) {
 
 const pkg = await readJson(packagePath);
 const appVersion = String(pkg.version || "").trim();
-if (!/^1\.1\.0-beta\.\d+$/.test(appVersion)) throw new Error(`เวอร์ชัน Alpha ไม่ถูกต้อง: ${appVersion || "missing"}`);
+if (!/^(?:1\.1\.0-beta\.\d+|2\.0\.0-alpha\.\d+)$/.test(appVersion)) throw new Error(`เวอร์ชัน Alpha ไม่ถูกต้อง: ${appVersion || "missing"}`);
 
 if (!await fileExists(entrypointPath) || !await fileExists(manifestPath)) {
   console.log(JSON.stringify({ ok: true, status: "not_installed", app_version: appVersion }));
@@ -35,7 +35,9 @@ if (!await fileExists(entrypointPath) || !await fileExists(manifestPath)) {
 const template = await fs.readFile(templatePath, "utf8");
 const installed = await fs.readFile(entrypointPath, "utf8");
 const manifest = await readJson(manifestPath);
-const betaNumber = Number(appVersion.match(/beta\.(\d+)$/)?.[1] || 0);
+const releaseNumber = appVersion.startsWith("2.0.0-alpha.")
+  ? 20_000 + Number(appVersion.match(/alpha\.(\d+)$/)?.[1] || 0)
+  : Number(appVersion.match(/beta\.(\d+)$/)?.[1] || 0);
 let changed = false;
 
 if (installed !== template) {
@@ -43,9 +45,9 @@ if (installed !== template) {
   changed = true;
 }
 
-if (manifest.generator_version !== appVersion || Number(manifest.version || 0) < betaNumber) {
+if (manifest.generator_version !== appVersion || Number(manifest.version || 0) < releaseNumber) {
   manifest.generator_version = appVersion;
-  manifest.version = Math.max(Number(manifest.version || 1), betaNumber);
+  manifest.version = Math.max(Number(manifest.version || 1), releaseNumber);
   manifest.updated_at = new Date().toISOString();
   await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   changed = true;

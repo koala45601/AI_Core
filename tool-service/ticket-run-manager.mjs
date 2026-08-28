@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { basename, relative, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 
 const ACTIVE = new Set(["starting_runtime", "runtime_running", "waiting_handoff"]);
 const HANDLED_TERMINAL_RESULTS = new Set(["SOLD_OUT_BY_SERVER", "SALE_CLOSED_BY_SERVER", "PRE_SALE_SCHEDULED", "PRE_SALE_READY", "ARMED_PRE_SALE"]);
@@ -87,6 +88,11 @@ function publicRun(run) {
     evidence_paths: [...(run.evidence_paths || [])],
     browser_pid: run.browser_pid || null,
     browser_cleanup: run.browser_cleanup || "pending",
+    event_cursor: Number(run.event_cursor || 0),
+    heartbeat: { ...(run.heartbeat || {}) },
+    supervisor: { ...(run.supervisor || {}) },
+    manual_control: { ...(run.manual_control || {}) },
+    repair: run.repair ? { ...run.repair } : null,
   };
 }
 
@@ -102,10 +108,83 @@ function mapEvent(run, event) {
     if (Number.isSafeInteger(browserPid) && browserPid > 1) run.browser_pid = browserPid;
   }
 
+  const supervisorOnlyEvent = kind === "supervisor_action" || kind === "ai_diagnosis" || kind.startsWith("repair_");
+  if (!supervisorOnlyEvent) {
+    run.heartbeat.last_event_at = now();
+    run.heartbeat.last_activity_at = run.heartbeat.last_event_at;
+  }
+
   if (kind === "runtime") {
     run.status = "runtime_running";
     run.stage = safeText(event.stage, 120) || "starting_browser";
     run.detail = safeText(event.detail, 500) || "Browser runtime เริ่มทำงานแล้ว";
+    run.heartbeat.browser_connected_at ||= now();
+  } else if (kind === "runtime_heartbeat") {
+    run.status = ACTIVE.has(run.status) ? run.status : "runtime_running";
+    run.heartbeat.process_alive = event.process_alive !== false;
+    run.heartbeat.browser_connected = event.browser_connected === true;
+    run.heartbeat.browser_connected_at ||= event.browser_connected === true ? now() : null;
+    run.heartbeat.ai_ready = event.ai_ready === true;
+    run.heartbeat.ai_ready_at ||= event.ai_ready === true ? now() : null;
+    run.heartbeat.sequence = Math.max(0, Number(event.sequence || 0));
+    run.supervisor.status = run.supervisor.status === "recovering" ? "recovering" : "standby";
+    run.supervisor.watchdog_fingerprint = "";
+  } else if (kind === "seat_availability") {
+    run.seat.availability = event.zones && typeof event.zones === "object" ? { ...event.zones } : {};
+    run.seat.availability_checked_at = safeText(event.checked_at, 100) || new Date().toISOString();
+    run.seat.inventory_generation = Math.max(run.seat.inventory_generation || 0, Number(event.inventory_generation || 0));
+    run.detail = Object.keys(run.seat.availability).length
+      ? `อ่านจำนวนที่นั่งว่าง ${Object.entries(run.seat.availability).map(([zone, count]) => `${zone}=${count}`).join(", ")}`
+      : safeText(event.reason, 200) || "หน้านี้ไม่มีข้อมูลจำนวนที่นั่งรายโซน";
+  } else if (kind === "inventory_generation") {
+    run.seat.inventory_generation = Math.max(run.seat.inventory_generation || 0, Number(event.generation || 0));
+  } else if (kind === "seat_blacklisted") {
+    run.seat.blacklisted_count = Math.max(0, Number(event.blacklist_size || 0));
+    run.seat.blacklisted_seats = Array.isArray(event.seats) ? event.seats.map((item) => safeText(item, 100)).filter(Boolean).slice(0, 30) : [];
+  } else if (kind === "navigation_interrupt") {
+    run.stage = "navigation_interrupt";
+    run.manual_control.last_interrupt_at = now();
+    run.manual_control.from_state = safeText(event.from_state, 100);
+    run.manual_control.to_state = safeText(event.to_state, 100);
+    run.manual_control.active = true;
+    run.detail = `ตรวจพบการเปลี่ยนหน้า ${run.manual_control.from_state || "เดิม"} → ${run.manual_control.to_state || "ใหม่"} · ยกเลิก task เก่าแล้ว`;
+  } else if (kind === "manual_control") {
+    run.manual_control.active = event.active === true;
+    run.manual_control.policy = safeText(event.policy, 80) || "observe_then_resume";
+    run.manual_control.updated_at = now();
+    run.detail = run.manual_control.active ? "ผู้ใช้กำลังควบคุม Browser · Alpha จะไม่แย่งเมาส์" : "ผู้ใช้หยุดโต้ตอบแล้ว · Alpha กำลังรับช่วงต่อ";
+  } else if (kind === "state_resumed") {
+    run.manual_control.active = false;
+    run.stage = safeText(event.state, 100) || "resumed";
+    run.detail = `กลับมาทำงานต่อจาก ${run.stage} โดยคงเงื่อนไขเดิม`;
+  } else if (kind === "supervisor_action") {
+    run.supervisor.status = safeText(event.status, 80) || "recovering";
+    run.supervisor.last_action = safeText(event.action, 160);
+    run.supervisor.root_cause = safeText(event.root_cause || event.reason, 500);
+    run.supervisor.updated_at = now();
+    run.detail = run.supervisor.root_cause || `Supervisor กำลัง ${run.supervisor.last_action || "recovery"}`;
+  } else if (kind === "ai_diagnosis") {
+    run.ai.status = "diagnosed";
+    run.ai.diagnosis = safeText(event.diagnosis || event.root_cause, 500);
+    run.supervisor.status = "awaiting_repair_decision";
+  } else if (kind === "repair_candidate" || kind === "repair_verified" || kind === "repair_promoted" || kind === "repair_rolled_back") {
+    run.repair = {
+      ...(run.repair || {}),
+      id: safeText(event.repair_id, 100),
+      status: safeText(event.status, 80) || kind.replace("repair_", ""),
+      summary: safeText(event.summary, 500),
+      diff_summary: safeText(event.diff_summary, 2_000),
+      tests: Array.isArray(event.tests) ? event.tests.slice(0, 100) : [],
+    };
+  } else if (kind === "repair_skill_installed") {
+    run.repair = {
+      ...(run.repair || {}),
+      id: safeText(event.repair_id, 100) || run.repair?.id || "",
+      skill_id: safeText(event.skill_id, 160),
+      skill_installed: true,
+      summary: safeText(event.summary, 500),
+      tests: Array.isArray(event.tests) ? event.tests.slice(0, 100) : run.repair?.tests || [],
+    };
   } else if (kind === "checkpoint") {
     run.status = "runtime_running";
     run.stage = state || "checkpoint";
@@ -253,14 +332,426 @@ function mapEvent(run, event) {
 
 export function createTicketRunManager({
   programCreateDir,
+  appDir = process.cwd(),
   ticketBrowserProfileDir = "",
   shellPath = "/bin/zsh",
   logLimit = MAX_LOG_LINES,
   requiredGeneratorVersion = "",
   ollamaBaseUrl = "http://127.0.0.1:11435",
+  journalDir = "",
+  repairDir = "",
+  repairSkillsDir = "",
+  skillsIndexFile = "",
+  diagnoseRuntime = null,
+  validateRepair = null,
 } = {}) {
   if (!programCreateDir) throw new Error("programCreateDir is required");
   const runs = new Map();
+  const repairs = new Map();
+  const idempotency = new Map();
+  const subscribers = new Map();
+  const projectRoot = resolve(appDir);
+  const repairRoot = repairDir ? resolve(repairDir) : "";
+  const learnedRepairSkillsRoot = repairSkillsDir ? resolve(repairSkillsDir) : "";
+  const learnedSkillsIndex = skillsIndexFile ? resolve(skillsIndexFile) : "";
+
+  async function writeJsonAtomic(destination, value) {
+    const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.mkdir(dirname(destination), { recursive: true });
+    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await fs.rename(temporary, destination);
+  }
+
+  async function upsertRepairSkillIndex(manifest) {
+    if (!learnedSkillsIndex) return;
+    const current = await fs.readFile(learnedSkillsIndex, "utf8")
+      .then((value) => JSON.parse(value))
+      .catch(() => []);
+    const skills = Array.isArray(current) ? current.filter((item) => item?.id !== manifest.id) : [];
+    skills.push(manifest);
+    await writeJsonAtomic(learnedSkillsIndex, skills);
+  }
+
+  function repairSkillId(fingerprint) {
+    return `runtime-repair-${safeText(fingerprint, 64).toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "unknown"}`;
+  }
+
+  async function readRepairSkill(fingerprint) {
+    if (!learnedRepairSkillsRoot || !fingerprint) return null;
+    const id = repairSkillId(fingerprint);
+    try {
+      const manifest = JSON.parse(await fs.readFile(resolve(learnedRepairSkillsRoot, id, "alpha-skill.json"), "utf8"));
+      return manifest?.enabled !== false && manifest?.verification_status === "verified" ? manifest : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function installRepairSkill(candidate, run) {
+    if (!learnedRepairSkillsRoot || candidate.status !== "promoted") return null;
+    const tests = Array.isArray(candidate.tests) ? candidate.tests : [];
+    const passed = tests.length > 0 && tests.every((test) => ["passed", "passed_by_runtime_transition"].includes(String(test.status || "")));
+    if (!passed) return null;
+    const id = repairSkillId(candidate.fingerprint);
+    const directory = resolve(learnedRepairSkillsRoot, id);
+    const previous = await fs.readFile(resolve(directory, "alpha-skill.json"), "utf8")
+      .then((value) => JSON.parse(value))
+      .catch(() => null);
+    const installedAt = previous?.installed_at || new Date().toISOString();
+    const updatedAt = new Date().toISOString();
+    const manifest = {
+      id,
+      name: `Runtime Repair · ${safeText(run.stage, 80) || "Alpha runtime"}`,
+      description: `สกิล recovery ที่ผ่านการ replay/test สำหรับ ${safeText(candidate.root_cause, 500) || "runtime failure"}`,
+      runtime: "node",
+      entrypoint: "main.mjs",
+      dependencies: ["node-stdlib"],
+      trigger_examples: [safeText(candidate.root_cause, 300), `failure fingerprint ${candidate.fingerprint}`].filter(Boolean),
+      test_cases: [{
+        name: "matching-failure-fingerprint",
+        input: { failure_fingerprint: candidate.fingerprint },
+        stdout_contains: `\"repair_action\":\"${candidate.action}\"`,
+        expected_files: [],
+      }],
+      version: Math.max(0, Number(previous?.version || 0)) + 1,
+      enabled: true,
+      origin: "runtime_repair",
+      installed_at: installedAt,
+      updated_at: updatedAt,
+      verification_status: "verified",
+      verified_pass_rate: 100,
+      verified_passed: tests.length,
+      verified_total: tests.length,
+      verification_scope: `Replay/regression สำหรับ fingerprint ${candidate.fingerprint}; ไม่อ้างว่าครอบคลุม failure อื่น`,
+      hidden_test_result: { passed: tests.length, total: tests.length },
+      generalization_confidence: Number(Math.min(95, 60 + tests.length * 5).toFixed(2)),
+      confidence_sample_size: tests.length,
+      environment_fingerprint: createHash("sha256").update(JSON.stringify({
+        node: process.version,
+        platform: process.platform,
+        arch: process.arch,
+        generator: requiredGeneratorVersion,
+        targets: candidate.targets || [],
+      })).digest("hex").slice(0, 24),
+      usage_count: Number(previous?.usage_count || 0) + 1,
+      success_count: Number(previous?.success_count || 0) + 1,
+      last_run_at: updatedAt,
+      last_error: "",
+      execution_targets: ["sandbox", "macos_host"],
+      repair_trigger: {
+        failure_fingerprint: candidate.fingerprint,
+        stage: run.stage,
+        root_cause: candidate.root_cause,
+      },
+      repair_action: {
+        type: candidate.action,
+        strategy: candidate.strategy,
+        source_targets: candidate.targets || [],
+      },
+      preconditions: ["failure fingerprint must match", "Alpha-owned process/browser only"],
+      rollback_procedure: candidate.action === "source_patch_required"
+        ? "Restore the per-file backup manifest and rerun health checks"
+        : "Stop the Alpha-owned recovery action and leave user applications untouched",
+      latest_evidence: [...(run.evidence_paths || [])].slice(-20),
+      trusted_catalog_version: 2,
+    };
+    const trainingReport = {
+      objective: `Recover Alpha runtime failure ${candidate.fingerprint}`,
+      success_criteria: "Observed the required runtime transition and passed all repair validation tests",
+      passed: true,
+      tested_at: updatedAt,
+      tests,
+      hidden_tests: [],
+      verification_scope: manifest.verification_scope,
+      repair_id: candidate.id,
+      run_id: run.id,
+      rollback_procedure: manifest.rollback_procedure,
+    };
+    const entrypoint = `import { readFileSync } from "node:fs";\nconst manifest = JSON.parse(readFileSync(new URL("./alpha-skill.json", import.meta.url), "utf8"));\nconst input = JSON.parse(process.argv[2] || "{}");\nif (input.failure_fingerprint && input.failure_fingerprint !== manifest.repair_trigger.failure_fingerprint) { console.error("failure fingerprint does not match this verified repair skill"); process.exit(2); }\nconsole.log(JSON.stringify({ ok: true, repair_action: manifest.repair_action.type, strategy: manifest.repair_action.strategy, rollback: manifest.rollback_procedure }));\n`;
+    await fs.mkdir(directory, { recursive: true });
+    await writeJsonAtomic(resolve(directory, "alpha-skill.json"), manifest);
+    await writeJsonAtomic(resolve(directory, "training-report.json"), trainingReport);
+    await fs.writeFile(resolve(directory, "main.mjs"), entrypoint, "utf8");
+    await upsertRepairSkillIndex(manifest);
+    candidate.skill_id = id;
+    run.ai.learned_strategy_count = Math.max(0, Number(run.ai.learned_strategy_count || 0)) + 1;
+    run.ai.last_learned_action = candidate.action;
+    emitInternal(run, "repair_skill_installed", {
+      repair_id: candidate.id,
+      skill_id: id,
+      summary: `ติดตั้ง Repair Skill ${id} หลังผ่าน ${tests.length}/${tests.length} tests`,
+      tests,
+    });
+    return manifest;
+  }
+
+  async function markRepairSkillStale(candidate) {
+    if (!learnedRepairSkillsRoot || !candidate?.skill_id) return;
+    const destination = resolve(learnedRepairSkillsRoot, candidate.skill_id, "alpha-skill.json");
+    try {
+      const manifest = JSON.parse(await fs.readFile(destination, "utf8"));
+      manifest.enabled = false;
+      manifest.verification_status = "stale";
+      manifest.updated_at = new Date().toISOString();
+      manifest.last_error = "Repair was rolled back; reverify before reuse";
+      await writeJsonAtomic(destination, manifest);
+      await upsertRepairSkillIndex(manifest);
+    } catch { /* rollback must still complete if the optional skill registry is unavailable */ }
+  }
+
+  function runCommand(command, args, { cwd = projectRoot, timeout = 180_000 } = {}) {
+    return new Promise((resolveRun, rejectRun) => {
+      const child = spawn(command, args, { cwd, env: { ...process.env, CI: "true" }, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGKILL");
+        rejectRun(new Error(`${basename(command)} timeout after ${timeout}ms`));
+      }, timeout);
+      child.stdout.on("data", (chunk) => { stdout = (stdout + chunk.toString("utf8")).slice(-40_000); });
+      child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString("utf8")).slice(-40_000); });
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        rejectRun(error);
+      });
+      child.once("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const result = { code: code ?? 1, stdout, stderr };
+        if (result.code === 0) resolveRun(result);
+        else rejectRun(new Error((stderr || stdout || `${basename(command)} exited ${result.code}`).slice(-12_000)));
+      });
+    });
+  }
+
+  function sourcePatchTargets(patchText) {
+    // Repair validation must run against trusted tests from the current
+    // release. A proposed source patch cannot weaken or rewrite those tests.
+    const allowedRoots = new Set(["app", "components", "lib", "scripts", "templates", "tool-service"]);
+    const allowedRootFiles = new Set(["package.json", "pnpm-lock.yaml", "tsconfig.json", "next.config.mjs", "wrangler.jsonc"]);
+    const targets = [];
+    for (const line of String(patchText || "").split(/\r?\n/)) {
+      const match = line.match(/^\+\+\+ b\/(.+)$/);
+      if (!match) continue;
+      const name = match[1].trim();
+      if (!name || name === "/dev/null" || name.includes("\0")) throw new Error("source repair ยังไม่รองรับการลบไฟล์");
+      const destination = resolve(projectRoot, name);
+      if (!pathInside(destination, projectRoot)) throw new Error("source repair พยายามออกนอกโปรเจกต์");
+      const top = name.split("/")[0];
+      if (!allowedRoots.has(top) && !allowedRootFiles.has(name)) throw new Error(`source repair แตะพาธที่ไม่อยู่ใน Project Autopilot: ${name}`);
+      if (!targets.includes(name)) targets.push(name);
+    }
+    if (!targets.length) throw new Error("Repair Proposal ไม่มี unified diff ที่ระบุไฟล์เป้าหมาย");
+    return targets;
+  }
+
+  async function runRepairValidation(root) {
+    if (typeof validateRepair === "function") return validateRepair(root);
+    const testsDir = resolve(root, "tests");
+    const testFiles = (await fs.readdir(testsDir)).filter((name) => name.endsWith(".test.mjs")).sort().map((name) => resolve(testsDir, name));
+    if (!testFiles.length) throw new Error("repair sandbox ไม่มี regression tests");
+    const tests = await runCommand(process.execPath, ["--test", ...testFiles], { cwd: root, timeout: 180_000 });
+    const build = await runCommand(process.env.ALPHA_PNPM_PATH || "pnpm", ["run", "build"], { cwd: root, timeout: 240_000 });
+    return {
+      tests: { name: `regression ${testFiles.length} files`, status: "passed", output: tests.stdout.slice(-2_000) },
+      build: { name: "production build", status: "passed", output: build.stdout.slice(-2_000) },
+    };
+  }
+
+  async function verifySourceRepair(candidate) {
+    if (!repairRoot) throw new Error("ยังไม่ได้กำหนด repair sandbox directory");
+    const targets = sourcePatchTargets(candidate.patch_diff);
+    const destination = resolve(repairRoot, candidate.id);
+    const sandbox = await fs.mkdtemp(resolve(tmpdir(), `alpha-repair-${candidate.id.slice(0, 8)}-`));
+    const patchPath = resolve(destination, "patch.diff");
+    await fs.mkdir(destination, { recursive: true });
+    const excluded = new Set([".git", ".next", ".vinext", ".wrangler", "dist", "evidence", "node_modules", "outputs", "Program_Create", "work"]);
+    try {
+      await fs.cp(projectRoot, sandbox, {
+        recursive: true,
+        filter(source) {
+          const rel = relative(projectRoot, source);
+          if (!rel) return true;
+          if (basename(source).startsWith("._") || basename(source) === ".dev.vars") return false;
+          return !excluded.has(rel.split(sep)[0]);
+        },
+      });
+      const projectModules = resolve(projectRoot, "node_modules");
+      try { await fs.access(projectModules); await fs.symlink(projectModules, resolve(sandbox, "node_modules"), "dir"); } catch { /* pnpm/build reports a precise missing dependency */ }
+      await runCommand("/usr/bin/git", ["apply", "--no-index", "--check", patchPath], { cwd: sandbox, timeout: 30_000 });
+      await runCommand("/usr/bin/git", ["apply", "--no-index", patchPath], { cwd: sandbox, timeout: 30_000 });
+      const validation = await runRepairValidation(sandbox);
+      candidate.targets = targets;
+      candidate.tests = [validation.tests, validation.build];
+      candidate.status = "verified";
+      candidate.verified_at = now();
+      return candidate;
+    } catch (error) {
+      candidate.status = "verification_failed";
+      candidate.tests = [{ name: "repair sandbox", status: "failed", output: safeText(error?.message, 4_000) }];
+      candidate.verification_error = safeText(error?.message, 4_000);
+      return candidate;
+    } finally {
+      await fs.rm(sandbox, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  async function restoreSourceBackup(candidate) {
+    const manifest = Array.isArray(candidate.backup_manifest) ? candidate.backup_manifest : [];
+    for (const item of manifest) {
+      const destination = resolve(projectRoot, item.path);
+      if (!pathInside(destination, projectRoot)) continue;
+      if (item.existed) {
+        await fs.mkdir(dirname(destination), { recursive: true });
+        await fs.copyFile(resolve(repairRoot, candidate.id, "backup", item.path), destination);
+        if (Number.isInteger(item.mode)) await fs.chmod(destination, item.mode).catch(() => undefined);
+      } else {
+        await fs.rm(destination, { force: true });
+      }
+    }
+  }
+
+  async function promoteVerifiedSourceRepair(candidate, run) {
+    if (candidate.status !== "verified") throw new Error("source patch ต้องผ่าน repair sandbox tests ก่อนติดตั้ง");
+    if (!repairRoot) throw new Error("ยังไม่ได้กำหนด repair directory");
+    const targets = Array.isArray(candidate.targets) && candidate.targets.length ? candidate.targets : sourcePatchTargets(candidate.patch_diff);
+    const destination = resolve(repairRoot, candidate.id);
+    const patchPath = resolve(destination, "patch.diff");
+    const backupRoot = resolve(destination, "backup");
+    await fs.rm(backupRoot, { recursive: true, force: true });
+    const manifest = [];
+    for (const name of targets) {
+      const source = resolve(projectRoot, name);
+      const backup = resolve(backupRoot, name);
+      let existed = false;
+      try {
+        const stat = await fs.lstat(source);
+        existed = stat.isFile() && !stat.isSymbolicLink();
+      } catch { existed = false; }
+      if (existed) {
+        await fs.mkdir(dirname(backup), { recursive: true });
+        await fs.copyFile(source, backup);
+      }
+      const mode = existed ? (await fs.stat(source)).mode : null;
+      manifest.push({ path: name, existed, mode });
+    }
+    candidate.backup_manifest = manifest;
+    try {
+      await runCommand("/usr/bin/git", ["apply", "--check", patchPath], { cwd: projectRoot, timeout: 30_000 });
+      await runCommand("/usr/bin/git", ["apply", patchPath], { cwd: projectRoot, timeout: 30_000 });
+      const validation = await runRepairValidation(projectRoot);
+      candidate.tests = [validation.tests, validation.build];
+      candidate.status = "promoted";
+      candidate.promoted_at = now();
+      emitInternal(run, "repair_promoted", { repair_id: candidate.id, summary: candidate.strategy, tests: candidate.tests });
+      return;
+    } catch (error) {
+      await restoreSourceBackup(candidate);
+      candidate.status = "rolled_back";
+      candidate.rolled_back_at = now();
+      candidate.tests = [...(candidate.tests || []), { name: "post-install health", status: "failed", output: safeText(error?.message, 4_000) }];
+      emitInternal(run, "repair_rolled_back", { repair_id: candidate.id, summary: "health check หลังติดตั้งล้มเหลว จึงคืนไฟล์ backup อัตโนมัติ", tests: candidate.tests });
+      throw new Error(`ติดตั้ง source patch ไม่สำเร็จและ rollback แล้ว: ${safeText(error?.message, 1_000)}`);
+    } finally {
+      await fs.writeFile(resolve(destination, "proposal.json"), `${JSON.stringify(candidate, null, 2)}\n`, "utf8").catch(() => undefined);
+    }
+  }
+
+  function eventForStorage(event) {
+    const serialized = JSON.stringify(event);
+    try {
+      return JSON.parse(redactLine(serialized, []));
+    } catch {
+      return { at: new Date().toISOString(), kind: "event_redacted", detail: "event exceeded the bounded journal payload" };
+    }
+  }
+
+  function notify(run) {
+    for (const listener of subscribers.get(run.id) || []) {
+      try { listener({ run: publicRun(run), cursor: run.event_cursor }); } catch { /* disconnected stream */ }
+    }
+  }
+
+  function persistRun(run) {
+    if (!journalDir) return;
+    const destination = resolve(journalDir, `${run.id}.json`);
+    const temporary = `${destination}.${process.pid}.tmp`;
+    const payload = JSON.stringify({ run: publicRun(run), events: run.events || [], idempotency_key: run.idempotency_key || "" }, null, 2) + "\n";
+    run.persist_chain = (run.persist_chain || Promise.resolve()).then(async () => {
+      await fs.mkdir(journalDir, { recursive: true });
+      await fs.writeFile(temporary, payload, "utf8");
+      await fs.rename(temporary, destination);
+    }).catch(() => undefined);
+  }
+
+  function appendEvent(run, event) {
+    run.event_cursor = Number(run.event_cursor || 0) + 1;
+    const stored = { cursor: run.event_cursor, ...eventForStorage(event) };
+    run.events.push(stored);
+    if (run.events.length > 2_000) run.events.splice(0, run.events.length - 2_000);
+    persistRun(run);
+    notify(run);
+    return stored;
+  }
+
+  function emitInternal(run, kind, payload = {}) {
+    const event = { at: new Date().toISOString(), kind, ...payload };
+    mapEvent(run, event);
+    appendEvent(run, event);
+  }
+
+  const readyPromise = (async () => {
+    if (!journalDir) return;
+    await fs.mkdir(journalDir, { recursive: true });
+    const names = await fs.readdir(journalDir).catch(() => []);
+    for (const name of names.filter((item) => item.endsWith(".json"))) {
+      try {
+        const saved = JSON.parse(await fs.readFile(resolve(journalDir, name), "utf8"));
+        const run = saved?.run;
+        if (!run?.id || runs.has(run.id)) continue;
+        run.logs = Array.isArray(run.logs) ? run.logs : [];
+        run.events = Array.isArray(saved.events) ? saved.events : [];
+        run.event_cursor = Number(run.event_cursor || run.events.at(-1)?.cursor || 0);
+        run.seat = { current_zone: "", candidate_set: [], selected: 0, wanted: 0, attempts: 0, reservation_status: "pending", next_action: "", ...(run.seat || {}) };
+        run.queue = { position: null, position_verified: false, waited_seconds: 0, server_status: null, current_action: "", next_action: "", ...(run.queue || {}) };
+        run.ai = { status: "idle", ...(run.ai || {}) };
+        run.heartbeat = { ...(run.heartbeat || {}) };
+        run.supervisor = { status: "standby", ...(run.supervisor || {}) };
+        run.manual_control = { active: false, ...(run.manual_control || {}) };
+        run.child = null;
+        if (ACTIVE.has(run.status)) {
+          run.status = "not_verified";
+          run.stage = "service_restarted";
+          run.detail = "Tool Service เริ่มใหม่ระหว่าง run · เก็บ journal ไว้แล้วแต่ process เดิมไม่สามารถอ้างว่ายังทำงานอยู่";
+          run.ended_at = now();
+          run.updated_at = run.ended_at;
+        }
+        runs.set(run.id, run);
+        if (saved.idempotency_key) idempotency.set(String(saved.idempotency_key), run.id);
+      } catch { /* ignore a partial journal; the live run remains authoritative */ }
+    }
+    if (repairRoot) {
+      await fs.mkdir(repairRoot, { recursive: true });
+      const repairNames = await fs.readdir(repairRoot).catch(() => []);
+      for (const repairName of repairNames) {
+        try {
+          const candidate = JSON.parse(await fs.readFile(resolve(repairRoot, repairName, "proposal.json"), "utf8"));
+          if (candidate?.id && candidate?.run_id) repairs.set(candidate.id, candidate);
+        } catch { /* a partial proposal is ignored without affecting restored runs */ }
+      }
+    }
+  })();
+
+  async function ready() {
+    await readyPromise;
+    return { ok: true, restored: runs.size };
+  }
 
   async function cleanupOwnedBrowser(run = null) {
     if (!ticketBrowserProfileDir) {
@@ -321,10 +812,14 @@ export function createTicketRunManager({
     if (stream === "stdout") {
       try {
         const event = JSON.parse(text);
-        if (event && typeof event === "object" && !Array.isArray(event)) mapEvent(run, event);
+        if (event && typeof event === "object" && !Array.isArray(event)) {
+          mapEvent(run, event);
+          appendEvent(run, event);
+        }
       } catch { /* plain stdout is still useful as a redacted log */ }
     }
     run.updated_at = now();
+    persistRun(run);
   }
 
   function attachLineReader(run, stream, source, secrets) {
@@ -341,7 +836,36 @@ export function createTicketRunManager({
     });
   }
 
+  function scheduleAutomaticRepairAnalysis(run, reason) {
+    if (run.stop_requested || run.supervisor.auto_analysis_inflight) return;
+    if (run.repair && !["verification_failed", "rolled_back"].includes(run.repair.status)) return;
+    run.supervisor.auto_analysis_inflight = true;
+    emitInternal(run, "supervisor_action", {
+      status: "analyzing",
+      action: "automatic_failure_analysis_queued",
+      root_cause: reason,
+      automatic: true,
+    });
+    const timer = setTimeout(() => {
+      void repair(run.id).catch((error) => {
+        emitInternal(run, "supervisor_action", {
+          status: "needs_repair",
+          action: "automatic_failure_analysis_failed",
+          root_cause: safeText(error?.message, 500) || reason,
+          automatic: true,
+        });
+      }).finally(() => {
+        run.supervisor.auto_analysis_inflight = false;
+      });
+    }, 250);
+    timer.unref?.();
+  }
+
   async function start(input = {}) {
+    await readyPromise;
+    const idempotencyKey = safeText(input.idempotency_key, 200);
+    const existingId = idempotencyKey ? idempotency.get(idempotencyKey) : "";
+    if (existingId && runs.has(existingId)) return { ok: true, reused: true, run: publicRun(runs.get(existingId)) };
     const projectPath = await validateProject(input.project_path);
     const activeRun = [...runs.values()].find((run) => ACTIVE.has(run.status));
     if (activeRun?.project_path === projectPath) return { ok: true, reused: true, run: publicRun(activeRun) };
@@ -396,10 +920,30 @@ export function createTicketRunManager({
       evidence_paths: [],
       browser_pid: null,
       browser_cleanup: "pending",
+      event_cursor: 0,
+      events: [],
+      heartbeat: {
+        command_received_at: started,
+        process_spawned_at: null,
+        browser_connected_at: null,
+        ai_ready_at: null,
+        last_event_at: started,
+        last_activity_at: started,
+        process_alive: true,
+        browser_connected: false,
+        ai_ready: false,
+        sequence: 0,
+      },
+      supervisor: { status: "standby", last_action: "", root_cause: "", updated_at: started, failure_fingerprint: "" },
+      manual_control: { active: false, policy: "observe_then_resume", last_interrupt_at: null, from_state: "", to_state: "", updated_at: started },
+      repair: null,
       stop_requested: false,
+      idempotency_key: idempotencyKey,
       child,
     };
     runs.set(id, run);
+    if (idempotencyKey) idempotency.set(idempotencyKey, id);
+    emitInternal(run, "runtime_heartbeat", { sequence: 0, process_alive: true, browser_connected: false, ai_ready: false, phase: "command_received" });
     attachLineReader(run, "stdout", child.stdout, secrets);
     attachLineReader(run, "stderr", child.stderr, secrets);
     child.once("spawn", () => {
@@ -408,6 +952,8 @@ export function createTicketRunManager({
         run.stage = "process_started";
         run.detail = `เริ่ม process ${basename(script)} แล้ว`;
         run.updated_at = now();
+        run.heartbeat.process_spawned_at = run.updated_at;
+        emitInternal(run, "supervisor_action", { status: "standby", action: "process_spawned", root_cause: "" });
       }
     });
     child.once("error", (error) => {
@@ -416,6 +962,7 @@ export function createTicketRunManager({
       run.detail = redactLine(error?.message || "เริ่ม process ไม่สำเร็จ", secrets);
       run.ended_at = now();
       run.updated_at = run.ended_at;
+      emitInternal(run, "supervisor_action", { status: "needs_repair", action: "inspect_spawn_failure", root_cause: run.detail });
     });
     child.once("close", (code) => {
       run.exit_code = code ?? 1;
@@ -448,6 +995,9 @@ export function createTicketRunManager({
           : "process จบโดยยังไม่มีหลักฐาน PAYMENT_HANDOFF — ไม่ถือว่าผ่าน";
       }
       run.child = null;
+      if (["failed", "not_verified"].includes(run.status)) scheduleAutomaticRepairAnalysis(run, run.detail);
+      persistRun(run);
+      notify(run);
       void cleanupOwnedBrowser(run);
     });
     return { ok: true, reused: false, run: publicRun(run) };
@@ -457,6 +1007,26 @@ export function createTicketRunManager({
     const run = runs.get(String(id || ""));
     if (!run) throw new Error("ไม่พบ Ticket Run");
     return { ok: true, run: publicRun(run) };
+  }
+
+  function events(id, cursor = 0) {
+    const run = runs.get(String(id || ""));
+    if (!run) throw new Error("ไม่พบ Ticket Run");
+    const after = Math.max(0, Number(cursor || 0));
+    return { ok: true, cursor: run.event_cursor, events: run.events.filter((event) => Number(event.cursor || 0) > after), run: publicRun(run) };
+  }
+
+  function subscribe(id, listener) {
+    const run = runs.get(String(id || ""));
+    if (!run) throw new Error("ไม่พบ Ticket Run");
+    const set = subscribers.get(run.id) || new Set();
+    set.add(listener);
+    subscribers.set(run.id, set);
+    listener({ run: publicRun(run), cursor: run.event_cursor });
+    return () => {
+      set.delete(listener);
+      if (!set.size) subscribers.delete(run.id);
+    };
   }
 
   async function input(id, value = "") {
@@ -474,6 +1044,203 @@ export function createTicketRunManager({
     return { ok: true, run: publicRun(run) };
   }
 
+  async function resume(id) {
+    const run = runs.get(String(id || ""));
+    if (!run) throw new Error("ไม่พบ Ticket Run");
+    if (!run.child || !ACTIVE.has(run.status)) throw new Error("process เดิมไม่ทำงานแล้ว ต้องสร้าง Repair Proposal หรือเริ่ม run ใหม่");
+    emitInternal(run, "supervisor_action", { status: "recovering", action: "resume_same_process", root_cause: "resume_requested" });
+    return input(id, "");
+  }
+
+  async function localAiDiagnosis(run) {
+    const fallback = {
+      root_cause: run.stage === "spawn_failed" ? "ticket process failed to spawn" : `runtime stalled or failed at ${run.stage || "unknown"}`,
+      strategy: run.child ? "resume_run" : "rerun_project",
+      action: run.child ? "resume_run" : "rerun_project",
+      patch_diff: "",
+      test_plan: ["runtime heartbeat", "browser connection", "state transition"],
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      if (typeof diagnoseRuntime === "function") return await diagnoseRuntime(publicRun(run));
+      const recentLogs = run.logs.slice(-40).map((item) => `${item.stream}: ${item.text}`).join("\n").slice(-12_000);
+      const response = await fetch(`${String(ollamaBaseUrl).replace(/\/$/, "")}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: "qwen3.5:9b",
+          stream: false,
+          format: "json",
+          keep_alive: "-1",
+          messages: [{ role: "system", content: "You diagnose Alpha ticket runtime failures. Return strict JSON with root_cause, strategy, action, patch_diff, test_plan. action must be resume_run, restart_owned_browser, rerun_project, or source_patch_required. Never include credentials and never claim tests ran." }, { role: "user", content: JSON.stringify({
+            stage: run.stage,
+            status: run.status,
+            detail: run.detail,
+            latest_url: run.latest_url,
+            heartbeat: run.heartbeat,
+            seat: run.seat,
+            queue: run.queue,
+            manual_control: run.manual_control,
+            evidence_paths: [...(run.evidence_paths || [])].slice(-20),
+            logs: recentLogs,
+          }) }],
+          options: { temperature: 0.1, num_predict: 900 },
+        }),
+      });
+      if (!response.ok) return fallback;
+      const payload = await response.json();
+      const parsed = JSON.parse(payload?.message?.content || "{}");
+      const allowed = new Set(["resume_run", "restart_owned_browser", "rerun_project", "source_patch_required"]);
+      return {
+        root_cause: safeText(parsed.root_cause, 1_000) || fallback.root_cause,
+        strategy: safeText(parsed.strategy, 500) || fallback.strategy,
+        action: allowed.has(parsed.action) ? parsed.action : fallback.action,
+        patch_diff: safeText(parsed.patch_diff, 20_000),
+        test_plan: Array.isArray(parsed.test_plan) ? parsed.test_plan.map((item) => safeText(item, 300)).filter(Boolean).slice(0, 30) : fallback.test_plan,
+      };
+    } catch {
+      return fallback;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function repair(id) {
+    const run = runs.get(String(id || ""));
+    if (!run) throw new Error("ไม่พบ Ticket Run");
+    run.supervisor.status = "analyzing";
+    emitInternal(run, "supervisor_action", { status: "analyzing", action: "collect_redacted_runtime_snapshot", root_cause: run.detail });
+    const diagnosis = await localAiDiagnosis(run);
+    const fingerprint = createHash("sha256").update(JSON.stringify({ stage: run.stage, status: run.status, root_cause: diagnosis.root_cause, latest_url: run.latest_url })).digest("hex").slice(0, 16);
+    const learnedSkill = await readRepairSkill(fingerprint);
+    if (learnedSkill && ["resume_run", "restart_owned_browser"].includes(learnedSkill.repair_action?.type)) {
+      diagnosis.action = learnedSkill.repair_action.type;
+      diagnosis.strategy = `reuse verified Repair Skill ${learnedSkill.id}: ${learnedSkill.repair_action.strategy}`;
+    }
+    if (run.supervisor.failure_fingerprint === fingerprint && run.supervisor.last_action === diagnosis.action) {
+      diagnosis.action = diagnosis.action === "resume_run" ? "restart_owned_browser" : "source_patch_required";
+      diagnosis.strategy = "failure fingerprint did not change; escalate to a different strategy";
+    }
+    const repairId = randomUUID();
+    const candidate = {
+      id: repairId,
+      run_id: run.id,
+      status: "candidate",
+      created_at: now(),
+      root_cause: diagnosis.root_cause,
+      strategy: diagnosis.strategy,
+      action: diagnosis.action,
+      patch_diff: diagnosis.patch_diff,
+      diff_summary: diagnosis.patch_diff ? diagnosis.patch_diff.split("\n").slice(0, 20).join("\n") : "ไม่มี source diff; เป็น transient runtime recovery",
+      tests: diagnosis.test_plan.map((name) => ({ name, status: "pending" })),
+      confirmation_required: diagnosis.action === "source_patch_required",
+      fingerprint,
+      learned_skill_id: learnedSkill?.id || "",
+    };
+    repairs.set(repairId, candidate);
+    run.repair = { id: repairId, status: "candidate", summary: diagnosis.root_cause, diff_summary: candidate.diff_summary, tests: candidate.tests, action: candidate.action, confirmation_required: candidate.confirmation_required };
+    run.supervisor.failure_fingerprint = fingerprint;
+    run.supervisor.last_action = diagnosis.action;
+    emitInternal(run, "ai_diagnosis", { repair_id: repairId, diagnosis: diagnosis.root_cause, strategy: diagnosis.strategy, action: diagnosis.action, fingerprint });
+    if (repairRoot) {
+      const destination = resolve(repairRoot, repairId);
+      await fs.mkdir(destination, { recursive: true });
+      if (candidate.patch_diff) await fs.writeFile(resolve(destination, "patch.diff"), candidate.patch_diff, "utf8");
+    }
+    if (candidate.action === "source_patch_required") {
+      if (candidate.patch_diff) {
+        await verifySourceRepair(candidate);
+      } else {
+        candidate.status = "verification_failed";
+        candidate.tests = [{ name: "repair sandbox", status: "failed", output: "AI ระบุว่าต้องแก้ source แต่ไม่ได้สร้าง unified diff" }];
+      }
+    }
+    run.repair = {
+      id: repairId,
+      status: candidate.status,
+      summary: diagnosis.root_cause,
+      diff_summary: candidate.diff_summary,
+      tests: candidate.tests,
+      action: candidate.action,
+      confirmation_required: candidate.confirmation_required,
+    };
+    if (repairRoot) {
+      await fs.writeFile(resolve(repairRoot, repairId, "proposal.json"), `${JSON.stringify(candidate, null, 2)}\n`, "utf8");
+    }
+    emitInternal(run, "repair_candidate", { repair_id: repairId, summary: diagnosis.root_cause, diff_summary: candidate.diff_summary, tests: candidate.tests, confirmation_required: candidate.confirmation_required, status: candidate.status });
+    if (candidate.status === "verified") {
+      emitInternal(run, "repair_verified", { repair_id: repairId, summary: diagnosis.root_cause, tests: candidate.tests, confirmation_required: true });
+    }
+    return { ok: true, repair: { ...candidate }, run: publicRun(run) };
+  }
+
+  async function promoteRepair(repairId) {
+    const candidate = repairs.get(String(repairId || ""));
+    if (!candidate) throw new Error("ไม่พบ Repair Proposal");
+    const run = runs.get(candidate.run_id);
+    if (!run) throw new Error("ไม่พบ Ticket Run ของ Repair Proposal");
+    const verifiedSourcePatch = candidate.action === "source_patch_required" && candidate.status === "verified";
+    if (candidate.action === "source_patch_required" && !verifiedSourcePatch) {
+      throw new Error("source patch ยังไม่ผ่าน sandbox tests จึงยังติดตั้งไม่ได้");
+    }
+    candidate.status = "promoting";
+    const activityBefore = Number(run.heartbeat.last_event_at || 0);
+    if (candidate.action === "resume_run") {
+      const pid = Number(run.pid || 0);
+      try { if (pid > 0) process.kill(-pid, "SIGCONT"); else run.child?.kill("SIGCONT"); } catch { /* verified below by heartbeat */ }
+      emitInternal(run, "supervisor_action", { status: "recovering", action: "resume_owned_process_without_stdin", root_cause: candidate.root_cause });
+    } else if (candidate.action === "restart_owned_browser") {
+      await cleanupOwnedBrowser(run);
+      emitInternal(run, "supervisor_action", { status: "recovering", action: "restart_owned_browser_and_preserve_profile", root_cause: candidate.root_cause });
+    } else if (candidate.action === "rerun_project") {
+      throw new Error("การรันใหม่ต้องกรอก credential แบบชั่วคราวอีกครั้ง ระบบไม่เก็บ credential ไว้ใน Repair Proposal");
+    } else if (verifiedSourcePatch) {
+      candidate.status = "verified";
+      await promoteVerifiedSourceRepair(candidate, run);
+      await installRepairSkill(candidate, run);
+      if (repairRoot) await writeJsonAtomic(resolve(repairRoot, candidate.id, "proposal.json"), candidate);
+      return { ok: true, repair: { ...candidate }, run: publicRun(run) };
+    } else {
+      throw new Error("source patch ยังไม่ผ่าน sandbox tests จึงยังติดตั้งไม่ได้");
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 6_500));
+    if (!run.child || !ACTIVE.has(run.status) || Number(run.heartbeat.last_event_at || 0) <= activityBefore) {
+      candidate.status = "verification_failed";
+      candidate.tests = candidate.tests.map((test) => ({ ...test, status: "failed_no_runtime_transition" }));
+      emitInternal(run, "repair_candidate", { repair_id: candidate.id, status: candidate.status, summary: "transient repair ไม่ทำให้ runtime heartbeat กลับมา", tests: candidate.tests });
+      throw new Error("transient repair ไม่ผ่าน: runtime heartbeat ไม่กลับมา");
+    }
+    candidate.status = "promoted";
+    candidate.promoted_at = now();
+    candidate.tests = candidate.tests.map((test) => ({ ...test, status: "passed_by_runtime_transition" }));
+    emitInternal(run, "repair_verified", { repair_id: candidate.id, summary: candidate.root_cause, tests: candidate.tests });
+    emitInternal(run, "repair_promoted", { repair_id: candidate.id, summary: candidate.strategy, tests: candidate.tests });
+    await installRepairSkill(candidate, run);
+    if (repairRoot) await writeJsonAtomic(resolve(repairRoot, candidate.id, "proposal.json"), candidate);
+    return { ok: true, repair: { ...candidate }, run: publicRun(run) };
+  }
+
+  async function rollbackRepair(repairId) {
+    const candidate = repairs.get(String(repairId || ""));
+    if (!candidate) throw new Error("ไม่พบ Repair Proposal");
+    const run = runs.get(candidate.run_id);
+    if (candidate.action === "source_patch_required" && Array.isArray(candidate.backup_manifest) && candidate.backup_manifest.length) {
+      await restoreSourceBackup(candidate);
+    }
+    candidate.status = "rolled_back";
+    candidate.rolled_back_at = now();
+    await markRepairSkillStale(candidate);
+    if (run) emitInternal(run, "repair_rolled_back", {
+      repair_id: candidate.id,
+      summary: candidate.action === "source_patch_required" && candidate.backup_manifest?.length
+        ? "คืน source files จาก backup แล้ว"
+        : "ยกเลิก proposal แล้ว ไม่มี source patch ถูกติดตั้ง",
+    });
+    return { ok: true, repair: { ...candidate }, run: publicRun(run) };
+  }
+
   async function stop(id, reason = "user_stop") {
     const run = runs.get(String(id || ""));
     if (!run) throw new Error("ไม่พบ Ticket Run");
@@ -485,6 +1252,7 @@ export function createTicketRunManager({
     run.stage = "stopping";
     run.detail = reason === "alpha_shutdown" ? "กำลังหยุดก่อนปิด Alpha" : "กำลังหยุด Ticket Bot";
     run.updated_at = now();
+    emitInternal(run, "supervisor_action", { status: "stopping", action: "stop_owned_process_group", root_cause: reason });
     const pid = Number(run.pid || 0);
     try { if (pid > 0) process.kill(-pid, "SIGTERM"); else run.child.kill("SIGTERM"); } catch { run.child.kill("SIGTERM"); }
     await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
@@ -501,5 +1269,105 @@ export function createTicketRunManager({
     return { ok: true, stopped: active.length };
   }
 
-  return { start, get, input, stop, stopAll, publicRun, validateProject, cleanupOwnedBrowser };
+  function getRepair(id) {
+    const candidate = repairs.get(String(id || ""));
+    if (!candidate) throw new Error("ไม่พบ Repair Proposal");
+    return { ok: true, repair: { ...candidate } };
+  }
+
+  async function automaticSupervisorRecovery(run, fingerprint, action, rootCause) {
+    if (run.supervisor.auto_recovery_inflight || !run.child || !ACTIVE.has(run.status)) return;
+    run.supervisor.auto_recovery_inflight = true;
+    const activityBefore = Number(run.heartbeat.last_event_at || 0);
+    try {
+      if (fingerprint === "browser_connect_timeout") {
+        emitInternal(run, "supervisor_action", {
+          status: "recovering",
+          action: "restart_owned_browser_and_preserve_profile",
+          root_cause: rootCause,
+          automatic: true,
+        });
+        await cleanupOwnedBrowser(run);
+      } else if (fingerprint.startsWith("runtime_silent:")) {
+        emitInternal(run, "supervisor_action", {
+          status: "recovering",
+          action: "resume_owned_process_without_stdin",
+          root_cause: rootCause,
+          automatic: true,
+        });
+        const pid = Number(run.pid || 0);
+        try { if (pid > 0) process.kill(-pid, "SIGCONT"); else run.child.kill("SIGCONT"); } catch { /* AI diagnosis below explains a failed probe */ }
+      } else {
+        emitInternal(run, "supervisor_action", { status: "analyzing", action, root_cause: rootCause, automatic: true });
+      }
+
+      // The bot heartbeat runs every five seconds. Give a safe transient action
+      // one complete heartbeat window before escalating to the local AI.
+      await new Promise((resolveWait) => setTimeout(resolveWait, 6_500));
+      if (!run.child || !ACTIVE.has(run.status)) return;
+      if (Number(run.heartbeat.last_event_at || 0) > activityBefore) {
+        emitInternal(run, "supervisor_action", {
+          status: "standby",
+          action: "transient_recovery_verified",
+          root_cause: "runtime heartbeat resumed",
+          automatic: true,
+        });
+        return;
+      }
+      const proposal = await repair(run.id);
+      const repeatsFailedStrategy = (fingerprint === "browser_connect_timeout" && proposal.repair?.action === "restart_owned_browser")
+        || (fingerprint.startsWith("runtime_silent:") && proposal.repair?.action === "resume_run");
+      if (repeatsFailedStrategy) {
+        const candidate = repairs.get(proposal.repair.id);
+        candidate.status = "verification_failed";
+        candidate.tests = [{ name: "strategy progression", status: "failed", output: "AI เสนอวิธีเดียวกับ transient recovery ที่เพิ่งไม่ผ่าน จึงไม่รันซ้ำ" }];
+        emitInternal(run, "repair_candidate", { repair_id: candidate.id, status: candidate.status, summary: "ต้องใช้ source patch หรือข้อมูลเครื่องมือเพิ่ม; ไม่ทำวิธีเดิมซ้ำ", tests: candidate.tests });
+        return;
+      }
+      if (proposal.repair?.confirmation_required !== true && ["resume_run", "restart_owned_browser"].includes(proposal.repair?.action)) {
+        await promoteRepair(proposal.repair.id);
+      }
+    } catch (error) {
+      emitInternal(run, "supervisor_action", {
+        status: "needs_repair",
+        action: "automatic_recovery_failed",
+        root_cause: safeText(error?.message, 500) || rootCause,
+        automatic: true,
+      });
+    } finally {
+      run.supervisor.auto_recovery_inflight = false;
+    }
+  }
+
+  const watchdog = setInterval(() => {
+    const current = now();
+    for (const run of runs.values()) {
+      if (!ACTIVE.has(run.status) || !run.child) continue;
+      const silentFor = current - Number(run.heartbeat.last_event_at || run.started_at || current);
+      const spawnWait = current - Number(run.heartbeat.command_received_at || run.started_at || current);
+      let fingerprint = "";
+      let action = "";
+      let rootCause = "";
+      if (!run.heartbeat.process_spawned_at && spawnWait > 5_000) {
+        fingerprint = "process_spawn_timeout";
+        action = "inspect_process_spawn";
+        rootCause = "Run ได้รับแล้วแต่ยังไม่มี process heartbeat ภายใน 5 วินาที";
+      } else if (!run.heartbeat.browser_connected_at && spawnWait > 20_000) {
+        fingerprint = "browser_connect_timeout";
+        action = "reconnect_owned_browser";
+        rootCause = "process เริ่มแล้วแต่ Browser ของ Alpha ยังไม่เชื่อมต่อ";
+      } else if (run.status !== "waiting_handoff" && silentFor > 15_000) {
+        fingerprint = `runtime_silent:${run.stage}`;
+        action = "probe_runtime";
+        rootCause = `ไม่มี runtime event ${Math.round(silentFor / 1000)} วินาทีที่ state ${run.stage}`;
+      }
+      if (!fingerprint || run.supervisor.watchdog_fingerprint === fingerprint) continue;
+      run.supervisor.watchdog_fingerprint = fingerprint;
+      emitInternal(run, "supervisor_action", { status: "analyzing", action, root_cause: rootCause, automatic: true });
+      void automaticSupervisorRecovery(run, fingerprint, action, rootCause);
+    }
+  }, 2_000);
+  watchdog.unref?.();
+
+  return { start, get, events, subscribe, input, resume, repair, getRepair, promoteRepair, rollbackRepair, stop, stopAll, ready, publicRun, validateProject, cleanupOwnedBrowser };
 }

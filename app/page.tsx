@@ -266,6 +266,11 @@ interface TicketRunView {
     attempts?: number;
     reservation_status?: string;
     next_action?: string;
+    availability?: Record<string, number>;
+    availability_checked_at?: string;
+    inventory_generation?: number;
+    blacklisted_count?: number;
+    blacklisted_seats?: string[];
   };
   queue?: {
     position?: number | null;
@@ -290,6 +295,20 @@ interface TicketRunView {
   result_status?: string;
   result_reason?: string;
   evidence_paths?: string[];
+  event_cursor?: number;
+  heartbeat?: {
+    command_received_at?: number;
+    process_spawned_at?: number | null;
+    browser_connected_at?: number | null;
+    ai_ready_at?: number | null;
+    last_event_at?: number;
+    process_alive?: boolean;
+    browser_connected?: boolean;
+    ai_ready?: boolean;
+  };
+  supervisor?: { status?: string; last_action?: string; root_cause?: string; updated_at?: number };
+  manual_control?: { active?: boolean; policy?: string; from_state?: string; to_state?: string; last_interrupt_at?: number | null };
+  repair?: { id?: string; status?: string; summary?: string; diff_summary?: string; tests?: Array<{ name?: string; status?: string }>; action?: string; confirmation_required?: boolean; skill_id?: string; skill_installed?: boolean } | null;
   handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
   logs?: Array<{ at: number; stream: string; text: string }>;
 }
@@ -648,23 +667,45 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!ticketRun?.id || !["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status)) return;
+    if (!ticketRun?.id) return;
+    const watchTerminalRepair = ["failed", "not_verified"].includes(ticketRun.status)
+      && !ticketRun.repair?.id
+      && ["needs_repair", "analyzing", "recovering", "awaiting_repair_decision"].includes(ticketRun.supervisor?.status || "");
+    if (!["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status) && !watchTerminalRepair) return;
     let stopped = false;
+    let stream: EventSource | null = null;
+    const applyRun = (run: TicketRunView) => {
+      if (stopped) return;
+      setTicketRun(run);
+      setMessages((current) => current.map((message) => message.ticketRun?.id === run.id ? { ...message, ticketRun: run } : message));
+      setTicketStatus(run.detail || `Ticket Bot: ${run.stage}`);
+    };
     const poll = async () => {
       try {
         const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_status", run_id: ticketRun.id }), cache: "no-store" });
         const data = await response.json() as { run?: TicketRunView; error?: string };
-        if (response.ok && data.run && !stopped) {
-          setTicketRun(data.run);
-          setMessages((current) => current.map((message) => message.ticketRun?.id === data.run!.id ? { ...message, ticketRun: data.run } : message));
-          setTicketStatus(data.run.detail || `Ticket Bot: ${data.run.stage}`);
-        }
+        if (response.ok && data.run) applyRun(data.run);
       } catch { /* next poll retries */ }
     };
+    try {
+      stream = new EventSource(`/api/ticket-bot/events?run_id=${encodeURIComponent(ticketRun.id)}&cursor=${ticketRun.event_cursor || 0}`);
+      stream.addEventListener("run", (event) => {
+        try {
+          const data = JSON.parse((event as MessageEvent).data) as { run?: TicketRunView };
+          if (data.run) applyRun(data.run);
+        } catch { /* polling remains as fallback */ }
+      });
+      stream.addEventListener("snapshot", (event) => {
+        try {
+          const data = JSON.parse((event as MessageEvent).data) as { run?: TicketRunView };
+          if (data.run) applyRun(data.run);
+        } catch { /* polling remains as fallback */ }
+      });
+    } catch { stream = null; }
     void poll();
-    const timer = window.setInterval(() => void poll(), 1_000);
-    return () => { stopped = true; window.clearInterval(timer); };
-  }, [ticketRun?.id, ticketRun?.status]);
+    const timer = window.setInterval(() => void poll(), 5_000);
+    return () => { stopped = true; stream?.close(); window.clearInterval(timer); };
+  }, [ticketRun?.id, ticketRun?.status, ticketRun?.repair?.id, ticketRun?.supervisor?.status]);
 
   const loadChat = useCallback(async (id: string) => {
     try {
@@ -1610,7 +1651,7 @@ export default function Home() {
     setTicketStatus("กำลังเริ่ม process ของ Ticket Bot จริง…");
     const response = await fetch("/api/ticket-bot", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "run", project_path: projectPath, username: ticketUsername, password: ticketPassword }),
+      body: JSON.stringify({ action: "run", project_path: projectPath, username: ticketUsername, password: ticketPassword, idempotency_key: crypto.randomUUID() }),
     });
     const data = await response.json() as { run?: TicketRunView; error?: string };
     setTicketPassword("");
@@ -1640,6 +1681,26 @@ export default function Home() {
     setTicketStatus("ส่งคำสั่งหยุด Ticket Bot แล้ว");
   }
 
+  async function requestTicketRepair(runId = ticketRun?.id) {
+    if (!runId) return;
+    setTicketStatus("AI Supervisor กำลังเก็บ snapshot ที่ตัดข้อมูลลับและวิเคราะห์สาเหตุ…");
+    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_repair", run_id: runId }) });
+    const data = await response.json() as { run?: TicketRunView; error?: string };
+    if (!response.ok || !data.run) { setTicketStatus(data.error || "สร้าง Repair Proposal ไม่สำเร็จ"); return; }
+    setTicketRun(data.run);
+    setTicketStatus(data.run.repair?.summary || "AI สร้าง Repair Proposal แล้ว");
+  }
+
+  async function resolveTicketRepair(mode: "promote" | "rollback") {
+    const repairId = ticketRun?.repair?.id;
+    if (!repairId) return;
+    const response = await fetch("/api/ticket-bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: mode === "promote" ? "repair_promote" : "repair_rollback", repair_id: repairId }) });
+    const data = await response.json() as { run?: TicketRunView; error?: string };
+    if (!response.ok || !data.run) { setTicketStatus(data.error || "จัดการ Repair Proposal ไม่สำเร็จ"); return; }
+    setTicketRun(data.run);
+    setTicketStatus(mode === "promote" ? "ติดตั้ง transient repair แล้วและกำลังตรวจ runtime" : "ยกเลิก Repair Proposal แล้ว");
+  }
+
   async function buildTicketBot(event: FormEvent) {
     event.preventDefault();
     const selected = ticketEvents.find((item) => item.id === ticketSelectedId);
@@ -1660,7 +1721,7 @@ export default function Home() {
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "1.1.0-beta.28"
+        && ticketBuildReport.generator_version === "2.0.0-alpha.1"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -2062,7 +2123,7 @@ export default function Home() {
                 <input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder="ค้นหาชื่อ คำอธิบาย trigger หรือ dependency..." aria-label="ค้นหาสกิล" />
                 <div>
                   <select value={skillStatus} onChange={(event) => setSkillStatus(event.target.value)} aria-label="กรองสถานะ"><option value="">ทุกสถานะ</option><option value="enabled">Enabled</option><option value="verified">Verified</option><option value="partial">Partial</option><option value="failed">Failed</option><option value="stale">Stale</option></select>
-                  <select value={skillOrigin} onChange={(event) => setSkillOrigin(event.target.value)} aria-label="กรองแหล่งที่มา"><option value="">ทุกแหล่ง</option><option value="auto_learn">Auto Learn</option><option value="skill_lab">Skill Lab</option></select>
+                  <select value={skillOrigin} onChange={(event) => setSkillOrigin(event.target.value)} aria-label="กรองแหล่งที่มา"><option value="">ทุกแหล่ง</option><option value="auto_learn">Auto Learn</option><option value="skill_lab">Skill Lab</option><option value="runtime_repair">Runtime Repair</option></select>
                   <select value={skillSort} onChange={(event) => setSkillSort(event.target.value)} aria-label="เรียงสกิล"><option value="latest">ล่าสุด</option><option value="used">ใช้บ่อย</option><option value="success_rate">Success rate</option><option value="confidence">Confidence</option><option value="name">ชื่อ</option></select>
                 </div>
                 <span>ทั้งหมด {skillTotal.toLocaleString()} สกิล · โหลดแล้ว {skills.length.toLocaleString()}</span>
@@ -2077,7 +2138,7 @@ export default function Home() {
                     <button type="button" key={skill.id} className={`skill-list-item ${selectedSkillId === skill.id ? "active" : ""}`} style={{ top: `${(skillStart + index) * skillRowHeight}px` }} onClick={() => void loadSkillDetail(skill.id)}>
                       <div><strong>{skill.name}</strong><span className={`skill-state ${skill.verification_status}`}>{skill.verification_status || "untested"}</span></div>
                       <p>{skill.description}</p>
-                      <small>{skill.runtime} · {skill.origin === "auto_learn" ? "Auto Learn" : "Skill Lab"} · Verified {Number(skill.verified_pass_rate || 0).toFixed(0)}% · Confidence {Number(skill.generalization_confidence || 0).toFixed(1)}%</small>
+                      <small>{skill.runtime} · {skill.origin === "auto_learn" ? "Auto Learn" : skill.origin === "runtime_repair" ? "Runtime Repair" : "Skill Lab"} · Verified {Number(skill.verified_pass_rate || 0).toFixed(0)}% · Confidence {Number(skill.generalization_confidence || 0).toFixed(1)}%</small>
                     </button>
                   ))}
                 </div>
@@ -2088,7 +2149,7 @@ export default function Home() {
             <section className="skill-detail-pane">
               {!selectedSkill ? <div className="skill-detail-empty"><span>⬡</span><strong>เลือกสกิลเพื่อดูรายละเอียด</strong><p>สกิลที่ผ่าน test เท่านั้นจึงจะถูกติดตั้งในรายการนี้</p></div> : <>
                 <header className="skill-detail-header">
-                  <div><span className="section-kicker">{selectedSkill.manifest.origin === "auto_learn" ? "AUTO LEARN SKILL" : "SKILL LAB"}</span><h2>{selectedSkill.manifest.name}</h2><p>{selectedSkill.manifest.description}</p></div>
+                  <div><span className="section-kicker">{selectedSkill.manifest.origin === "auto_learn" ? "AUTO LEARN SKILL" : selectedSkill.manifest.origin === "runtime_repair" ? "RUNTIME REPAIR SKILL" : "SKILL LAB"}</span><h2>{selectedSkill.manifest.name}</h2><p>{selectedSkill.manifest.description}</p></div>
                   <div className="skill-detail-actions"><button type="button" onClick={() => void runSkillAction("run")}>Run</button><button type="button" onClick={() => void runSkillAction("test")}>Test</button><button type="button" onClick={() => void runSkillAction("reverify")}>Reverify</button><button type="button" onClick={() => void runSkillAction("retrain")}>Retrain</button><button type="button" onClick={() => void toggleSelectedSkill()}>{selectedSkill.manifest.enabled === false ? "Enable" : "Disable"}</button><button type="button" onClick={() => void runSkillAction("export")}>Export ZIP</button><button type="button" onClick={() => void runSkillAction("open")}>เปิดโฟลเดอร์</button><button className="danger" type="button" onClick={() => void deleteSelectedSkill()}>ลบ</button></div>
                 </header>
                 {skillActionStatus && <div className="skill-action-status">{skillActionStatus}</div>}
@@ -2264,6 +2325,8 @@ export default function Home() {
                         <span>ชุด <strong>{ticketRun.seat?.candidate_set?.join(", ") || "กำลังหา"}</strong></span>
                         <span>เลือก <strong>{ticketRun.seat?.selected || 0}/{ticketRun.seat?.wanted || ticketQuantity}</strong></span>
                         <span>Attempts <strong>{ticketRun.seat?.attempts || 0}</strong></span>
+                        <span>Inventory <strong>gen {ticketRun.seat?.inventory_generation || 0}</strong></span>
+                        <span>Blacklist <strong>{ticketRun.seat?.blacklisted_count || 0}</strong></span>
                         <span>Reservation <strong>{ticketRun.reservation_verified ? "ยืนยันแล้ว" : ticketRun.seat?.reservation_status || "รอ"}</strong></span>
                         <span>ถัดไป <strong>{ticketRun.seat?.next_action || ticketRun.queue?.next_action || "ตรวจ state"}</strong></span>
                         {ticketRun.queue?.position_verified && <span>คิว <strong>{ticketRun.queue.position}</strong></span>}
@@ -2272,6 +2335,26 @@ export default function Home() {
                         {ticketRun.ai?.action && <span>AI Action <strong>{ticketRun.ai.action}</strong></span>}
                         <span>AI Learned <strong>{ticketRun.ai?.learned_strategy_count || 0}</strong></span>
                       </div>
+                      {ticketRun.seat?.availability && Object.keys(ticketRun.seat.availability).length > 0 && <div className="ticket-result-files">{Object.entries(ticketRun.seat.availability).map(([zone, count]) => <span key={zone}>{zone} · {count} ที่</span>)}</div>}
+                      <div className="ticket-supervisor-panel">
+                        <div><strong>AI Supervisor · {ticketRun.supervisor?.status || "standby"}</strong><small>{ticketRun.supervisor?.root_cause || ticketRun.supervisor?.last_action || "เฝ้าดู process, browser และ state transition"}</small></div>
+                        <div className="ticket-run-metrics">
+                          <span>Process <strong>{ticketRun.heartbeat?.process_alive ? "พร้อม" : "รอ"}</strong></span>
+                          <span>Browser <strong>{ticketRun.heartbeat?.browser_connected ? "เชื่อมแล้ว" : "รอเชื่อม"}</strong></span>
+                          <span>AI <strong>{ticketRun.heartbeat?.ai_ready ? "standby" : "กำลังเตรียม"}</strong></span>
+                          {ticketRun.manual_control?.active && <span>Control <strong>ผู้ใช้กำลังควบคุม</strong></span>}
+                        </div>
+                        {ticketRun.supervisor?.status && !["standby", "stopping"].includes(ticketRun.supervisor.status) && <button type="button" className="secondary-action" onClick={() => void requestTicketRepair()}>ให้ AI วิเคราะห์และซ่อม</button>}
+                      </div>
+                      {ticketRun.repair && <div className="ticket-repair-proposal">
+                        <strong>Repair Proposal · {ticketRun.repair.status}</strong>
+                        <p>{ticketRun.repair.summary || "AI สร้างแนวทางซ่อมแล้ว"}</p>
+                        {ticketRun.repair.diff_summary && <pre>{ticketRun.repair.diff_summary}</pre>}
+                        {ticketRun.repair.tests?.length ? <ul>{ticketRun.repair.tests.map((test, index) => <li key={`${test.name}-${index}`}>{test.name} · {test.status}</li>)}</ul> : null}
+                        {ticketRun.repair.skill_installed && <small>ติดตั้งเป็น Repair Skill แล้ว · {ticketRun.repair.skill_id}</small>}
+                        {["candidate", "verified"].includes(ticketRun.repair.status || "") && <div className="confirm-row"><span>{ticketRun.repair.confirmation_required ? (ticketRun.repair.status === "verified" ? "source patch ผ่าน sandbox tests แล้ว · รอยืนยันติดตั้ง" : "source patch กำลังตรวจใน sandbox") : "transient repair พร้อมติดตั้ง"}</span><button type="button" disabled={ticketRun.repair.confirmation_required && ticketRun.repair.status !== "verified"} onClick={() => void resolveTicketRepair("promote")}>ติดตั้ง</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
+                        {ticketRun.repair.status === "verification_failed" && <div className="confirm-row"><span>แพตช์ไม่ผ่าน sandbox จึงยังไม่แตะ source จริง</span><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ปิด proposal</button></div>}
+                      </div>}
                       {ticketRun.ai?.diagnosis && <small>AI วิเคราะห์: {ticketRun.ai.diagnosis}{ticketRun.ai.confidence != null ? ` · confidence ${Math.round(ticketRun.ai.confidence * 100)}%` : ""}</small>}
                       {ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
                       {ticketRun.logs?.length ? <ol className="ticket-run-timeline">{ticketRun.logs.slice(-12).map((item, index) => <li key={`${item.at}-${index}`}>{ticketRunLogLabel(item.text)}</li>)}</ol> : null}
