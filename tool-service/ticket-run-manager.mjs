@@ -128,7 +128,12 @@ function mapEvent(run, event) {
     run.status = "runtime_running";
     run.stage = safeText(event.stage, 120) || "starting_browser";
     run.detail = safeText(event.detail, 500) || "Browser runtime เริ่มทำงานแล้ว";
-    run.heartbeat.browser_connected_at ||= now();
+    // A runtime process can start before its browser exists. Only explicit
+    // browser evidence may satisfy the supervisor connection watchdog.
+    if (event.browser_connected === true) {
+      run.heartbeat.browser_connected = true;
+      run.heartbeat.browser_connected_at ||= now();
+    }
   } else if (kind === "runtime_heartbeat") {
     run.status = ACTIVE.has(run.status) ? run.status : "runtime_running";
     run.heartbeat.process_alive = event.process_alive !== false;
@@ -1128,7 +1133,10 @@ export function createTicketRunManager({
       test_plan: ["runtime heartbeat", "browser connection", "state transition"],
     };
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    // Recovery runs outside the Fast Seat Engine critical path. Give a warm
+    // local 9B model enough time to return a real diagnosis instead of silently
+    // falling back during model startup or a longer runtime snapshot.
+    const timer = setTimeout(() => controller.abort(), 45_000);
     try {
       if (typeof diagnoseRuntime === "function") return await diagnoseRuntime(publicRun(run));
       const recentLogs = run.logs.slice(-40).map((item) => `${item.stream}: ${item.text}`).join("\n").slice(-12_000);
@@ -1140,8 +1148,11 @@ export function createTicketRunManager({
           model: "qwen3.5:9b",
           stream: false,
           format: "json",
-          keep_alive: "-1",
-          messages: [{ role: "system", content: "You diagnose Alpha ticket runtime failures. Return strict JSON with root_cause, strategy, action, patch_diff, test_plan. action must be resume_run, restart_owned_browser, rerun_project, or source_patch_required. Never include credentials and never claim tests ran." }, { role: "user", content: JSON.stringify({
+          think: false,
+          // Ollama accepts a numeric sentinel for an indefinitely resident
+          // model. The string "-1" is parsed as a duration and returns HTTP 400.
+          keep_alive: -1,
+          messages: [{ role: "system", content: "You diagnose Alpha ticket runtime failures. Return strict JSON with root_cause, strategy, action, patch_diff, test_plan. test_plan must be an array of short strings. action must be resume_run, restart_owned_browser, rerun_project, or source_patch_required. Never include credentials and never claim tests ran." }, { role: "user", content: JSON.stringify({
             stage: run.stage,
             status: run.status,
             detail: run.detail,
@@ -1153,7 +1164,7 @@ export function createTicketRunManager({
             evidence_paths: [...(run.evidence_paths || [])].slice(-20),
             logs: recentLogs,
           }) }],
-          options: { temperature: 0.1, num_predict: 900 },
+          options: { temperature: 0.1, num_predict: 384 },
         }),
       });
       if (!response.ok) return fallback;

@@ -74,10 +74,20 @@ test("Alpha 2.0 generator contains official availability, navigation interruptio
   assert.match(manager, /restoreSourceBackup/);
   assert.match(manager, /installRepairSkill/);
   assert.match(manager, /repair_skill_installed/);
+  assert.doesNotMatch(manager, /run\.detail = safeText\(event\.detail, 500\)[^\n]*\n\s*run\.heartbeat\.browser_connected_at/);
+  assert.match(manager, /if \(event\.browser_connected === true\) \{[\s\S]{0,180}browser_connected_at \|\|= now\(\);/);
+  assert.match(manager, /keep_alive:\s*-1/);
+  assert.doesNotMatch(manager, /keep_alive:\s*["']-1["']/);
+  assert.match(manager, /think:\s*false/);
+  assert.match(manager, /setTimeout\(\(\) => controller\.abort\(\), 45_000\)/);
+  assert.match(manager, /num_predict:\s*384/);
   assert.match(client, /ticketRunEventsResponse/);
   assert.match(page, /AI Supervisor/);
   assert.match(page, /Repair Proposal/);
   assert.match(page, /เริ่ม Run ใหม่/);
+  assert.match(page, /retainTicketPerformanceSelection/);
+  assert.match(page, /options\.find\(\(option\) => ticketPerformanceValue\(option\) === current\)/);
+  assert.match(page, /setTicketSchedule\(\(current\) => retainTicketPerformanceSelection/);
 });
 
 test("Alpha 2.0 Tool Service supervisor restarts a crashed core and shuts it down cleanly", async () => {

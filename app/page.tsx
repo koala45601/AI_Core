@@ -394,6 +394,18 @@ function normalizedTicketPerformanceOptions(options?: TicketPerformanceOption[])
   });
 }
 
+function retainTicketPerformanceSelection(current: string, options: TicketPerformanceOption[], fallback = "") {
+  if (!options.length) return current || fallback;
+  const exact = options.find((option) => ticketPerformanceValue(option) === current);
+  if (exact) return current;
+  const currentSchedule = String(current || "").split("#", 1)[0].trim();
+  const sameSchedule = currentSchedule
+    ? options.find((option) => String(option.schedule || "").trim() === currentSchedule)
+    : undefined;
+  if (sameSchedule) return ticketPerformanceValue(sameSchedule);
+  return options.length === 1 ? ticketPerformanceValue(options[0]) : "";
+}
+
 function ticketRunLogLabel(text: string) {
   try {
     const item = JSON.parse(text) as Record<string, unknown>;
@@ -1595,7 +1607,7 @@ export default function Home() {
         schedule_status: "fresh",
       }));
       const verifiedSchedule = data.facts?.show_dates?.[0]?.iso || data.facts?.show_dates?.[0]?.raw || selected.start_date || "";
-      setTicketSchedule(performanceOptions.length === 1 ? ticketPerformanceValue(performanceOptions[0]) : performanceOptions.length > 1 ? "" : verifiedSchedule);
+      setTicketSchedule((current) => retainTicketPerformanceSelection(current, performanceOptions, verifiedSchedule));
       setTicketQueueOpenAt(data.facts?.queue_open_at || "");
       const workflowState = data.functional_preflight?.workflow_state || "unknown";
       const workflowLabel = workflowState === "armed_pre_sale" ? "เตรียมพร้อม — เปิดขายภายใน 30 นาที"
@@ -1637,7 +1649,7 @@ export default function Home() {
           inspection_warning: warning,
         },
       });
-      setTicketSchedule(selected.start_date || "");
+      setTicketSchedule((current) => current || selected.start_date || "");
       setTicketQueueOpenAt("");
       setTicketStage("preferences");
       setTicketStatus(`หน้ารายละเอียดถูกเว็บไซต์ปฏิเสธ แต่สร้างบอทได้ — โปรแกรมจะอ่านรอบ โซน และฟอร์มจริงหลัง Login ตอนรัน (${warning})`);
