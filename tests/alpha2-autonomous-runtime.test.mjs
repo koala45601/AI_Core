@@ -40,9 +40,11 @@ async function command(commandName, args, cwd) {
 }
 
 test("Alpha 2.0 generator contains official availability, navigation interruption and conflict TTL recovery", async () => {
-  const [template, server, manager, client, page, pkg] = await Promise.all([
+  const [template, server, supervisor, launcher, manager, client, page, pkg] = await Promise.all([
     readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8"),
     readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../tool-service/supervisor.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../start-alpha.command", import.meta.url), "utf8"),
     readFile(new URL("../tool-service/ticket-run-manager.mjs", import.meta.url), "utf8"),
     readFile(new URL("../lib/tool-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -61,6 +63,11 @@ test("Alpha 2.0 generator contains official availability, navigation interruptio
   assert.match(server, /\/v2\/ticket-runs/);
   assert.match(server, /ticketRunEventStream/);
   assert.match(server, /repairV2Match/);
+  assert.match(server, /tool_supervisor/);
+  assert.match(supervisor, /ALPHA_TOOL_SUPERVISED: "1"/);
+  assert.match(supervisor, /Tool Service heartbeat/);
+  assert.match(launcher, /tool-service\/supervisor\.mjs/);
+  assert.match(launcher, /"tool_supervisor":\{"supervised":true/);
   assert.match(manager, /automaticSupervisorRecovery/);
   assert.match(manager, /verifySourceRepair/);
   assert.match(manager, /promoteVerifiedSourceRepair/);
@@ -70,6 +77,83 @@ test("Alpha 2.0 generator contains official availability, navigation interruptio
   assert.match(client, /ticketRunEventsResponse/);
   assert.match(page, /AI Supervisor/);
   assert.match(page, /Repair Proposal/);
+  assert.match(page, /เริ่ม Run ใหม่/);
+});
+
+test("Alpha 2.0 Tool Service supervisor restarts a crashed core and shuts it down cleanly", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "alpha2-tool-supervisor-"));
+  const toolServiceDir = join(temporary, "tool-service");
+  const countFile = join(temporary, "launch-count.txt");
+  const supervisorPath = new URL("../tool-service/supervisor.mjs", import.meta.url);
+  await mkdir(toolServiceDir, { recursive: true });
+  await writeFile(join(toolServiceDir, "server.mjs"), `import { promises as fs } from "node:fs";
+const countPath = ${JSON.stringify(countFile)};
+const count = Number(await fs.readFile(countPath, "utf8").catch(() => "0")) + 1;
+await fs.writeFile(countPath, String(count), "utf8");
+if (process.env.ALPHA_TOOL_SUPERVISED !== "1") process.exit(91);
+if (count === 1) process.exit(0);
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1_000);
+`, "utf8");
+  const child = spawn(process.execPath, [supervisorPath.pathname, temporary], { stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    const recovered = await waitFor(async () => {
+      const count = Number(await readFile(countFile, "utf8").catch(() => "0"));
+      const state = await readFile(join(temporary, "work", "tool-service-supervisor.json"), "utf8")
+        .then(JSON.parse)
+        .catch(() => null);
+      return count >= 2 && state?.status === "running" && state?.restart_count >= 1 ? state : null;
+    }, 8_000);
+    assert.ok(recovered.child_pid);
+    child.kill("SIGTERM");
+    const exit = await new Promise((resolveExit, rejectExit) => {
+      child.once("error", rejectExit);
+      child.once("close", (code, signal) => resolveExit({ code, signal }));
+    });
+    assert.deepEqual(exit, { code: 0, signal: null });
+    const stopped = JSON.parse(await readFile(join(temporary, "work", "tool-service-supervisor.json"), "utf8"));
+    assert.equal(stopped.status, "stopped");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Alpha 2.0 returns run id before project preparation and turns a terminal launch failure into restart-required recovery", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "alpha2-immediate-run-"));
+  const programs = join(temporary, "Program_Create");
+  await mkdir(programs, { recursive: true });
+  const manager = createTicketRunManager({
+    appDir: temporary,
+    programCreateDir: programs,
+    requiredGeneratorVersion: "2.0.0-alpha.1",
+    diagnoseRuntime: async () => ({
+      root_cause: "generated project directory is missing",
+      strategy: "restart the generated project after restoring the project path",
+      action: "rerun_project",
+      patch_diff: "",
+      test_plan: ["project validation", "runtime heartbeat"],
+    }),
+  });
+  try {
+    const startedAt = Date.now();
+    const started = await manager.start({ project_path: join(programs, "missing-project"), idempotency_key: "missing-project" });
+    assert.ok(started.run.id);
+    assert.equal(started.run.status, "starting_runtime");
+    assert.ok(Date.now() - startedAt < 2_000, "run id must be returned before project validation/spawn finishes");
+    const analyzed = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.repair?.status === "restart_required" ? run : null;
+    });
+    assert.equal(analyzed.status, "failed");
+    assert.equal(analyzed.heartbeat.process_alive, false);
+    assert.equal(analyzed.repair.action, "rerun_project");
+    assert.match(analyzed.repair.diff_summary, /เริ่ม Run ใหม่/);
+    await assert.rejects(() => manager.promoteRepair(analyzed.repair.id), /credential/);
+  } finally {
+    await manager.stopAll();
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("Alpha 2.0 manager exposes immediate run id, inventory/manual state, journal events and idempotency", async () => {
@@ -158,6 +242,9 @@ exit 0
     assert.equal(skill.verification_status, "verified");
     assert.equal(skill.origin, "runtime_repair");
     assert.equal(skill.repair_trigger.failure_fingerprint, proposal.repair.fingerprint);
+    assert.ok(skill.generalization_confidence > 0 && skill.generalization_confidence < 100);
+    assert.equal(skill.confidence_sample_size, 1);
+    assert.equal(skill.hidden_test_result.total, 0);
     assert.match(await command(process.execPath, [join(skillDirectory, "main.mjs"), JSON.stringify({ failure_fingerprint: proposal.repair.fingerprint })], temporary), /"repair_action":"source_patch_required"/);
     assert.ok(JSON.parse(await readFile(skillsIndexFile, "utf8")).some((item) => item.id === skill.id));
     await manager.rollbackRepair(proposal.repair.id);

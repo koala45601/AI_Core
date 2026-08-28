@@ -1701,6 +1701,29 @@ export default function Home() {
     setTicketStatus(mode === "promote" ? "ติดตั้ง transient repair แล้วและกำลังตรวจ runtime" : "ยกเลิก Repair Proposal แล้ว");
   }
 
+  async function restartTicketRuntimeAfterRepair() {
+    const projectPath = ticketRun?.project_path;
+    const repairId = ticketRun?.repair?.id;
+    if (!projectPath || !repairId || ticketRunPendingRef.current) return;
+    ticketRunPendingRef.current = true;
+    setTicketStatus("กำลังปิด Repair Proposal เดิมและเริ่ม Run ใหม่ด้วย browser profile เดิม…");
+    try {
+      const rollback = await fetch("/api/ticket-bot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "repair_rollback", repair_id: repairId }),
+      });
+      const rollbackData = await rollback.json() as { error?: string };
+      if (!rollback.ok) throw new Error(rollbackData.error || "ปิด Repair Proposal เดิมไม่สำเร็จ");
+      await startTicketRuntime(projectPath);
+      setTicketStage("ready");
+    } catch (error) {
+      setTicketStatus(error instanceof Error ? error.message : "เริ่ม Ticket Run ใหม่ไม่สำเร็จ");
+    } finally {
+      ticketRunPendingRef.current = false;
+    }
+  }
+
   async function buildTicketBot(event: FormEvent) {
     event.preventDefault();
     const selected = ticketEvents.find((item) => item.id === ticketSelectedId);
@@ -2352,8 +2375,9 @@ export default function Home() {
                         {ticketRun.repair.diff_summary && <pre>{ticketRun.repair.diff_summary}</pre>}
                         {ticketRun.repair.tests?.length ? <ul>{ticketRun.repair.tests.map((test, index) => <li key={`${test.name}-${index}`}>{test.name} · {test.status}</li>)}</ul> : null}
                         {ticketRun.repair.skill_installed && <small>ติดตั้งเป็น Repair Skill แล้ว · {ticketRun.repair.skill_id}</small>}
-                        {["candidate", "verified"].includes(ticketRun.repair.status || "") && <div className="confirm-row"><span>{ticketRun.repair.confirmation_required ? (ticketRun.repair.status === "verified" ? "source patch ผ่าน sandbox tests แล้ว · รอยืนยันติดตั้ง" : "source patch กำลังตรวจใน sandbox") : "transient repair พร้อมติดตั้ง"}</span><button type="button" disabled={ticketRun.repair.confirmation_required && ticketRun.repair.status !== "verified"} onClick={() => void resolveTicketRepair("promote")}>ติดตั้ง</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
-                        {ticketRun.repair.status === "verification_failed" && <div className="confirm-row"><span>แพตช์ไม่ผ่าน sandbox จึงยังไม่แตะ source จริง</span><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ปิด proposal</button></div>}
+                        {ticketRun.repair.status === "restart_required" && ticketRun.repair.action === "rerun_project" && <div className="confirm-row"><span>process เดิมจบแล้ว · เริ่ม Run ใหม่ด้วยโปรเจกต์และ browser profile เดิม{ticketUsername || ticketPassword ? " พร้อมข้อมูล Login แบบชั่วคราวที่กรอกไว้" : " (ถ้า session หมด ให้กรอก Email/Password ด้านบนก่อน)"}</span><button type="button" disabled={ticketRunPendingRef.current} onClick={() => void restartTicketRuntimeAfterRepair()}>เริ่ม Run ใหม่</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
+                        {["candidate", "verified"].includes(ticketRun.repair.status || "") && ticketRun.repair.action !== "rerun_project" && <div className="confirm-row"><span>{ticketRun.repair.confirmation_required ? (ticketRun.repair.status === "verified" ? "source patch ผ่าน sandbox tests แล้ว · รอยืนยันติดตั้ง" : "source patch กำลังตรวจใน sandbox") : "transient repair พร้อมทดลองและตรวจ heartbeat"}</span><button type="button" disabled={ticketRun.repair.confirmation_required && ticketRun.repair.status !== "verified"} onClick={() => void resolveTicketRepair("promote")}>{ticketRun.repair.confirmation_required ? "ติดตั้งแพตช์" : "ทดลอง Recovery"}</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
+                        {ticketRun.repair.status === "verification_failed" && <div className="confirm-row"><span>{ticketRun.repair.action === "source_patch_required" ? "แพตช์ไม่ผ่าน sandbox จึงยังไม่แตะ source จริง" : "Recovery ไม่ทำให้ runtime transition กลับมา จึงไม่ใช้วิธีเดิมซ้ำ"}</span><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ปิด proposal</button></div>}
                       </div>}
                       {ticketRun.ai?.diagnosis && <small>AI วิเคราะห์: {ticketRun.ai.diagnosis}{ticketRun.ai.confidence != null ? ` · confidence ${Math.round(ticketRun.ai.confidence * 100)}%` : ""}</small>}
                       {ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}

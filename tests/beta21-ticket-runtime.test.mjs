@@ -37,7 +37,11 @@ test("Ticket Run Manager validates Program_Create, streams handoff, redacts cred
     const started = await manager.start({ project_path: path, username: "demo@example.com", password: "super-secret-value" });
     assert.equal(started.ok, true);
     assert.ok(started.run.id);
-    assert.ok(started.run.pid);
+    const spawned = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.pid ? run : null;
+    });
+    assert.ok(spawned.pid);
 
     const waitingZone = await waitFor(() => {
       const run = manager.get(started.run.id).run;
@@ -70,17 +74,25 @@ test("Ticket Run Manager validates Program_Create, streams handoff, redacts cred
   }
 });
 
-test("Ticket Run Manager rejects paths outside Program_Create and symlink escape", async () => {
+test("Ticket Run Manager returns a run id, then reports paths outside Program_Create and symlink escape", async () => {
   const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-scope-"));
   const root = join(temp, "Program_Create");
   const outside = join(temp, "outside");
   await mkdir(root);
   await project(temp, "outside", "#!/bin/bash\nexit 0\n");
-  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
+  const manager = createTicketRunManager({
+    programCreateDir: root,
+    shellPath: "/bin/bash",
+    diagnoseRuntime: async () => ({ root_cause: "invalid project path", strategy: "rebuild project", action: "rerun_project", patch_diff: "", test_plan: ["project validation"] }),
+  });
   try {
-    await assert.rejects(() => manager.start({ project_path: outside }), /นอก Program_Create/);
+    const outsideRun = await manager.start({ project_path: outside });
+    const outsideFailed = await waitFor(() => manager.get(outsideRun.run.id).run.status === "failed" ? manager.get(outsideRun.run.id).run : null);
+    assert.match(outsideFailed.detail, /นอก Program_Create/);
     await symlink(outside, join(root, "escape"));
-    await assert.rejects(() => manager.start({ project_path: join(root, "escape") }), /symlink|หลุดออก/);
+    const escapeRun = await manager.start({ project_path: join(root, "escape") });
+    const escapeFailed = await waitFor(() => manager.get(escapeRun.run.id).run.status === "failed" ? manager.get(escapeRun.run.id).run : null);
+    assert.match(escapeFailed.detail, /symlink|หลุดออก/);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -94,6 +106,7 @@ test("Ticket Run Manager stops only its owned process group", async () => {
   const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash" });
   try {
     const started = await manager.start({ project_path: path });
+    await waitFor(() => manager.get(started.run.id).run.pid ? manager.get(started.run.id).run : null);
     await manager.stop(started.run.id);
     const stopped = await waitFor(() => manager.get(started.run.id).run.status === "stopped" ? manager.get(started.run.id).run : null);
     assert.equal(stopped.stage, "stopped");
@@ -125,20 +138,28 @@ test("Ticket Run Manager never treats a zero-exit inspection as Full Loop succes
   }
 });
 
-test("Ticket Run Manager rejects stale generators and reuses one active process for repeated Run clicks", async () => {
+test("Ticket Run Manager reports stale generators after returning a run id and reuses one active process for repeated Run clicks", async () => {
   const temp = await mkdtemp(join(tmpdir(), "alpha-ticket-version-"));
   const root = join(temp, "Program_Create");
   await mkdir(root);
   const path = await project(root, "versioned", "#!/bin/bash\necho '{\"kind\":\"runtime\",\"stage\":\"running\"}'\nsleep 30\n");
-  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: "1.1.0-beta.23" });
+  const manager = createTicketRunManager({
+    programCreateDir: root,
+    shellPath: "/bin/bash",
+    requiredGeneratorVersion: "1.1.0-beta.23",
+    diagnoseRuntime: async () => ({ root_cause: "stale generator", strategy: "rebuild current generator", action: "rerun_project", patch_diff: "", test_plan: ["generator version"] }),
+  });
   try {
-    await assert.rejects(() => manager.start({ project_path: path }), /เวอร์ชันเก่า|สร้างใหม่/);
+    const stale = await manager.start({ project_path: path });
+    const staleFailed = await waitFor(() => manager.get(stale.run.id).run.status === "failed" ? manager.get(stale.run.id).run : null);
+    assert.match(staleFailed.detail, /เวอร์ชันเก่า|สร้างใหม่/);
     await writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: "1.1.0-beta.23" }), "utf8");
     const first = await manager.start({ project_path: path });
+    const active = await waitFor(() => manager.get(first.run.id).run.pid ? manager.get(first.run.id).run : null);
     const second = await manager.start({ project_path: path });
     assert.equal(second.reused, true);
     assert.equal(second.run.id, first.run.id);
-    assert.equal(second.run.pid, first.run.pid);
+    assert.equal(second.run.pid, active.pid);
     await manager.stop(first.run.id);
   } finally {
     await manager.stopAll();

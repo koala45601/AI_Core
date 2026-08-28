@@ -40,6 +40,7 @@ const publicInspectionProfileDir = resolve(workDir, "public-inspection-profile")
 const ticketBrowserProfileDir = resolve(workDir, "ticket-browser-profile");
 const ticketRunsJournalDir = resolve(workDir, "ticket-runs-v2");
 const ticketRepairDir = resolve(workDir, "ticket-repairs");
+const toolSupervisorStateFile = resolve(workDir, "tool-service-supervisor.json");
 const composeFile = resolve(appDir, "infra", "searxng", "docker-compose.yml");
 const artifacts = new Map();
 const pending = new Map();
@@ -2623,6 +2624,12 @@ async function toolHealth() {
   // makes macOS repeatedly show a privacy prompt for node. Permission is checked
   // only when the user explicitly asks to access a protected path.
   const fullDisk = "not_requested";
+  const supervised = process.env.ALPHA_TOOL_SUPERVISED === "1";
+  const supervisorState = await fs.readFile(toolSupervisorStateFile, "utf8")
+    .then((value) => JSON.parse(value))
+    .catch(() => null);
+  const supervisorUpdatedAt = Number(supervisorState?.updated_at || 0);
+  const supervisorFresh = supervised && supervisorUpdatedAt > 0 && Date.now() - supervisorUpdatedAt < 20_000;
   return {
     app_version: appVersion,
     connected: true,
@@ -2641,6 +2648,15 @@ async function toolHealth() {
     search_degraded_reason: searxngConnected ? "" : "SearXNG ยังไม่ทำงาน ระบบจะใช้ DuckDuckGo แบบข้อความ",
     browser_ready: storageConnected,
     last_tool_error: lastToolError,
+    tool_supervisor: {
+      supervised,
+      status: supervised ? (supervisorState?.status || "starting") : "unmanaged",
+      fresh: supervisorFresh,
+      supervisor_pid: supervised ? (supervisorState?.supervisor_pid || process.ppid || null) : null,
+      child_pid: supervised ? process.pid : null,
+      restart_count: Number(supervisorState?.restart_count || 0),
+      updated_at: supervisorUpdatedAt || null,
+    },
     learned_skills: storageConnected ? (await listLearnedSkills()).skills : [],
     skill_lab_ready: storageConnected && dockerConnected,
     trusted_dependencies: Object.keys(trustedDependencyCatalog),

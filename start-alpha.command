@@ -45,7 +45,7 @@ warm_primary_model() {
 tool_ready() {
   local health_json
   health_json="$(curl --max-time 5 -fsS -H "Authorization: Bearer $ALPHA_TOOL_TOKEN" http://127.0.0.1:4317/v1/health 2>/dev/null || true)"
-  [[ "$health_json" == *'"app_version":"'"$ALPHA_APP_VERSION"'"'* && "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* ]]
+  [[ "$health_json" == *'"app_version":"'"$ALPHA_APP_VERSION"'"'* && "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* && "$health_json" == *'"tool_supervisor":{"supervised":true'* ]]
 }
 
 stop_pid_tree() {
@@ -254,7 +254,7 @@ if ! tool_ready; then
   if lsof -nP -iTCP:4317 -sTCP:LISTEN >/dev/null 2>&1; then
     for ALPHA_STALE_TOOL_PID in $(lsof -nP -iTCP:4317 -sTCP:LISTEN -t 2>/dev/null || true); do
       ALPHA_STALE_TOOL_COMMAND="$(ps -p "$ALPHA_STALE_TOOL_PID" -o command= 2>/dev/null || true)"
-      if [[ "$ALPHA_STALE_TOOL_COMMAND" == *"tool-service/server.mjs"* ]]; then stop_pid_tree "$ALPHA_STALE_TOOL_PID"; fi
+      if [[ "$ALPHA_STALE_TOOL_COMMAND" == *"tool-service/server.mjs"* || "$ALPHA_STALE_TOOL_COMMAND" == *"tool-service/supervisor.mjs"* ]]; then stop_pid_tree "$ALPHA_STALE_TOOL_PID"; fi
     done
     sleep 0.2
     if lsof -nP -iTCP:4317 -sTCP:LISTEN >/dev/null 2>&1; then
@@ -264,7 +264,8 @@ if ! tool_ready; then
     fi
   fi
   echo "กำลังเปิดบริการเครื่องมือของอัลฟ่า..."
-  launchctl submit -l "$ALPHA_TOOL_SERVICE" -o "$ALPHA_TOOL_LOG_FILE" -e "$ALPHA_TOOL_ERROR_LOG_FILE" -- "$ALPHA_NODE_BIN" "$ALPHA_DIR/tool-service/server.mjs" "$ALPHA_DIR"
+  "$ALPHA_NODE_BIN" --check "$ALPHA_DIR/tool-service/supervisor.mjs"
+  launchctl submit -l "$ALPHA_TOOL_SERVICE" -o "$ALPHA_TOOL_LOG_FILE" -e "$ALPHA_TOOL_ERROR_LOG_FILE" -- "$ALPHA_NODE_BIN" "$ALPHA_DIR/tool-service/supervisor.mjs" "$ALPHA_DIR"
   for _ in {1..30}; do
     tool_ready && break
     sleep 0.5
