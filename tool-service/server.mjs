@@ -16,16 +16,23 @@ process.env.PATH = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", p
 const appDir = resolve(process.env.ALPHA_APP_DIR || process.argv[2] || process.cwd());
 const appVersion = await fs.readFile(resolve(appDir, "package.json"), "utf8").then((value) => JSON.parse(value).version).catch(() => "1.0.0");
 const varsFile = await fs.readFile(resolve(appDir, ".dev.vars"), "utf8").catch(() => "");
+const defaultTicketUsernameFile = await fs.readFile(resolve(appDir, ".alpha-ticket-default-user"), "utf8").catch(() => "");
 const token = String(process.env.ALPHA_TOOL_TOKEN || varsFile.match(/^ALPHA_TOOL_TOKEN=(.+)$/m)?.[1] || "").trim();
 const ollamaBaseUrl = String(process.env.OLLAMA_BASE_URL || varsFile.match(/^OLLAMA_BASE_URL=(.+)$/m)?.[1] || "http://127.0.0.1:11435")
   .trim()
   .replace(/^['"]|['"]$/g, "")
   .replace(/\/$/, "");
+const defaultTicketUsername = String(process.env.ALPHA_TICKET_DEFAULT_USERNAME || varsFile.match(/^ALPHA_TICKET_DEFAULT_USERNAME=(.+)$/m)?.[1] || defaultTicketUsernameFile)
+  .trim()
+  .replace(/^['"]|['"]$/g, "");
+const ticketKeychainService = String(process.env.ALPHA_TICKET_KEYCHAIN_SERVICE || varsFile.match(/^ALPHA_TICKET_KEYCHAIN_SERVICE=(.+)$/m)?.[1] || "com.alpha.ticket.thaiticketmajor")
+  .trim()
+  .replace(/^['"]|['"]$/g, "");
 const port = Number(process.env.ALPHA_TOOL_PORT || 4317);
 const outputsDir = resolve(appDir, "outputs", "Alpha Outputs");
 const programCreateDir = resolve(appDir, "Program_Create");
 const workDir = resolve(appDir, "work");
-const skillLabDir = resolve(workDir, "skill-lab");
+const skillLabDir = resolve(process.env.ALPHA_LAB_ROOT || resolve(dirname(appDir), "AI_LAB"));
 const learnedSkillsDir = resolve(outputsDir, "Learned Skills");
 const learnedResultsDir = resolve(outputsDir, "Learned Results");
 const autoLearnWorkDir = resolve(workDir, "auto-learn");
@@ -41,7 +48,6 @@ const ticketBrowserProfileDir = resolve(workDir, "ticket-browser-profile");
 const ticketRunsJournalDir = resolve(workDir, "ticket-runs-v2");
 const ticketRepairDir = resolve(workDir, "ticket-repairs");
 const toolSupervisorStateFile = resolve(workDir, "tool-service-supervisor.json");
-const composeFile = resolve(appDir, "infra", "searxng", "docker-compose.yml");
 const artifacts = new Map();
 const pending = new Map();
 const extensionClients = new Set();
@@ -50,7 +56,6 @@ let publicInspectionContext = null;
 const publicInspectionNavigationAt = new Map();
 let lastHeavyUse = 0;
 let idleSeconds = 300;
-let dockerOpenedByAlpha = false;
 let lastToolError = "";
 let storageConnected = true;
 let storageError = "";
@@ -67,6 +72,8 @@ const ticketRunManager = createTicketRunManager({
   repairDir: ticketRepairDir,
   repairSkillsDir: learnedSkillsDir,
   skillsIndexFile,
+  defaultTicketUsername,
+  ticketKeychainService,
 });
 
 if (token.length < 32) {
@@ -95,14 +102,23 @@ const mimeByExtension = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
 };
 
-// Only these reviewed packages may be downloaded automatically by Skill Lab.
-// Normal skill execution always runs without network access.
+// Only these reviewed packages may be downloaded automatically into a temporary
+// virtual environment under AI_LAB. Alpha no longer starts Docker for Skill Lab.
 const trustedDependencyCatalog = {
-  "python-stdlib": { runtime: "python", source: "Python official image", packages: [] },
+  "python-stdlib": { runtime: "python", source: "Python runtime installed on this Mac", packages: [] },
   "python-pillow": { runtime: "python", source: "PyPI / Pillow project", packages: ["Pillow==11.3.0"] },
   "python-numpy": { runtime: "python", source: "PyPI / NumPy project", packages: ["numpy==2.3.2"] },
-  "node-stdlib": { runtime: "node", source: "Node official image", packages: [] },
+  "node-stdlib": { runtime: "node", source: "Node runtime used by Alpha on this Mac", packages: [] },
 };
+
+function localDateStamp(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
 
 function constantTimeEqual(a, b) {
   const left = Buffer.from(String(a || ""));
@@ -476,10 +492,6 @@ async function manageFile(args, settings, approved = false) {
   throw new Error(`ไม่รองรับคำสั่งไฟล์ ${action}`);
 }
 
-async function dockerReady() {
-  try { await run("/usr/local/bin/docker", ["info"], { timeout: 5000 }); return true; } catch { return false; }
-}
-
 async function refreshStorageState() {
   let available = false;
   try {
@@ -506,54 +518,7 @@ async function refreshStorageState() {
   alphaContext = null;
   if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
   publicInspectionContext = null;
-  if (await dockerReady()) {
-    await run("/usr/local/bin/docker", ["rm", "-f", "alpha-searxng"], { timeout: 15_000, allowFailure: true }).catch(() => {});
-    await removeSkillLabContainers().catch(() => {});
-  }
   return false;
-}
-
-async function dockerAppRunning() {
-  const result = await run("/usr/bin/pgrep", ["-f", "^/Applications/Docker.app/Contents/MacOS/com.docker.backend"], { timeout: 3000, allowFailure: true });
-  return result.code === 0 && Boolean(result.stdout.trim());
-}
-
-async function quitDockerOpenedByAlpha() {
-  if (!dockerOpenedByAlpha) return;
-  await run("/usr/bin/osascript", ["-e", 'tell application "Docker" to quit'], { timeout: 5000, allowFailure: true }).catch(() => {});
-  if (await dockerAppRunning()) {
-    await run("/usr/bin/pkill", ["-f", "^/Applications/Docker.app/Contents/MacOS/com.docker.backend"], { timeout: 3000, allowFailure: true });
-  }
-  await run("/usr/bin/pkill", ["-f", "Docker Desktop requires privileged access"], { timeout: 3000, allowFailure: true });
-}
-
-async function ensureDocker() {
-  if (await dockerReady()) return;
-  dockerOpenedByAlpha = !(await dockerAppRunning());
-  spawn("/usr/bin/open", ["-a", "Docker"], { detached: true, stdio: "ignore" }).unref();
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise((resolveWait) => setTimeout(resolveWait, 1500));
-    if (await dockerReady()) return;
-  }
-  throw new Error("Docker Desktop เปิดไม่สำเร็จ");
-}
-
-async function ensureSearxng() {
-  if (!await refreshStorageState()) throw new Error(storageError);
-  try {
-    const response = await fetch("http://127.0.0.1:8888/healthz", { signal: AbortSignal.timeout(1500) });
-    if (response.ok) return;
-  } catch { /* start below */ }
-  await ensureDocker();
-  await run("/usr/local/bin/docker", ["compose", "-f", composeFile, "up", "-d"], { timeout: 180_000 });
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
-    try {
-      const response = await fetch("http://127.0.0.1:8888/", { signal: AbortSignal.timeout(1500) });
-      if (response.ok) return;
-    } catch { /* keep waiting */ }
-  }
-  throw new Error("SearXNG ยังไม่พร้อมใช้งาน");
 }
 
 function decodeEntities(value) {
@@ -584,7 +549,7 @@ async function searchDuckDuckGo(query, degradedReason = "") {
     headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 AlphaLocalAssistant/1.0", Accept: "text/html" },
     signal: AbortSignal.timeout(20_000),
   });
-  if (!response.ok) throw new Error(`ระบบค้นสำรองตอบกลับ ${response.status}`);
+  if (!response.ok) throw new Error(`DuckDuckGo ตอบกลับ ${response.status}`);
   const html = await response.text();
   const results = [];
   const blocks = html.split(/<div[^>]+class="[^"]*result(?:\s|__)[^"]*"[^>]*>/i).slice(1);
@@ -597,30 +562,14 @@ async function searchDuckDuckGo(query, degradedReason = "") {
     results.push({ title: stripHtml(anchor[2]), url: target, snippet: stripHtml(snippetMatch?.[1] || "") });
     if (results.length >= 8) break;
   }
-  if (!results.length) throw new Error("ระบบค้นสำรองไม่พบผลลัพธ์หรือถูกจำกัดชั่วคราว");
-  return { ok: true, results, backend: "duckduckgo", degraded_reason: degradedReason || "SearXNG ไม่พร้อม จึงใช้ DuckDuckGo แบบข้อความ" };
+  if (!results.length) throw new Error("DuckDuckGo ไม่พบผลลัพธ์หรือถูกจำกัดชั่วคราว");
+  return { ok: true, results, backend: "duckduckgo", degraded_reason: degradedReason };
 }
 
 async function searchWeb(query) {
   lastHeavyUse = Date.now();
-  let searxError = "";
-  try {
-    await ensureSearxng();
-  } catch (error) {
-    searxError = error instanceof Error ? error.message : "SearXNG ไม่พร้อม";
-    return searchDuckDuckGo(query, searxError);
-  }
-  const url = new URL("http://127.0.0.1:8888/search");
-  url.searchParams.set("q", String(query).slice(0, 400));
-  url.searchParams.set("format", "json");
-  url.searchParams.set("safesearch", "2");
-  url.searchParams.set("categories", "general");
-  const response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
-  if (!response.ok) return searchDuckDuckGo(query, `SearXNG ตอบกลับ ${response.status}`);
-  const payload = await response.json();
-  const results = (payload.results || []).slice(0, 8).map((item) => ({ title: String(item.title || ""), url: String(item.url || ""), snippet: stripHtml(item.content || "") }));
-  if (!results.length) return searchDuckDuckGo(query, "SearXNG ไม่พบผลลัพธ์");
-  return { ok: true, results, backend: "searxng", degraded_reason: "" };
+  if (!await refreshStorageState()) throw new Error(storageError);
+  return searchDuckDuckGo(query);
 }
 
 function privateIp(address) {
@@ -1468,17 +1417,37 @@ async function apiDiscovery(args, settings) {
 async function runArtifact(args) {
   const artifact = artifacts.get(String(args.artifact_id || ""));
   if (!artifact) throw new Error("ไม่พบไฟล์นี้ในรอบการทำงานปัจจุบัน");
-  await ensureDocker();
   const extension = extname(artifact.path).toLowerCase();
-  const directory = dirname(artifact.path);
-  const file = basename(artifact.path);
-  let image;
-  let command;
-  if (extension === ".py") { image = "python:3.13-alpine"; command = ["python", file]; }
-  else if ([".js", ".mjs"].includes(extension)) { image = "node:22-alpine"; command = ["node", file]; }
+  let runtime;
+  if (extension === ".py") runtime = await findHostSkillRuntime("python");
+  else if ([".js", ".mjs"].includes(extension)) runtime = await findHostSkillRuntime("node");
   else throw new Error("รันได้เฉพาะ Python และ JavaScript");
-  const result = await run("/usr/local/bin/docker", ["run", "--rm", "--network", "none", "--memory", "256m", "--cpus", "1", "--pids-limit", "64", "-v", `${directory}:/work:ro`, "-w", "/work", image, ...command], { timeout: 30_000, allowFailure: true });
-  return { ok: result.code === 0, exit_code: result.code, stdout: result.stdout.slice(0, 20_000), stderr: result.stderr.slice(0, 20_000) };
+  const labDirectory = join(skillLabDir, localDateStamp(), `artifact-${skillId(basename(artifact.path, extension))}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  if (!pathInside(labDirectory, skillLabDir)) throw new Error("พาธ macOS Lab ไม่ปลอดภัย");
+  await fs.mkdir(labDirectory, { recursive: true });
+  const copiedArtifact = join(labDirectory, basename(artifact.path));
+  await fs.copyFile(artifact.path, copiedArtifact);
+  const outputDirectory = join(labDirectory, "output");
+  await fs.mkdir(outputDirectory, { recursive: true });
+  const result = await run(runtime, [copiedArtifact], {
+    cwd: labDirectory,
+    env: {
+      ALPHA_OUTPUT_DIR: outputDirectory,
+      ALPHA_PROGRAM_CREATE_DIR: programCreateDir,
+      ALPHA_LAB_ROOT: skillLabDir,
+      ALPHA_EXECUTION_TARGET: "macos_lab",
+    },
+    timeout: 30_000,
+    allowFailure: true,
+  });
+  return {
+    ok: result.code === 0,
+    exit_code: result.code,
+    stdout: result.stdout.slice(0, 20_000),
+    stderr: result.stderr.slice(0, 20_000),
+    execution_target: "macos_lab",
+    lab_directory: labDirectory,
+  };
 }
 
 function skillId(value) {
@@ -1510,9 +1479,11 @@ function validateSkillDefinition(raw, testLimit = 0) {
     return { name: String(item?.name || `test-${index + 1}`).slice(0, 100), input, stdout_contains: stdoutContains, expected_files: expectedFiles };
   });
   if (!tests.length) throw new Error("Skill Lab ต้องมี test case อย่างน้อย 1 รายการ");
-  const executionTargets = [...new Set((Array.isArray(raw?.execution_targets) ? raw.execution_targets : ["sandbox"])
-    .map(String).filter((target) => ["sandbox", "macos_host"].includes(target)))];
-  if (!executionTargets.length) executionTargets.push("sandbox");
+  const executionTargets = [...new Set((Array.isArray(raw?.execution_targets) ? raw.execution_targets : ["macos_lab"])
+    .map(String)
+    .map((target) => target === "sandbox" ? "macos_lab" : target)
+    .filter((target) => ["macos_lab", "macos_host"].includes(target)))];
+  if (!executionTargets.length) executionTargets.push("macos_lab");
   return {
     id: skillId(raw?.id),
     name: String(raw?.name || raw?.id || "Alpha Skill").slice(0, 100),
@@ -1542,8 +1513,11 @@ function environmentFingerprint(skill) {
     entrypoint: skill.entrypoint,
     dependencies: skill.dependencies,
     execution_targets: skill.execution_targets,
-    images: { python: "python:3.13-slim", node: "node:22-alpine" },
-    trusted_catalog_version: 2,
+    platform: process.platform,
+    architecture: process.arch,
+    node: process.version,
+    lab_root: skillLabDir,
+    trusted_catalog_version: 3,
   })).digest("hex").slice(0, 16);
 }
 
@@ -1567,36 +1541,6 @@ async function upsertSkillIndex(manifest) {
   await writeSkillsIndex(next);
 }
 
-function skillImageSpec(skill) {
-  const base = skill.runtime === "python" ? "python:3.13-slim" : "node:22-alpine";
-  const packages = skill.dependencies.flatMap((id) => trustedDependencyCatalog[id].packages);
-  if (!packages.length) return { image: base, custom: false, dockerfile: "" };
-  if (skill.runtime === "python") {
-    return {
-      image: `alpha-skill-${createHash("sha256").update(packages.join("\n")).digest("hex").slice(0, 12)}`,
-      custom: true,
-      dockerfile: `FROM ${base}\nRUN python -m pip install --no-cache-dir ${packages.join(" ")}\n`,
-    };
-  }
-  throw new Error("ยังไม่มี dependency ภายนอกที่อนุมัติสำหรับ Node");
-}
-
-async function ensureSkillImage(skill, directory) {
-  const spec = skillImageSpec(skill);
-  if (!spec.custom) return spec;
-  const exists = await run("/usr/local/bin/docker", ["image", "inspect", spec.image], { timeout: 8000, allowFailure: true });
-  if (exists.code === 0) return spec;
-  const dockerfile = join(directory, ".alpha-skill.Dockerfile");
-  await fs.writeFile(dockerfile, spec.dockerfile, "utf8");
-  await run("/usr/local/bin/docker", ["build", "--label", "alpha.skill-lab=true", "-f", dockerfile, "-t", spec.image, directory], { timeout: 300_000 });
-  return { ...spec, dockerfile };
-}
-
-async function removeSkillImage(spec) {
-  if (spec?.dockerfile) await fs.rm(spec.dockerfile, { force: true }).catch(() => {});
-  if (spec?.custom) await run("/usr/local/bin/docker", ["image", "rm", "-f", spec.image], { timeout: 30_000, allowFailure: true }).catch(() => {});
-}
-
 async function removePathWithRetry(target, attempts = 8) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -1611,19 +1555,9 @@ async function removePathWithRetry(target, attempts = 8) {
   return { removed: false, error: lastError instanceof Error ? lastError.message : "ลบไฟล์ชั่วคราวไม่สำเร็จ" };
 }
 
-async function removeSkillLabContainers(runId = "") {
-  if (!await dockerReady().catch(() => false)) return { removed: 0, ids: [] };
-  const filters = ["ps", "-aq", "--filter", "label=alpha.skill-lab=true"];
-  if (runId) filters.push("--filter", `label=alpha.run-id=${skillId(runId)}`);
-  const listed = await run("/usr/local/bin/docker", filters, { timeout: 10_000, allowFailure: true });
-  const ids = listed.stdout.split(/\s+/).filter(Boolean);
-  if (ids.length) await run("/usr/local/bin/docker", ["rm", "-f", ...ids], { timeout: 30_000, allowFailure: true });
-  return { removed: ids.length, ids };
-}
-
 async function createSkillLabRunRoot(runId, goal) {
   const ownerId = skillId(runId || `manual-${goal}`);
-  const runRoot = join(skillLabDir, ownerId);
+  const runRoot = join(skillLabDir, localDateStamp(), ownerId);
   if (!pathInside(runRoot, skillLabDir)) throw new Error("รหัสเจ้าของ Skill Lab ไม่ปลอดภัย");
   await fs.mkdir(runRoot, { recursive: true });
   await fs.writeFile(join(runRoot, ".alpha-resource.json"), JSON.stringify({
@@ -1636,55 +1570,71 @@ async function createSkillLabRunRoot(runId, goal) {
   return { ownerId, runRoot };
 }
 
+async function findSkillLabRunRoot(ownerId) {
+  for (const dateEntry of await fs.readdir(skillLabDir, { withFileTypes: true }).catch(() => [])) {
+    if (!dateEntry.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(dateEntry.name)) continue;
+    const candidate = join(skillLabDir, dateEntry.name, ownerId);
+    const marker = await fs.readFile(join(candidate, ".alpha-resource.json"), "utf8").then(JSON.parse).catch(() => null);
+    if (marker?.temporary === true && marker.run_id === ownerId) return candidate;
+  }
+  return null;
+}
+
 async function cleanupSkillLabRun(runId) {
   const ownerId = skillId(runId);
-  const runRoot = join(skillLabDir, ownerId);
+  const runRoot = await findSkillLabRunRoot(ownerId);
+  if (!runRoot) return { ok: true, run_id: ownerId, containers_removed: 0, staging_removed: true, orphaned_path: "" };
   if (!pathInside(runRoot, skillLabDir)) throw new Error("รหัส cleanup ของ Skill Lab ไม่ปลอดภัย");
-  const containers = await removeSkillLabContainers(ownerId);
   const marker = await fs.readFile(join(runRoot, ".alpha-resource.json"), "utf8").then(JSON.parse).catch(() => null);
   if (!marker || marker.temporary !== true || marker.run_id !== ownerId) {
     const exists = await fs.stat(runRoot).then(() => true).catch(() => false);
-    return { ok: !exists, run_id: ownerId, containers_removed: containers.removed, staging_removed: !exists, orphaned_path: exists ? runRoot : "" };
+    return { ok: !exists, run_id: ownerId, containers_removed: 0, staging_removed: !exists, orphaned_path: exists ? runRoot : "" };
   }
   const removed = await removePathWithRetry(runRoot);
-  return { ok: removed.removed, run_id: ownerId, containers_removed: containers.removed, staging_removed: removed.removed, orphaned_path: removed.removed ? "" : runRoot, error: removed.error };
+  return { ok: removed.removed, run_id: ownerId, containers_removed: 0, staging_removed: removed.removed, orphaned_path: removed.removed ? "" : runRoot, error: removed.error };
 }
 
 async function cleanupOwnedSkillLabResources() {
   const results = [];
-  await removeSkillLabContainers();
-  for (const entry of await fs.readdir(skillLabDir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory()) continue;
-    const marker = await fs.readFile(join(skillLabDir, entry.name, ".alpha-resource.json"), "utf8").then(JSON.parse).catch(() => null);
-    if (marker?.temporary === true && marker.run_id === entry.name) results.push(await cleanupSkillLabRun(entry.name));
+  for (const dateEntry of await fs.readdir(skillLabDir, { withFileTypes: true }).catch(() => [])) {
+    if (!dateEntry.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(dateEntry.name)) continue;
+    const dateRoot = join(skillLabDir, dateEntry.name);
+    for (const entry of await fs.readdir(dateRoot, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory()) continue;
+      const marker = await fs.readFile(join(dateRoot, entry.name, ".alpha-resource.json"), "utf8").then(JSON.parse).catch(() => null);
+      if (marker?.temporary === true && marker.run_id === entry.name) results.push(await cleanupSkillLabRun(entry.name));
+    }
   }
   return results;
 }
 
 async function runSkillSandbox(skill, directory, input, outputDirectory, timeout = 45_000, signal, runId = "manual") {
-  await ensureDocker();
-  const imageSpec = await ensureSkillImage(skill, directory);
   await fs.mkdir(outputDirectory, { recursive: true });
-  const runner = skill.runtime === "python" ? ["python", skill.entrypoint] : ["node", skill.entrypoint];
-  const containerName = `alpha-skill-${randomUUID().slice(0, 12)}`;
-  const killContainer = () => spawn("/usr/local/bin/docker", ["rm", "-f", containerName], { detached: true, stdio: "ignore" }).unref();
-  signal?.addEventListener("abort", killContainer, { once: true });
-  try {
-    const result = await run("/usr/local/bin/docker", [
-      "run", "--rm", "--name", containerName, "--label", "alpha.skill-lab=true", "--label", `alpha.run-id=${skillId(runId)}`, "--network", "none", "--read-only", "--memory", "512m", "--cpus", "1",
-      "--pids-limit", "96", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-      "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "-v", `${directory}:/skill:ro`,
-      "-v", `${outputDirectory}:/output:rw`, "-w", "/skill", "-e", "ALPHA_OUTPUT_DIR=/output",
-      imageSpec.image, ...runner, JSON.stringify(input),
-    ], { timeout, allowFailure: true, signal });
-    return { ...result, imageSpec };
-  } catch (error) {
-    await run("/usr/local/bin/docker", ["rm", "-f", containerName], { timeout: 15_000, allowFailure: true }).catch(() => {});
-    await removeSkillImage(imageSpec);
-    throw error;
-  } finally {
-    signal?.removeEventListener("abort", killContainer);
+  let runtime = await findHostSkillRuntime(skill.runtime);
+  const packages = skill.dependencies.flatMap((id) => trustedDependencyCatalog[id]?.packages || []);
+  if (skill.runtime === "python" && packages.length) {
+    const virtualEnvironment = join(directory, ".alpha-runtime");
+    runtime = join(virtualEnvironment, "bin", "python");
+    if (!await fs.access(runtime).then(() => true).catch(() => false)) {
+      const hostPython = await findHostSkillRuntime("python");
+      await run(hostPython, ["-m", "venv", virtualEnvironment], { cwd: directory, timeout: 120_000, signal });
+      await run(runtime, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", ...packages], { cwd: directory, timeout: 300_000, signal });
+    }
   }
+  const result = await run(runtime, [skill.entrypoint, JSON.stringify(input)], {
+    cwd: directory,
+    env: {
+      ALPHA_OUTPUT_DIR: outputDirectory,
+      ALPHA_PROGRAM_CREATE_DIR: programCreateDir,
+      ALPHA_LAB_ROOT: skillLabDir,
+      ALPHA_LAB_RUN_ID: skillId(runId),
+      ALPHA_EXECUTION_TARGET: "macos_lab",
+    },
+    timeout,
+    allowFailure: true,
+    signal,
+  });
+  return { ...result, imageSpec: null };
 }
 
 async function findHostSkillRuntime(runtime) {
@@ -1715,7 +1665,7 @@ async function listFilesRecursive(directory, prefix = "", skipTestOutput = false
     // They are filesystem metadata, never skill source or test output.
     if (entry.name.startsWith("._") || entry.name === ".DS_Store") continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (skipTestOutput && relativePath === ".test-output") continue;
+    if (skipTestOutput && [".test-output", ".alpha-runtime"].includes(relativePath)) continue;
     const absolute = join(directory, entry.name);
     if (entry.isDirectory()) found.push(...await listFilesRecursive(absolute, relativePath, skipTestOutput));
     else if (entry.isFile()) found.push({ path: relativePath, absolute });
@@ -1766,8 +1716,8 @@ async function installLearnedSkill(skill, candidateDirectory, report, origin = "
       success_count: 0,
       last_run_at: null,
       last_error: "",
-      sandbox: { network: "off", memory_mb: 512 },
-      trusted_catalog_version: 2,
+      execution: { target: "macos_lab", lab_root: skillLabDir },
+      trusted_catalog_version: 3,
     };
     await fs.writeFile(join(staging, "alpha-skill.json"), JSON.stringify(manifest, null, 2), "utf8");
     await fs.writeFile(join(staging, "training-report.json"), JSON.stringify(report, null, 2), "utf8");
@@ -1822,7 +1772,6 @@ async function skillLabTest(args, signal) {
   const attempt = Math.min(12, Math.max(1, Number(args.attempt) || 1));
   const goalRoot = join(runRoot, goal);
   const environment = join(goalRoot, `attempt-${attempt}-${randomUUID()}`);
-  let imageSpec = null;
   let installed = false;
   try {
     await fs.mkdir(environment, { recursive: true });
@@ -1840,7 +1789,6 @@ async function skillLabTest(args, signal) {
       const test = cases[index];
       const testOutput = join(environment, ".test-output", `${prefix}-${index + 1}`);
       const execution = await runSkillSandbox(skill, environment, test.input, testOutput, 45_000, signal, ownerId);
-      imageSpec = execution.imageSpec;
       const outputFiles = (await listFilesRecursive(testOutput)).map((item) => item.path);
       const stdoutPass = !test.stdout_contains || execution.stdout.includes(test.stdout_contains);
       const filesPass = test.expected_files.every((file) => outputFiles.includes(file));
@@ -1864,7 +1812,6 @@ async function skillLabTest(args, signal) {
     installed = true;
     return { ok: true, passed: true, skill: installation.manifest, attempt, report, destination: installation.destination, artifacts: installation.artifacts };
   } finally {
-    await removeSkillImage(imageSpec);
     await removePathWithRetry(environment);
     await removePathWithRetry(goalRoot);
     if (installed || args.cleanup_run === true || signal?.aborted) await cleanupSkillLabRun(ownerId);
@@ -1958,29 +1905,74 @@ async function skillAction(idValue, action) {
   throw new Error(`ไม่รองรับ action ${action}`);
 }
 
+async function ensureBundledSkillCurrent(id, directory) {
+  if (id !== "concert-ticket-purchase-assistant") return false;
+  const sourcePath = resolve(appDir, "templates", "concert-ticket-assistant.py");
+  const entrypointPath = join(directory, "main.py");
+  const source = await fs.readFile(sourcePath, "utf8");
+  const installed = await fs.readFile(entrypointPath, "utf8").catch(() => "");
+  let changed = false;
+  if (installed !== source) {
+    const temporary = `${entrypointPath}.bundled-sync-${process.pid}.tmp`;
+    await fs.writeFile(temporary, source, "utf8");
+    await fs.rename(temporary, entrypointPath);
+    changed = true;
+  }
+  const manifestPath = join(directory, "alpha-skill.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  if (manifest.generator_version !== appVersion) {
+    manifest.generator_version = appVersion;
+    manifest.updated_at = new Date().toISOString();
+    const temporary = `${manifestPath}.bundled-sync-${process.pid}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await fs.rename(temporary, manifestPath);
+    await upsertSkillIndex(manifest);
+    changed = true;
+  }
+  return changed;
+}
+
 async function runLearnedSkill(args, signal, settings = {}) {
   lastHeavyUse = Date.now();
   const id = skillId(args.skill_id);
   const directory = join(learnedSkillsDir, id);
   if (!pathInside(directory, learnedSkillsDir)) throw new Error("รหัสสกิลไม่ปลอดภัย");
+  // This skill is a bundled generator, not a user-editable learned artifact.
+  // Verify it at every invocation so a copied runtime bot or interrupted sync
+  // cannot make Create and Run fail until Alpha is restarted.
+  await ensureBundledSkillCurrent(id, directory);
   const savedManifest = JSON.parse(await fs.readFile(join(directory, "alpha-skill.json"), "utf8"));
   if (savedManifest.enabled === false) throw new Error("สกิลนี้ถูกปิดใช้งานอยู่");
   const skill = validateSkillDefinition(savedManifest);
-  const targets = Array.isArray(savedManifest.execution_targets) ? savedManifest.execution_targets.map(String) : ["sandbox"];
-  const requestedTarget = ["auto", "sandbox", "macos_host"].includes(String(args.execution_target)) ? String(args.execution_target) : "auto";
+  const targets = (Array.isArray(savedManifest.execution_targets) ? savedManifest.execution_targets.map(String) : ["macos_lab"])
+    .map((target) => target === "sandbox" ? "macos_lab" : target);
+  const rawRequestedTarget = String(args.execution_target || "auto");
+  const requestedTarget = rawRequestedTarget === "sandbox" ? "macos_lab" : (["auto", "macos_lab", "macos_host"].includes(rawRequestedTarget) ? rawRequestedTarget : "auto");
   const hostAllowed = targets.includes("macos_host") && settings.file_access_mode === "full_user_files";
   if (requestedTarget !== "auto" && !targets.includes(requestedTarget)) throw new Error(`สกิลนี้ไม่ได้รับรองการรันบน ${requestedTarget}`);
   if (requestedTarget === "macos_host" && !hostAllowed) throw new Error("ต้องเปิด Full local access ก่อนรันสกิลบน macOS host");
-  if (requestedTarget === "auto" && !hostAllowed && !targets.includes("sandbox")) throw new Error("สกิลนี้รันบน macOS host เท่านั้น ต้องเปิด Full local access ก่อนใช้งาน");
-  const executionTarget = requestedTarget === "sandbox" ? "sandbox" : hostAllowed ? "macos_host" : "sandbox";
+  if (requestedTarget === "auto" && !hostAllowed && !targets.includes("macos_lab")) throw new Error("สกิลนี้รันบน macOS host เท่านั้น ต้องเปิด Full local access ก่อนใช้งาน");
+  const executionTarget = requestedTarget === "macos_lab" ? "macos_lab" : hostAllowed ? "macos_host" : "macos_lab";
   const input = args.input && typeof args.input === "object" ? args.input : { prompt: String(args.input || "") };
   if (Buffer.byteLength(JSON.stringify(input)) > 32_000) throw new Error("input ของสกิลใหญ่เกิน 32KB");
-  const outputDirectory = join(learnedResultsDir, `${id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  const labDirectory = join(skillLabDir, localDateStamp(), `${id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  const outputDirectory = executionTarget === "macos_lab" ? join(labDirectory, "output") : join(learnedResultsDir, `${id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
   let execution;
   try {
+    let executionDirectory = directory;
+    if (executionTarget === "macos_lab") {
+      executionDirectory = join(labDirectory, "skill");
+      await fs.mkdir(executionDirectory, { recursive: true });
+      for (const item of await listFilesRecursive(directory, "", true)) {
+        if (["alpha-skill.json", "training-report.json"].includes(item.path)) continue;
+        const target = join(executionDirectory, item.path);
+        await fs.mkdir(dirname(target), { recursive: true });
+        await fs.copyFile(item.absolute, target);
+      }
+    }
     execution = executionTarget === "macos_host"
       ? await runSkillHost(skill, directory, input, outputDirectory, 90_000, signal)
-      : await runSkillSandbox(skill, directory, input, outputDirectory, 90_000, signal);
+      : await runSkillSandbox(skill, executionDirectory, input, outputDirectory, 90_000, signal, id);
     const artifactsCreated = [];
     for (const item of await listFilesRecursive(outputDirectory)) artifactsCreated.push(await hydrateArtifact(registerArtifact(item.absolute, id, "skill-output")));
     if (!artifactsCreated.length) await fs.rm(outputDirectory, { recursive: true, force: true });
@@ -2007,10 +1999,29 @@ async function runLearnedSkill(args, signal, settings = {}) {
     };
     await fs.writeFile(join(directory, "alpha-skill.json"), JSON.stringify(manifest, null, 2), "utf8");
     await upsertSkillIndex(manifest);
-    return { ok: succeeded, execution_target: executionTarget, skill: { id: skill.id, name: skill.name }, exit_code: execution.code, stdout: execution.stdout.slice(0, 20_000), stderr: execution.stderr.slice(0, 20_000), artifacts: artifactsCreated };
-  } finally {
-    await removeSkillImage(execution?.imageSpec);
-  }
+    let structuredOutput = null;
+    const stdoutLines = execution.stdout.trim().split("\n").map((line) => line.trim()).filter(Boolean).reverse();
+    for (const line of stdoutLines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          structuredOutput = parsed;
+          break;
+        }
+      } catch { /* keep looking for the last JSON result line */ }
+    }
+    return {
+      ok: succeeded,
+      execution_target: executionTarget,
+      skill: { id: skill.id, name: skill.name },
+      exit_code: execution.code,
+      stdout: execution.stdout.slice(0, 20_000),
+      stderr: execution.stderr.slice(0, 20_000),
+      structured_output: structuredOutput,
+      artifacts: artifactsCreated,
+      lab_directory: executionTarget === "macos_lab" ? labDirectory : "",
+    };
+  } finally { /* macOS Lab folders are retained by date for inspection and cleanup */ }
 }
 
 async function readAutoLearnHistory() {
@@ -2146,7 +2157,7 @@ async function chooseAutoLearnTopic(model, focusContext, history, cycle, signal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model, stream: false, think: false, format: "json", keep_alive: "5m",
+      model, stream: false, think: false, format: "json", keep_alive: -1,
       options: { num_ctx: 4096, num_predict: 350, temperature: 0.65 },
       messages: [
         {
@@ -2223,7 +2234,7 @@ async function runTrainingRequest(plan, signal, config = {}) {
           events.push(parsed);
           touchWatchdog();
           const label = String(parsed.label || parsed.message || parsed.type || "สถานะการฝึก");
-          const currentTool = /docker/i.test(label) ? "Docker" : /ค้น|search/i.test(label) ? "Search" : /ollama|สร้าง|ออกแบบ|อ่าน/i.test(label) ? "Ollama" : "Training";
+          const currentTool = /lab|ทดสอบ/i.test(label) ? "macOS Lab" : /ค้น|search/i.test(label) ? "Search" : /ollama|สร้าง|ออกแบบ|อ่าน/i.test(label) ? "Ollama" : "Training";
           if (autoLearnJob) {
             autoLearnJob.current_attempt = Number(parsed.round || autoLearnJob.current_attempt || 0);
             autoLearnJob.current_tool = currentTool;
@@ -2531,7 +2542,7 @@ async function startAutoLearn(args) {
   const id = `auto-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const skillBacklogCount = (await readAutoLearnSkillBacklog()).length;
   autoLearnJob = {
-    id, status: "running", stage: "starting", model: String(args.model || "qwen3.5:9b"),
+    id, status: "running", stage: "starting", model: String(args.model || "alpha:9b"),
     focus_context: String(args.focus_context || "").slice(0, 20_000), current_topic: "กำลังเริ่ม Auto Learn",
     duration_minutes: durationMinutes, started_at: Date.now(), deadline: durationMinutes === 0 ? 0 : Date.now() + durationMinutes * 60_000,
     ended_at: 0, stop_requested: false, retry_requested: false, skip_requested: false, stop_reason: "", findings: [], log: [], events: [], event_sequence: 0,
@@ -2555,7 +2566,7 @@ async function stopAutoLearn() {
   autoLearnJob.stage = "stopping";
   autoLearnJob.current_topic = "กำลังเรียกอัลฟ่ากลับและสรุปผล";
   autoLearnAbort?.abort();
-  await recordAutoLearnEvent("stopping", "กำลังหยุด process และเก็บกวาด", "รอให้ Ollama request และ Docker task ปิดจริง");
+  await recordAutoLearnEvent("stopping", "กำลังหยุด process และเก็บกวาด", "รอให้ Ollama request และงานใน macOS Lab ปิดจริง");
   await autoLearnLoopPromise;
   return { ok: true, job: publicAutoLearnJob() };
 }
@@ -2598,7 +2609,7 @@ async function executeTool(name, args, settings, approved = false, signal) {
   }
   if (name === "api_discovery") return apiDiscovery(args, settings);
   if (name === "run_artifact") {
-    if (!approved) return queueConfirmation(name, args, settings, "อนุญาตให้รันไฟล์นี้ใน Docker sandbox หรือไม่?");
+    if (!approved) return queueConfirmation(name, args, settings, `อนุญาตให้รันสำเนาไฟล์นี้ใน macOS Lab ที่ ${skillLabDir} หรือไม่?`);
     return runArtifact(args);
   }
   if (name === "skill_lab_test") return skillLabTest(args, signal);
@@ -2616,10 +2627,6 @@ function queueConfirmation(name, args, settings, summary) {
 
 async function toolHealth() {
   await refreshStorageState();
-  let dockerConnected = false;
-  let searxngConnected = false;
-  try { dockerConnected = await dockerReady(); } catch { /* false */ }
-  try { searxngConnected = (await fetch("http://127.0.0.1:8888/", { signal: AbortSignal.timeout(1000) })).ok; } catch { /* false */ }
   // Never probe protected macOS folders from a polling health endpoint. Doing so
   // makes macOS repeatedly show a privacy prompt for node. Permission is checked
   // only when the user explicitly asks to access a protected path.
@@ -2636,16 +2643,17 @@ async function toolHealth() {
     storage_connected: storageConnected,
     storage_root: appDir,
     storage_error: storageError,
-    docker_connected: dockerConnected,
-    searxng_connected: searxngConnected,
+    docker_connected: false,
+    searxng_connected: false,
     alpha_browser_running: Boolean(alphaContext),
     chrome_extension_connected: [...extensionClients].some((socket) => socket.readyState === 1),
     full_disk_access: fullDisk,
     outputs_directory: outputsDir,
+    lab_root: skillLabDir,
     web_read_ready: storageConnected,
     search_ready: storageConnected,
-    search_backend: searxngConnected ? "searxng" : "duckduckgo",
-    search_degraded_reason: searxngConnected ? "" : "SearXNG ยังไม่ทำงาน ระบบจะใช้ DuckDuckGo แบบข้อความ",
+    search_backend: "duckduckgo",
+    search_degraded_reason: "",
     browser_ready: storageConnected,
     last_tool_error: lastToolError,
     tool_supervisor: {
@@ -2658,7 +2666,7 @@ async function toolHealth() {
       updated_at: supervisorUpdatedAt || null,
     },
     learned_skills: storageConnected ? (await listLearnedSkills()).skills : [],
-    skill_lab_ready: storageConnected && dockerConnected,
+    skill_lab_ready: storageConnected,
     trusted_dependencies: Object.keys(trustedDependencyCatalog),
     skill_backlog_count: storageConnected ? (await readAutoLearnSkillBacklog()).length : 0,
     auto_learn: publicAutoLearnJob(),
@@ -2670,18 +2678,6 @@ async function stopHeavyTools() {
   alphaContext = null;
   if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
   publicInspectionContext = null;
-  const dockerConnected = await dockerReady();
-  if (dockerConnected) {
-    if (storageConnected) await run("/usr/local/bin/docker", ["compose", "-f", composeFile, "down", "--remove-orphans"], { timeout: 30_000, allowFailure: true });
-    else await run("/usr/local/bin/docker", ["rm", "-f", "alpha-searxng"], { timeout: 15_000, allowFailure: true });
-    if (dockerOpenedByAlpha) {
-      const running = await run("/usr/local/bin/docker", ["ps", "--format", "{{.Names}}"], { timeout: 5000, allowFailure: true });
-      if (!running.stdout.trim()) await quitDockerOpenedByAlpha();
-    }
-  } else if (dockerOpenedByAlpha) {
-    await quitDockerOpenedByAlpha();
-  }
-  dockerOpenedByAlpha = false;
 }
 
 setInterval(async () => {
@@ -2700,26 +2696,6 @@ setInterval(async () => {
 
 await cleanupOwnedSkillLabResources().catch(() => {});
 await restoreLastAutoLearn();
-
-// alpha-beta10-persistent-search-v1: keep local search warm for the whole Tool Service lifetime.
-// Start eagerly and self-heal if the SearXNG container exits while Alpha is open.
-let searxngKeepAliveBusy = false;
-async function keepSearxngAlive() {
-  if (searxngKeepAliveBusy || !storageConnected) return;
-  searxngKeepAliveBusy = true;
-  try {
-    await ensureSearxng();
-    if (lastToolError.startsWith("SearXNG keepalive:")) lastToolError = "";
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "SearXNG ไม่พร้อม";
-    lastToolError = "SearXNG keepalive: " + reason;
-  } finally {
-    searxngKeepAliveBusy = false;
-  }
-}
-
-void keepSearxngAlive();
-setInterval(() => { void keepSearxngAlive(); }, 30_000).unref();
 
 const webSocketServer = new WebSocketServer({ noServer: true });
 webSocketServer.on("connection", (socket) => {

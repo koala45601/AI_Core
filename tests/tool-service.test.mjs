@@ -27,7 +27,7 @@ test("tool service creates real files and enforces local file safety", async (co
   const appDir = await fs.mkdtemp(join(projectRoot, "work", "alpha-tools-test-"));
   const child = spawn(process.execPath, [join(projectRoot, "tool-service", "server.mjs")], {
     cwd: projectRoot,
-    env: { ...process.env, ALPHA_APP_DIR: appDir, ALPHA_TOOL_TOKEN: token, ALPHA_TOOL_PORT: String(port) },
+    env: { ...process.env, ALPHA_APP_DIR: appDir, ALPHA_LAB_ROOT: join(appDir, "AI_LAB"), ALPHA_TOOL_TOKEN: token, ALPHA_TOOL_PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   context.after(async () => {
@@ -123,7 +123,10 @@ test("tool service creates real files and enforces local file safety", async (co
   assert.equal(extensionHealth.chrome_extension_connected, true);
   assert.equal(extensionHealth.web_read_ready, true);
   assert.equal(extensionHealth.search_ready, true);
-  assert.match(extensionHealth.search_backend, /^(searxng|duckduckgo)$/);
+  assert.equal(extensionHealth.search_backend, "duckduckgo");
+  assert.equal(extensionHealth.docker_connected, false);
+  assert.equal(extensionHealth.searxng_connected, false);
+  assert.equal(extensionHealth.lab_root, join(appDir, "AI_LAB"));
   assert.equal(extensionHealth.browser_ready, true);
   assert.equal(typeof extensionHealth.skill_lab_ready, "boolean");
   assert.ok(extensionHealth.trusted_dependencies.includes("python-stdlib"));
@@ -149,7 +152,7 @@ test("tool service creates real files and enforces local file safety", async (co
   assert.equal(unlimitedStop.status, 200);
   assert.equal((await unlimitedStop.json()).job.status, "stopped");
 
-  if (extensionHealth.docker_connected) {
+  {
     const skillResponse = await request("/v1/tool/execute", {
       name: "skill_lab_test",
       arguments: {
@@ -197,6 +200,8 @@ test("tool service creates real files and enforces local file safety", async (co
     const learnedRun = await learnedRunResponse.json();
     assert.equal(learnedRun.ok, true);
     assert.match(learnedRun.stdout, /VALID/);
+    assert.match(learnedRun.execution_target, /macos_lab/);
+    assert.match(learnedRun.lab_directory, new RegExp(`AI_LAB[/\\\\]\\d{4}-\\d{2}-\\d{2}`));
     const learnedDetail = await (await request("/v1/skills/echo-validator")).json();
     assert.equal(learnedDetail.skill.manifest.usage_count, 1);
     assert.equal(learnedDetail.skill.manifest.success_count, 1);

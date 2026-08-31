@@ -15,6 +15,8 @@ ALPHA_OLLAMA_ERROR_LOG_FILE="/tmp/alpha-ollama.stderr.log"
 ALPHA_OLLAMA_HOST="127.0.0.1:11435"
 ALPHA_OLLAMA_URL="http://$ALPHA_OLLAMA_HOST"
 ALPHA_OLLAMA_MODELS_DIR="$ALPHA_DIR/models/ollama"
+ALPHA_MODEL_NAME="alpha:9b"
+ALPHA_MODEL_FILE="$ALPHA_DIR/models/Alpha-9B.Modelfile"
 ALPHA_SHARED_NODE_RUNTIME="/Users/ratchanonsakdamanee/Library/Application Support/Alpha Node Runtime"
 ALPHA_SHARED_NODE_MODULES="$ALPHA_SHARED_NODE_RUNTIME/node_modules"
 ALPHA_VITE_CACHE_DIR="/Users/ratchanonsakdamanee/Library/Caches/Alpha/vite"
@@ -36,16 +38,16 @@ ollama_ready() {
   curl --max-time 5 -fsS "$ALPHA_OLLAMA_URL/api/tags" >/dev/null 2>&1
 }
 
-warm_primary_model() {
-  curl --max-time 120 -fsS "$ALPHA_OLLAMA_URL/api/generate" \
-    -H 'Content-Type: application/json' \
-    -d '{"model":"qwen3.5:9b","prompt":"","stream":false,"keep_alive":-1}' >/dev/null 2>&1
-}
-
 tool_ready() {
   local health_json
   health_json="$(curl --max-time 5 -fsS -H "Authorization: Bearer $ALPHA_TOOL_TOKEN" http://127.0.0.1:4317/v1/health 2>/dev/null || true)"
   [[ "$health_json" == *'"app_version":"'"$ALPHA_APP_VERSION"'"'* && "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* && "$health_json" == *'"tool_supervisor":{"supervised":true'* ]]
+}
+
+warm_primary_model() {
+  curl --max-time 180 -fsS "$ALPHA_OLLAMA_URL/api/generate" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"alpha:9b","prompt":"","stream":false,"keep_alive":-1,"options":{"num_ctx":8192,"num_predict":1}}' >/dev/null
 }
 
 stop_pid_tree() {
@@ -104,7 +106,7 @@ fi
 if ! ollama_ready; then
   echo "กำลังเปิด Ollama..."
   launchctl remove "$ALPHA_OLLAMA_SERVICE" >/dev/null 2>&1 || true
-  launchctl submit -l "$ALPHA_OLLAMA_SERVICE" -o "$ALPHA_OLLAMA_LOG_FILE" -e "$ALPHA_OLLAMA_ERROR_LOG_FILE" -- /bin/zsh -c 'export OLLAMA_HOST="$1" OLLAMA_MODELS="$2"; exec "$3" serve' alpha "$ALPHA_OLLAMA_HOST" "$ALPHA_OLLAMA_MODELS_DIR" "$ALPHA_OLLAMA_BIN"
+  launchctl submit -l "$ALPHA_OLLAMA_SERVICE" -o "$ALPHA_OLLAMA_LOG_FILE" -e "$ALPHA_OLLAMA_ERROR_LOG_FILE" -- /bin/zsh -c 'export OLLAMA_HOST="$1" OLLAMA_MODELS="$2" OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_NUM_PARALLEL=1 OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KEEP_ALIVE=-1 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0; exec "$3" serve' alpha "$ALPHA_OLLAMA_HOST" "$ALPHA_OLLAMA_MODELS_DIR" "$ALPHA_OLLAMA_BIN"
   for _ in {1..30}; do
     ollama_ready && break
     sleep 1
@@ -117,20 +119,22 @@ if ! ollama_ready; then
   exit 1
 fi
 
-if ! "$ALPHA_OLLAMA_BIN" list | awk '{print $1}' | grep -q '^qwen3.5:9b$'; then
-  echo "กำลังดาวน์โหลด Qwen3.5 9B รุ่นหลักครั้งแรก (ประมาณ 6.6GB)..."
-  "$ALPHA_OLLAMA_BIN" pull qwen3.5:9b
+if ! "$ALPHA_OLLAMA_BIN" list | awk '{print $1}' | grep -q '^alpha:9b$'; then
+  if ! "$ALPHA_OLLAMA_BIN" list | awk '{print $1}' | grep -q '^qwen3.5:9b$'; then
+    echo "กำลังดาวน์โหลด Qwen3.5 9B รุ่นฐานครั้งแรก (ประมาณ 6.6GB)..."
+    "$ALPHA_OLLAMA_BIN" pull qwen3.5:9b
+  fi
+  if [[ ! -f "$ALPHA_MODEL_FILE" ]]; then
+    echo "ไม่พบไฟล์กำหนดบุคลิกโมเดล $ALPHA_MODEL_FILE"
+    exit 1
+  fi
+  echo "กำลังสร้างโมเดล Alpha 9B จาก Qwen3.5 9B..."
+  "$ALPHA_OLLAMA_BIN" create "$ALPHA_MODEL_NAME" -f "$ALPHA_MODEL_FILE"
 fi
 
-if ! "$ALPHA_OLLAMA_BIN" list | awk '{print $1}' | grep -q '^qwen3:4b-instruct$'; then
-  echo "กำลังดาวน์โหลด Qwen3 4B Instruct สำหรับโหมดเร็ว..."
-  "$ALPHA_OLLAMA_BIN" pull qwen3:4b-instruct
-fi
-
-echo "กำลังเตรียมสมองหลักให้อยู่ในโหมด Standby..."
+echo "กำลังโหลด Alpha 9B แบบ standby ตลอด พร้อม context 8,192 tokens..."
 if ! warm_primary_model; then
-  echo "โหลด Qwen3.5 9B เข้า RAM ไม่สำเร็จ กรุณาตรวจ Ollama และพื้นที่ RAM"
-  exit 1
+  echo "เตือน: โหลดโมเดล standby ไม่สำเร็จ อัลฟ่าจะลองโหลดอีกครั้งเมื่อส่งคำสั่ง"
 fi
 
 if command -v npm >/dev/null 2>&1; then

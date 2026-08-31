@@ -4,6 +4,7 @@
 
 .env
 .env.*
+.dev.vars
 *.key
 *.pem
 
@@ -29,5 +30,6 @@ node_modules/
 dist/
 .next/
 .alpha-extension-storage/
+.alpha-ticket-default-user
 work/alpha-browser-profile/
 .DS_Store

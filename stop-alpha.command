@@ -62,16 +62,6 @@ for ALPHA_BROWSER_PID in $(pgrep -f "$ALPHA_DIR/work/alpha-browser-profile" 2>/d
   stop_pid_tree "$ALPHA_BROWSER_PID"
 done
 
-# SearXNG เป็น container ของอัลฟ่าโดยเฉพาะ ปิดได้โดยไม่แตะ container อื่นหรือ Docker Desktop
-if [[ -x /usr/local/bin/docker ]] && /usr/local/bin/docker info >/dev/null 2>&1; then
-  ALPHA_SKILL_CONTAINERS=("${(@f)$(/usr/local/bin/docker ps -aq --filter label=alpha.skill-lab=true 2>/dev/null)}")
-  if (( ${#ALPHA_SKILL_CONTAINERS[@]} )); then
-    /usr/local/bin/docker rm -f "${ALPHA_SKILL_CONTAINERS[@]}" >/dev/null 2>&1 || true
-  fi
-  /usr/local/bin/docker compose -f "$ALPHA_DIR/infra/searxng/docker-compose.yml" down --remove-orphans >/dev/null 2>&1 || true
-  /usr/local/bin/docker rm -f alpha-searxng >/dev/null 2>&1 || true
-fi
-
 if [[ -f "$ALPHA_PID_FILE" ]]; then
   ALPHA_SERVER_PID="$(<"$ALPHA_PID_FILE")"
   if pid_belongs_to_alpha "$ALPHA_SERVER_PID"; then
@@ -101,8 +91,8 @@ export OLLAMA_HOST="$ALPHA_OLLAMA_HOST"
 export OLLAMA_MODELS="$ALPHA_OLLAMA_MODELS_DIR"
 if curl -fsS "$ALPHA_OLLAMA_URL/api/tags" >/dev/null 2>&1; then
   if [[ -n "$ALPHA_OLLAMA_BIN" ]]; then
+    "$ALPHA_OLLAMA_BIN" stop alpha:9b >/dev/null 2>&1 || true
     "$ALPHA_OLLAMA_BIN" stop qwen3.5:9b >/dev/null 2>&1 || true
-    "$ALPHA_OLLAMA_BIN" stop qwen3:4b-instruct >/dev/null 2>&1 || true
   fi
 fi
 
@@ -124,6 +114,6 @@ for _ in {1..30}; do
   sleep 0.2
 done
 
-echo "ปิดอัลฟ่า Tool Service เบราว์เซอร์ SearXNG เว็บเซิร์ฟเวอร์ โมเดล และ Ollama แล้ว"
+echo "ปิดอัลฟ่า Tool Service เบราว์เซอร์ เว็บเซิร์ฟเวอร์ โมเดล และ Ollama แล้ว"
 echo "ตอนนี้อัลฟ่าไม่ทำงานเบื้องหลังและคืน RAM แล้ว"
 sleep 2

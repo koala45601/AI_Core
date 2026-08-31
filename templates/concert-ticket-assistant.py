@@ -111,6 +111,7 @@ if not missing:
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
         "generatorVersion": "2.0.0-alpha.1",
+        "runtimeRevision": "page-ready-gate-1",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -504,6 +505,7 @@ SEAT_CONFLICT_GENERATION = {}
 NAVIGATION_STATE = {"generation": 0, "last_url": "", "last_event_at": 0.0, "closed": False}
 NAVIGATION_LOCK = threading.RLock()
 OBSERVED_PAGE_IDS = set()
+PAGE_READY_MARKERS = {}
 ACTIVE_RUNTIME_PAGE = {"page": None}
 RUNTIME_HEARTBEAT_STARTED = False
 RUNTIME_HEARTBEAT_CACHE = {"browser_connected": False, "url": "", "navigation_generation": 0}
@@ -587,6 +589,48 @@ def update_runtime_heartbeat_cache(page):
         RUNTIME_HEARTBEAT_CACHE["browser_connected"] = connected
         RUNTIME_HEARTBEAT_CACHE["url"] = url
         RUNTIME_HEARTBEAT_CACHE["navigation_generation"] = int(NAVIGATION_STATE.get("generation", 0))
+
+
+def wait_for_page_ready(page, timeout_ms=12000):
+    """Allow interaction only after the current document has finished loading.
+
+    This is an event/readiness check, not a blind delay. The marker is scoped to
+    the current navigation generation, so a button from the previous document
+    cannot be clicked while a new page is still loading.
+    """
+    if not page_is_alive(page):
+        return False
+    marker = navigation_marker(page)
+    key = (marker.get("generation"), marker.get("url"))
+    if PAGE_READY_MARKERS.get(id(page)) == key:
+        return True
+    deadline_ms = max(1000, int(timeout_ms or 12000))
+    started_at = time.monotonic()
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=min(deadline_ms, 5000))
+        remaining_ms = max(1, int(deadline_ms - (time.monotonic() - started_at) * 1000))
+        page.wait_for_function("document.readyState === 'complete'", timeout=remaining_ms)
+    except Exception as error:
+        record("page_not_ready", {
+            "status": "LOAD_NOT_COMPLETE",
+            "url": safe_page_url(page),
+            "navigation_generation": marker.get("generation"),
+            "ready_state": "unknown",
+            "error": str(error)[:240],
+            "terminal": False,
+        })
+        return False
+    if not page_is_alive(page):
+        return False
+    ready_marker = navigation_marker(page)
+    PAGE_READY_MARKERS[id(page)] = (ready_marker.get("generation"), ready_marker.get("url"))
+    record("page_ready", {
+        "status": "LOAD_COMPLETE",
+        "url": safe_page_url(page),
+        "navigation_generation": ready_marker.get("generation"),
+        "terminal": False,
+    })
+    return True
 
 
 def bind_navigation_observer(page):
@@ -1166,6 +1210,15 @@ def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None)
 
 
 def semantic_click(page, labels):
+    if not wait_for_page_ready(page):
+        record("action_blocked", {
+            "action": "semantic_click",
+            "reason": "page_load_not_complete",
+            "labels": [str(label)[:120] for label in labels],
+            "url": safe_page_url(page),
+            "terminal": False,
+        })
+        return False
     pattern = re.compile("|".join(re.escape(label) for label in labels), re.I)
     for scope in [page, *page.frames]:
         for role in ("button", "link"):
@@ -1271,6 +1324,8 @@ def activate_selected_performance(page, prefer_target_navigation=False):
     wanted_date = re.search(r"(?:วัน[^\s-]{0,16}ที่\s*)?\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}", wanted_context)
 
     def click_exact_control():
+        if not wait_for_page_ready(page):
+            return False
         if selector:
             try:
                 locator = page.locator(selector).first
@@ -1535,6 +1590,9 @@ def dismiss_checkout_validation(page):
 
 def select_verified_checkout_option(page, selector, state_field, wanted_labels, family_labels, field_name):
     """Select a checkout option and verify the site's hidden form state changed."""
+    if not wait_for_page_ready(page):
+        record("checkout_validation", {"status": "PAGE_LOAD_NOT_COMPLETE", "field": field_name, "terminal": False})
+        return "failed"
     state_locator = page.locator(f"#{state_field}").first
     known_state_field = False
     try:
@@ -1824,6 +1882,9 @@ def collect_zone_availability(page, force=False):
 
 
 def select_preferred_zone(page):
+    if not wait_for_page_ready(page):
+        record("selection", {"mode": "zone", "complete": False, "reason": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
+        return False
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
     zones = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
     # The booking page can classify as zone_selection before its image-map is
@@ -1912,6 +1973,9 @@ def select_preferred_zone(page):
 
 
 def select_ticket_quantity(page):
+    if not wait_for_page_ready(page):
+        record("selection", {"mode": CONFIG.get("seatMode"), "complete": False, "reason": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
+        return False
     wanted = max(1, int(CONFIG.get("quantity", 1)))
     selects = page.locator("select")
     selected = False
@@ -2030,6 +2094,9 @@ def fill_event_sensitive_input(locator, value):
 
 
 def fill_attendee_details(page):
+    if not wait_for_page_ready(page):
+        record("attendee_validation", {"status": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
+        return False
     dismiss_attendee_validation(page)
     previous_url = safe_page_url(page)
     boxes = page.locator("input[type='text'], input:not([type])")
@@ -2089,6 +2156,9 @@ def fill_attendee_details(page):
 
 
 def select_checkout_options(page, confirm_order=False):
+    if not wait_for_page_ready(page):
+        record("checkout_validation", {"status": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
+        return False
     # A failed submit leaves a modal over the form. Close only known validation
     # messages before retrying; otherwise the site can show a visual choice while
     # its hidden delivery/payment state is still empty.
@@ -2397,11 +2467,17 @@ def switch_to_allowed_zone(page, zone):
     return False
 
 
-def click_candidate_set(locators, metadata, indices):
+def click_candidate_set(page, locators, metadata, indices):
     """Click a complete candidate set back-to-back with no model call or fixed sleep."""
+    if not wait_for_page_ready(page):
+        return ["page_load_not_complete"]
     errors = []
     for index in indices:
         try:
+            marker = navigation_marker(page)
+            if marker.get("url") != safe_page_url(page):
+                errors.append("navigation_changed_before_click")
+                break
             locators[index].evaluate("element => element.click()")
         except Exception as error:
             errors.append(str(error)[:180])
@@ -2662,7 +2738,7 @@ def fast_reserved_seat_recovery(page):
             release_partial_selection(page, verify_timeout)
         attempt_started_at = time.monotonic()
         LATEST_RESERVATION_RESPONSE.update({"status": None, "url": "", "body": "", "at": attempt_started_at})
-        errors = click_candidate_set(locators, metadata, indices)
+        errors = click_candidate_set(page, locators, metadata, indices)
         record("seat_attempt", {"zone": current_zone, "seats": planned, "wanted": wanted, "attempt": attempt, "click_errors": errors})
         complete = not errors and wait_for_selected_count(page, wanted, verify_timeout, attempt_started_at=attempt_started_at)
         selected = selected_seat_count(page)
@@ -4369,6 +4445,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     project = destination_project
     result.update({
         "generator_version": "2.0.0-alpha.1",
+        "runtime_revision": "page-ready-gate-1",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

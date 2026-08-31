@@ -2,8 +2,7 @@
 
 const baseUrl = String(process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11435").replace(/\/$/, "");
 const defaultModels = [
-  "qwen3.5:9b",
-  "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M",
+  "alpha:9b",
 ];
 const models = process.argv.slice(2).filter(Boolean).length ? process.argv.slice(2).filter(Boolean) : defaultModels;
 

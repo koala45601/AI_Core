@@ -8,7 +8,7 @@ const route = await readFile(new URL("../app/api/chat/route.ts", import.meta.url
 
 test("host_fs tool exists and is explicitly host-only", () => {
   assert.match(agentTools, /name: "host_fs"/);
-  assert.match(agentTools, /This tool never launches Docker or Skill Lab/);
+  assert.match(agentTools, /This tool never executes the inspected file/);
   assert.match(agentTools, /ต้องใช้ host_fs บน macOS host โดยตรง/);
 });
 

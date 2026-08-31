@@ -40,8 +40,10 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
   assert.equal(pkg.version, "2.0.0-alpha.1");
+  assert.match(template, /"runtimeRevision": "page-ready-gate-1"/);
+  assert.match(template, /"runtime_revision": "page-ready-gate-1"/);
   assert.match(template, /zones = list\(discovered_names\)/);
-  assert.match(template, /"fallbacks": zones\[1:\]/);
+  assert.match(template, /"candidate_order": zones/);
   assert.match(template, /def visible_human_challenge\(page\):/);
   assert.match(template, /directText/);
   assert.match(template, /presentation\.get\("inViewport"\)/);
@@ -52,6 +54,9 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   assert.match(template, /"browser_lost": "relaunch_same_profile_and_resume"/);
   assert.match(template, /"status": "BROWSER_RELAUNCHED"/);
   assert.match(template, /last_safe_state == "queue"/);
+  assert.match(template, /def wait_for_page_ready\(page, timeout_ms=12000\):/);
+  assert.match(template, /document\.readyState === 'complete'/);
+  assert.match(template, /errors = click_candidate_set\(page, locators, metadata, indices\)/);
   assert.match(template, /"status": "BROWSER_LOST_DURING_ACTIVE_QUEUE"/);
   assert.match(template, /"festival\.php" in url[\s\S]{0,180}"quantity_selection"/);
   assert.match(template, /"status": "GENERAL_ADMISSION_HOLD_VERIFIED"/);
@@ -87,6 +92,24 @@ class OpenPage:
     def is_closed(self): return False
 
 assert bot.safe_page_url(OpenPage()) == "https://tickets.test/seat-map"
+
+class ReadyPage:
+    url = "https://tickets.test/seat-map"
+    def __init__(self): self.events = []
+    def is_closed(self): return False
+    def evaluate(self, script): return {"domGeneration": 0, "lastUserInputAt": 0}
+    def wait_for_load_state(self, state, timeout=0): self.events.append(("load_state", state))
+    def wait_for_function(self, script, timeout=0): self.events.append(("ready_state", script))
+
+ready_page = ReadyPage()
+assert bot.wait_for_page_ready(ready_page) is True
+assert ready_page.events[0] == ("load_state", "domcontentloaded")
+assert "document.readyState === 'complete'" in ready_page.events[1][1]
+click_events = []
+class FakeLocator:
+    def evaluate(self, script): click_events.append("clicked")
+assert bot.click_candidate_set(ready_page, [FakeLocator()], [{}], [0]) == []
+assert click_events == ["clicked"]
 
 class Response:
     def __enter__(self): return self

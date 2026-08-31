@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -222,6 +222,7 @@ interface TicketBuildReport {
   ok: boolean;
   stage: string;
   generator_version?: string;
+  runtime_revision?: string;
   project_path: string;
   created_files: string[];
   verification?: {
@@ -645,8 +646,10 @@ export default function Home() {
   const [ticketUsername, setTicketUsername] = useState("");
   const [ticketPassword, setTicketPassword] = useState("");
   const [ticketRunInput, setTicketRunInput] = useState("");
+  const viewRef = useRef<View>(view);
   const ticketInspectPendingRef = useRef(false);
   const ticketRunPendingRef = useRef(false);
+  const ticketRunPendingSinceRef = useRef(0);
   const [showScrollLatest, setShowScrollLatest] = useState(false);
   const [pairingCode, setPairingCode] = useState("");
   const [feedbackMessageId, setFeedbackMessageId] = useState<string | null>(null);
@@ -659,6 +662,10 @@ export default function Home() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const followLatestRef = useRef(true);
   const skillListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
 
   useEffect(() => {
     const textarea = composerInputRef.current;
@@ -689,8 +696,16 @@ export default function Home() {
     const applyRun = (run: TicketRunView) => {
       if (stopped) return;
       setTicketRun(run);
-      setMessages((current) => current.map((message) => message.ticketRun?.id === run.id ? { ...message, ticketRun: run } : message));
       setTicketStatus(run.detail || `Ticket Bot: ${run.stage}`);
+      // Live run events are background work. Updating the full chat history on
+      // every SSE/poll event made the ticket form compete with urgent input
+      // events (notably payment selection). Keep the form/run card responsive;
+      // only mirror the run into chat when the chat view is actually visible.
+      if (viewRef.current === "chat") {
+        startTransition(() => {
+          setMessages((current) => current.map((message) => message.ticketRun?.id === run.id ? { ...message, ticketRun: run } : message));
+        });
+      }
     };
     const poll = async () => {
       try {
@@ -1186,7 +1201,7 @@ export default function Home() {
             void loadMemories();
           }
           if (event.type === "search_backend" && typeof event.backend === "string") {
-            const backend = event.backend === "searxng" ? "SearXNG" : event.backend === "duckduckgo" ? "DuckDuckGo สำรอง" : "ไม่ทราบระบบค้น";
+            const backend = event.backend === "duckduckgo" ? "DuckDuckGo" : "ไม่ทราบระบบค้น";
             setThinkingSteps((steps) => [...steps, `ค้นผ่าน ${backend}`].slice(-5));
           }
           if (event.type === "message_saved" && event.message && typeof event.message === "object") {
@@ -1323,7 +1338,7 @@ export default function Home() {
         body: JSON.stringify({ artifact_id: artifactId }),
       });
       const result = await response.json() as { confirmation_id?: string; summary?: string; error?: string };
-      if (response.status !== 409 || !result.confirmation_id) throw new Error(result.error || "เตรียม Docker sandbox ไม่สำเร็จ");
+      if (response.status !== 409 || !result.confirmation_id) throw new Error(result.error || "เตรียม macOS Lab ไม่สำเร็จ");
       setMessages((current) => current.map((message) => message.id === messageId
         ? { ...message, permission: { confirmationId: result.confirmation_id!, summary: result.summary || "อนุญาตให้รันไฟล์นี้หรือไม่?", tool: "run_artifact" } }
         : message));
@@ -1739,7 +1754,29 @@ export default function Home() {
   async function buildTicketBot(event: FormEvent) {
     event.preventDefault();
     const selected = ticketEvents.find((item) => item.id === ticketSelectedId);
-    if (!selected || ticketStage === "building" || ticketRunPendingRef.current) return;
+    if (!selected) {
+      setTicketStage("error");
+      setTicketStatus("กรุณาเลือกคอนเสิร์ตก่อนสร้างบอท");
+      return;
+    }
+    if (ticketRunPendingRef.current) {
+      const pendingAge = ticketRunPendingSinceRef.current ? Date.now() - ticketRunPendingSinceRef.current : Number.POSITIVE_INFINITY;
+      const stalePendingLock = ticketStage !== "building" || pendingAge > 120_000;
+      if (stalePendingLock) {
+        // A hot reload, interrupted fetch, or crashed runtime must never leave
+        // the Run button as a silent no-op. The visible stage is authoritative.
+        ticketRunPendingRef.current = false;
+        ticketRunPendingSinceRef.current = 0;
+      } else {
+        setTicketStatus("กำลังสร้างหรือเริ่ม Ticket Bot อยู่ กรุณารอผลลัพธ์จากคำสั่งเดิม");
+        return;
+      }
+    }
+    if (ticketStage === "building") {
+      setTicketStatus("คำสั่งก่อนหน้ายังค้างโดยไม่มี process ที่ยืนยันได้ ระบบปลดล็อกแล้ว กรุณากดเริ่มอีกครั้ง");
+      setTicketStage("error");
+      return;
+    }
     if (ticketDelivery === "postal" && !ticketAddress.trim()) {
       setTicketStage("error");
       setTicketStatus("เลือกจัดส่งทางไปรษณีย์จึงต้องใส่ที่อยู่ก่อน");
@@ -1753,10 +1790,12 @@ export default function Home() {
       return;
     }
     ticketRunPendingRef.current = true;
+    ticketRunPendingSinceRef.current = Date.now();
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
         && ticketBuildReport.generator_version === "2.0.0-alpha.1"
+        && ticketBuildReport.runtime_revision === "page-ready-gate-1"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -1822,6 +1861,7 @@ export default function Home() {
       setTicketStatus(error instanceof Error ? error.message : "สร้างโปรเจกต์ไม่สำเร็จ");
     } finally {
       ticketRunPendingRef.current = false;
+      ticketRunPendingSinceRef.current = 0;
     }
   }
 
@@ -1842,7 +1882,7 @@ export default function Home() {
     starting: "กำลังเริ่มระบบเรียนรู้",
     choosing: "กำลังเลือกหัวข้อจากงานล่าสุด",
     researching: "กำลังค้นคว้าและตรวจหลายแหล่ง",
-    building_skill: "กำลังสร้างและทดสอบสกิลใน Docker",
+    building_skill: "กำลังสร้างและทดสอบสกิลใน macOS Lab",
     resting: "พักโมเดลก่อนเริ่มหัวข้อใหม่",
     stopping: "กำลังเรียกกลับและสร้างรายงาน",
     finished: "สรุปและเก็บกวาดเรียบร้อยแล้ว",
@@ -2099,7 +2139,7 @@ export default function Home() {
             {learningTab === "lab" && <section className="training-card learning-fill-card">
               <div className="section-heading">
                 <div><span className="section-kicker">ALPHA SKILL LAB</span><h3>Full loop: สร้าง ทดสอบ แก้ แล้วติดตั้งทักษะ</h3></div>
-                <span>Docker sandbox · ล้าง env อัตโนมัติ</span>
+                <span>macOS Lab · แยกตามวันที่ · ล้าง env อัตโนมัติ</span>
               </div>
               <p className="training-intro">กำหนดเป้าหมายและเกณฑ์ผ่าน อัลฟ่าจะค้นเอกสารจากเว็บ วางแผน สร้าง environment แยก ทดลอง อ่าน error และแก้ซ้ำเองโดยไม่ถามระหว่างทาง เมื่อผ่านจะเหลือเฉพาะสกิลกับรายงาน ส่วน environment และของชั่วคราวจะถูกลบทิ้ง</p>
               <form className="training-form" onSubmit={trainAlpha}>
@@ -2190,7 +2230,7 @@ export default function Home() {
                 {skillActionStatus && <div className="skill-action-status">{skillActionStatus}</div>}
                 <nav className="skill-detail-tabs">{(["overview", "verification", "runs", "files", "history"] as SkillDetailTab[]).map((tab) => <button type="button" key={tab} className={skillDetailTab === tab ? "active" : ""} onClick={() => setSkillDetailTab(tab)}>{tab === "overview" ? "Overview" : tab === "verification" ? "Verification" : tab === "runs" ? "Runs" : tab === "files" ? "Files" : "History"}</button>)}</nav>
                 <div className="skill-detail-scroll">
-                  {skillDetailTab === "overview" && <div className="skill-overview-grid"><article><span>Runtime</span><strong>{selectedSkill.manifest.runtime}</strong><small>{selectedSkill.manifest.entrypoint}</small></article><article><span>Execution</span><strong>{selectedSkill.manifest.execution_targets?.includes("macos_host") ? "Dual runtime" : "Sandbox"}</strong><small>{selectedSkill.manifest.execution_targets?.join(" + ") || "sandbox"}</small></article><article><span>Version</span><strong>v{selectedSkill.manifest.version || 1}</strong><small>{selectedSkill.manifest.environment_fingerprint}</small></article><article><span>Dependencies</span><strong>{selectedSkill.manifest.dependencies?.length || 0}</strong><small>{selectedSkill.manifest.dependencies?.join(", ") || "stdlib"}</small></article><article><span>ใช้งาน</span><strong>{selectedSkill.manifest.usage_count || 0}</strong><small>สำเร็จ {selectedSkill.manifest.success_count || 0} ครั้ง</small></article><section><h3>Triggers</h3>{selectedSkill.manifest.trigger_examples?.map((item) => <span className="tag" key={item}>{item}</span>)}</section><section><h3>ขอบเขตที่รับรอง</h3><p>{selectedSkill.manifest.verification_scope || "ยังไม่ได้ระบุ"}</p></section></div>}
+                  {skillDetailTab === "overview" && <div className="skill-overview-grid"><article><span>Runtime</span><strong>{selectedSkill.manifest.runtime}</strong><small>{selectedSkill.manifest.entrypoint}</small></article><article><span>Execution</span><strong>{selectedSkill.manifest.execution_targets?.includes("macos_host") ? "Dual runtime" : "macOS Lab"}</strong><small>{selectedSkill.manifest.execution_targets?.map((target) => String(target) === "sandbox" ? "macos_lab" : target).join(" + ") || "macos_lab"}</small></article><article><span>Version</span><strong>v{selectedSkill.manifest.version || 1}</strong><small>{selectedSkill.manifest.environment_fingerprint}</small></article><article><span>Dependencies</span><strong>{selectedSkill.manifest.dependencies?.length || 0}</strong><small>{selectedSkill.manifest.dependencies?.join(", ") || "stdlib"}</small></article><article><span>ใช้งาน</span><strong>{selectedSkill.manifest.usage_count || 0}</strong><small>สำเร็จ {selectedSkill.manifest.success_count || 0} ครั้ง</small></article><section><h3>Triggers</h3>{selectedSkill.manifest.trigger_examples?.map((item) => <span className="tag" key={item}>{item}</span>)}</section><section><h3>ขอบเขตที่รับรอง</h3><p>{selectedSkill.manifest.verification_scope || "ยังไม่ได้ระบุ"}</p></section></div>}
                   {skillDetailTab === "verification" && <div className="verification-grid"><article className="verification-score"><span>Verified pass rate</span><strong>{Number(selectedSkill.manifest.verified_pass_rate || 0).toFixed(1)}%</strong><p>ผ่าน {selectedSkill.manifest.verified_passed || 0}/{selectedSkill.manifest.verified_total || 0} tests ในชุดรับรอง</p></article><article className="verification-score confidence"><span>Generalization confidence</span><strong>{Number(selectedSkill.manifest.generalization_confidence || 0).toFixed(1)}%</strong><p>Wilson 95% lower bound · sample {selectedSkill.manifest.confidence_sample_size || selectedSkill.manifest.hidden_test_result?.total || 0}</p></article><section><h3>ความหมายของคะแนน</h3><p>Verified 100% หมายถึงผ่านทุก test ในขอบเขตด้านล่าง ไม่ได้แปลว่าไม่มีทางผิดกับ input หรือเว็บไซต์ที่ไม่เคยทดสอบ ส่วน Confidence ประเมินแบบ conservative จาก hidden validation และประวัติใช้งานจริง ไม่ใช่ตัวเลขที่ LLM เดาเอง</p><pre>{JSON.stringify(selectedSkill.report, null, 2)}</pre></section></div>}
                   {skillDetailTab === "runs" && <div className="detail-list"><article><strong>จำนวนรันทั้งหมด</strong><span>{selectedSkill.manifest.usage_count || 0}</span></article><article><strong>สำเร็จ</strong><span>{selectedSkill.manifest.success_count || 0}</span></article><article><strong>รันล่าสุด</strong><span>{selectedSkill.manifest.last_run_at ? new Date(selectedSkill.manifest.last_run_at).toLocaleString("th-TH") : "ยังไม่เคยรัน"}</span></article><article><strong>Runtime ล่าสุด</strong><span>{selectedSkill.manifest.last_execution_target || "ยังไม่เคยรัน"}</span></article>{selectedSkill.manifest.last_error && <article className="error"><strong>Error ล่าสุด</strong><span>{selectedSkill.manifest.last_error}</span></article>}</div>}
                   {skillDetailTab === "files" && <div className="detail-list">{selectedSkill.files.map((file) => <article key={file.path}><strong>{file.path}</strong><span>อยู่ในโฟลเดอร์สกิล</span></article>)}</div>}
@@ -2337,10 +2377,10 @@ export default function Home() {
                     </section>
 
                     <section className="ticket-form-section">
-                      <div className="ticket-form-heading"><span>04</span><div><strong>Login สำหรับ run จริง</strong><small>ส่งเข้า process แบบ ephemeral เท่านั้น ไม่เขียน config/localStorage/database</small></div></div>
+                      <div className="ticket-form-heading"><span>04</span><div><strong>Login สำหรับ run จริง</strong><small>ค่าที่กรอกใช้เฉพาะ run นี้; ถ้าเว้นว่างจะใช้บัญชีเริ่มต้นจาก macOS Keychain โดยไม่เก็บรหัสผ่านใน browser storage</small></div></div>
                       <div className="ticket-form-grid">
-                        <label className="field"><span>Email / username</span><input autoComplete="username" value={ticketUsername} onChange={(event) => setTicketUsername(event.target.value)} placeholder="เว้นว่างได้ถ้ามี session อยู่แล้ว" /></label>
-                        <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={ticketPassword} onChange={(event) => setTicketPassword(event.target.value)} placeholder="ใช้เฉพาะตอนเริ่ม run" /></label>
+                        <label className="field"><span>Email / username</span><input autoComplete="username" value={ticketUsername} onChange={(event) => setTicketUsername(event.target.value)} placeholder="เว้นว่าง = ใช้บัญชีเริ่มต้นจาก Keychain" /></label>
+                        <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={ticketPassword} onChange={(event) => setTicketPassword(event.target.value)} placeholder="เว้นว่าง = อ่านจาก macOS Keychain" /></label>
                       </div>
                     </section>
 
@@ -2388,8 +2428,8 @@ export default function Home() {
                         {ticketRun.repair.tests?.length ? <ul>{ticketRun.repair.tests.map((test, index) => <li key={`${test.name}-${index}`}>{test.name} · {test.status}</li>)}</ul> : null}
                         {ticketRun.repair.skill_installed && <small>ติดตั้งเป็น Repair Skill แล้ว · {ticketRun.repair.skill_id}</small>}
                         {ticketRun.repair.status === "restart_required" && ticketRun.repair.action === "rerun_project" && <div className="confirm-row"><span>process เดิมจบแล้ว · เริ่ม Run ใหม่ด้วยโปรเจกต์และ browser profile เดิม{ticketUsername || ticketPassword ? " พร้อมข้อมูล Login แบบชั่วคราวที่กรอกไว้" : " (ถ้า session หมด ให้กรอก Email/Password ด้านบนก่อน)"}</span><button type="button" disabled={ticketRunPendingRef.current} onClick={() => void restartTicketRuntimeAfterRepair()}>เริ่ม Run ใหม่</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
-                        {["candidate", "verified"].includes(ticketRun.repair.status || "") && ticketRun.repair.action !== "rerun_project" && <div className="confirm-row"><span>{ticketRun.repair.confirmation_required ? (ticketRun.repair.status === "verified" ? "source patch ผ่าน sandbox tests แล้ว · รอยืนยันติดตั้ง" : "source patch กำลังตรวจใน sandbox") : "transient repair พร้อมทดลองและตรวจ heartbeat"}</span><button type="button" disabled={ticketRun.repair.confirmation_required && ticketRun.repair.status !== "verified"} onClick={() => void resolveTicketRepair("promote")}>{ticketRun.repair.confirmation_required ? "ติดตั้งแพตช์" : "ทดลอง Recovery"}</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
-                        {ticketRun.repair.status === "verification_failed" && <div className="confirm-row"><span>{ticketRun.repair.action === "source_patch_required" ? "แพตช์ไม่ผ่าน sandbox จึงยังไม่แตะ source จริง" : "Recovery ไม่ทำให้ runtime transition กลับมา จึงไม่ใช้วิธีเดิมซ้ำ"}</span><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ปิด proposal</button></div>}
+                        {["candidate", "verified"].includes(ticketRun.repair.status || "") && ticketRun.repair.action !== "rerun_project" && <div className="confirm-row"><span>{ticketRun.repair.confirmation_required ? (ticketRun.repair.status === "verified" ? "source patch ผ่าน repair tests แล้ว · รอยืนยันติดตั้ง" : "source patch กำลังตรวจใน repair lab") : "transient repair พร้อมทดลองและตรวจ heartbeat"}</span><button type="button" disabled={ticketRun.repair.confirmation_required && ticketRun.repair.status !== "verified"} onClick={() => void resolveTicketRepair("promote")}>{ticketRun.repair.confirmation_required ? "ติดตั้งแพตช์" : "ทดลอง Recovery"}</button><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ยกเลิก</button></div>}
+                        {ticketRun.repair.status === "verification_failed" && <div className="confirm-row"><span>{ticketRun.repair.action === "source_patch_required" ? "แพตช์ไม่ผ่าน repair tests จึงยังไม่แตะ source จริง" : "Recovery ไม่ทำให้ runtime transition กลับมา จึงไม่ใช้วิธีเดิมซ้ำ"}</span><button type="button" className="secondary-action" onClick={() => void resolveTicketRepair("rollback")}>ปิด proposal</button></div>}
                       </div>}
                       {ticketRun.ai?.diagnosis && <small>AI วิเคราะห์: {ticketRun.ai.diagnosis}{ticketRun.ai.confidence != null ? ` · confidence ${Math.round(ticketRun.ai.confidence * 100)}%` : ""}</small>}
                       {ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
@@ -2415,12 +2455,10 @@ export default function Home() {
             <section className="settings-card">
               <div className="section-heading"><div><span className="section-kicker">MODEL & LIMITS</span><h2>โมเดลและการใช้ทรัพยากร</h2></div><span className={`health-badge ${runtimeReady ? "ready" : ""}`}>{runtimeReady ? "พร้อม" : "ต้องตั้งค่า"}</span></div>
               <div className="model-grid">
-                {(["qwen3:4b-instruct", "qwen3.5:9b", "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M"] as const).map((model) => (
-                  <button key={model} type="button" className={settings.model === model ? "selected" : ""} onClick={() => updateSettings({ model })}>
-                    <strong>{model === "qwen3:4b-instruct" ? "Qwen3 4B Instruct" : model === "qwen3.5:9b" ? "Qwen3.5 9B" : "Qwen3 14B Abliterated Q4"}</strong>
-                    <span>{model === "qwen3:4b-instruct" ? "ตอบตรง เร็ว และประหยัด RAM" : model === "qwen3.5:9b" ? "ค่าเริ่มต้นที่แนะนำ · benchmark 85/100 เท่ากับ 14B แต่เร็วกว่าและใช้ RAM น้อยกว่า" : "ตัวเลือกทดลอง 14B · benchmark 85/100 ใช้ RAM ราว 9.7GB และตอบช้ากว่า 9B มาก"}</span>
-                  </button>
-                ))}
+                <button type="button" className="selected" disabled>
+                  <strong>Qwen3.5 9B</strong>
+                  <span>โมเดลหลักเพียงตัวเดียว · โหลดเมื่อใช้งานและพักอัตโนมัติหลังว่าง 5 นาที</span>
+                </button>
               </div>
               <label className="range-control"><span><strong>Context tokens</strong><em>{settings.max_context_tokens.toLocaleString()}</em></span><input aria-label="Context tokens" type="range" min="4096" max="8192" step="1024" value={settings.max_context_tokens} onChange={(event) => updateSettings({ max_context_tokens: Number(event.target.value) })} /></label>
               <label className="range-control"><span><strong>จำนวน token คำตอบสูงสุด</strong><em>{settings.max_output_tokens.toLocaleString()}</em></span><input aria-label="จำนวน token คำตอบสูงสุด" type="range" min="256" max="2048" step="256" value={settings.max_output_tokens} onChange={(event) => updateSettings({ max_output_tokens: Number(event.target.value) })} /></label>
@@ -2477,7 +2515,7 @@ export default function Home() {
                 <span className={health?.tool_service.connected ? "ready" : ""}>Tool Service {health?.tool_service.connected ? "เชื่อมแล้ว" : "ไม่ทำงาน"}</span>
                 <span className={health?.web_read_ready ? "ready" : ""}>อ่าน URL {health?.web_read_ready ? "พร้อม" : "ไม่พร้อม"}</span>
                 <span className={health?.search_ready ? "ready" : ""}>ค้นเว็บ {health?.search_ready ? health.search_backend : "ไม่พร้อม"}</span>
-                <span className={health?.tool_service.docker_connected ? "ready" : ""}>Docker {health?.tool_service.docker_connected ? "เชื่อมแล้ว" : "ปิดอยู่"}</span>
+                <span className={health?.tool_service.skill_lab_ready ? "ready" : ""}>macOS Lab {health?.tool_service.skill_lab_ready ? "พร้อม" : "ไม่พร้อม"}</span>
                 <span className={health?.browser_ready ? "ready" : ""}>Browser {health?.browser_ready ? "พร้อม" : "ไม่พร้อม"}</span>
               </div>
               {health?.search_degraded_reason && <p className="health-warning">{health.search_degraded_reason}</p>}
@@ -2510,7 +2548,8 @@ export default function Home() {
               {settings.file_access_mode === "selected_folders" && (
                 <label className="field"><span>พาธโฟลเดอร์ที่อนุญาต (หนึ่งบรรทัดต่อหนึ่งโฟลเดอร์)</span><textarea rows={3} value={settings.allowed_file_roots.join("\n")} onChange={(event) => updateSettings({ allowed_file_roots: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} placeholder="/Users/ชื่อคุณ/Documents/Projects" /></label>
               )}
-              <div className="setting-row"><div><strong>Run/Test ใน Docker sandbox</strong><p>ปิดเครือข่าย จำกัด RAM/เวลา และถามยืนยันก่อนรันเสมอ</p></div><span className={`mini-status ${health?.tool_service.docker_connected ? "ready" : ""}`}>{health?.tool_service.docker_connected ? "Docker พร้อม" : "Docker ยังไม่เปิด"}</span></div>
+              <div className="setting-row"><div><strong>Run/Test ใน macOS Lab</strong><p>รันสำเนาบน Mac ในโฟลเดอร์แยกตามวันที่ และถามยืนยันก่อนรัน Artifact</p></div><span className={`mini-status ${health?.tool_service.skill_lab_ready ? "ready" : ""}`}>{health?.tool_service.skill_lab_ready ? "Lab พร้อม" : "Lab ไม่พร้อม"}</span></div>
+              <p className="settings-note">Lab อยู่ที่ <code>{health?.tool_service.lab_root || "/Volumes/petong/Disk/AI_LAB"}</code></p>
               <p className="settings-note">ไฟล์ที่อัลฟ่าสร้างจะอยู่ใน <code>{health?.tool_service.outputs_directory || "outputs/Alpha Outputs"}</code> และระบบจะสำรองไฟล์เดิมก่อนเขียนทับ</p>
             </section>
 
@@ -2526,7 +2565,7 @@ export default function Home() {
               </div>
               <div className="health-grid">
                 <span className={health?.tool_service.storage_connected !== false ? "ready" : ""}>External HDD {health?.tool_service.storage_connected !== false ? "เชื่อมต่อแล้ว" : "ไม่ได้เชื่อมต่อ"}</span>
-                <span className={health?.tool_service.searxng_connected ? "ready" : ""}>SearXNG {health?.tool_service.searxng_connected ? "ทำงาน" : "พร้อมเปิดเมื่อค้น"}</span>
+                <span className={health?.search_ready ? "ready" : ""}>Search {health?.search_ready ? "DuckDuckGo พร้อม" : "ไม่พร้อม"}</span>
                 <span className={health?.tool_service.alpha_browser_running ? "ready" : ""}>Alpha Browser {health?.tool_service.alpha_browser_running ? "เปิดอยู่" : "ปิดอยู่"}</span>
                 <span className={health?.tool_service.chrome_extension_connected ? "ready" : ""}>Chrome Extension {health?.tool_service.chrome_extension_connected ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</span>
                 <span>Full Disk Access ตรวจเมื่อสั่งใช้จริง</span>

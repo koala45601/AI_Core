@@ -501,7 +501,7 @@ const skills = [
       runtime: "python",
       entrypoint: "main.py",
       dependencies: ["python-stdlib"],
-      execution_targets: ["sandbox", "macos_host"],
+      execution_targets: ["macos_lab", "macos_host"],
       trigger_examples: ["ใช้สกิล hacker วิเคราะห์ HAR", "หา API จาก DevTools Network", "ทำ inventory endpoint จาก HTTP traffic"],
       test_cases: [
         { name: "flat-two", input: { entries: [{ url: "https://app.test/api/users/12", method: "GET", response_status: 200 }, { url: "https://app.test/api/users/99", method: "GET", response_status: 404 }] }, stdout_contains: "\"endpoint_count\":1", expected_files: ["api-inventory.json", "api-inventory.md"] },
@@ -524,7 +524,7 @@ const skills = [
       runtime: "python",
       entrypoint: "main.py",
       dependencies: ["python-stdlib"],
-      execution_targets: ["sandbox", "macos_host"],
+      execution_targets: ["macos_lab", "macos_host"],
       trigger_examples: ["ใช้สกิลการเข้าถึงระบบ", "สรุปผล host access", "ตรวจ capability จากผล path access"],
       test_cases: [
         { name: "writable", input: { checks: [{ path: "/tmp/project", exists: true, readable: true, writable: true }] }, stdout_contains: "\"accessible_count\":1", expected_files: ["access-map.json"] },
@@ -547,7 +547,7 @@ const skills = [
       runtime: "python",
       entrypoint: "main.py",
       dependencies: ["python-stdlib"],
-      execution_targets: ["sandbox", "macos_host"],
+      execution_targets: ["macos_lab", "macos_host"],
       trigger_examples: ["ใช้สกิล cybersecurity", "จัดลำดับช่องโหว่", "สรุปผล security audit"],
       test_cases: [
         { name: "critical", input: { findings: [{ id: "A", title: "RCE", severity: "critical", exploitability: 10, exposure: 10, asset_value: 10 }] }, stdout_contains: "\"priority\":\"P0\"", expected_files: ["cybersecurity-audit.json", "cybersecurity-audit.md"] },
@@ -570,7 +570,7 @@ const skills = [
       runtime: "python",
       entrypoint: "main.py",
       dependencies: ["python-stdlib"],
-      execution_targets: ["sandbox", "macos_host"],
+      execution_targets: ["macos_lab", "macos_host"],
       trigger_examples: ["ค้นหา API จากเว็บนี้", "หา endpoint จาก URL", "วิเคราะห์ DevTools Network ของเว็บ"],
       test_cases: [
         { name: "fetch", input: { base_url: "https://owned.test", documents: ["fetch('/api/tickets')"] }, stdout_contains: "\"endpoint_count\":1", expected_files: ["api-contract.json", "api-contract.md"] },

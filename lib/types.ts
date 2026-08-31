@@ -4,7 +4,7 @@ export type BrowserMode = "off" | "alpha" | "chrome";
 export type PersonalityPreset = "professional_warm";
 export type EmojiStyle = "none" | "low" | "normal";
 export type ResponseStyle = "concise" | "balanced" | "detailed";
-export type AlphaModel = "qwen3:4b-instruct" | "qwen3.5:9b" | "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
+export type AlphaModel = "alpha:9b";
 
 export type ChatRole = "user" | "assistant";
 
@@ -47,7 +47,7 @@ export interface AppSettings {
   chrome_host_access: "all_urls";
   browser_confirmation_mode: "financial_and_credentials";
   search_provider: "hybrid";
-  code_execution_mode: "docker";
+  code_execution_mode: "host_lab";
   tool_idle_timeout_seconds: number;
   security_test_domains: string[];
   security_active_testing_enabled: boolean;
@@ -78,7 +78,7 @@ export interface SkillSummary {
   enabled: boolean;
   origin: SkillOrigin;
   runtime: "python" | "node";
-  execution_targets?: Array<"sandbox" | "macos_host">;
+  execution_targets?: Array<"macos_lab" | "macos_host">;
   dependencies: string[];
   trigger_examples: string[];
   installed_at: string;
@@ -94,7 +94,7 @@ export interface SkillSummary {
   usage_count: number;
   success_count: number;
   last_run_at: string;
-  last_execution_target?: "sandbox" | "macos_host";
+  last_execution_target?: "macos_lab" | "macos_host";
   last_error: string;
 }
 
@@ -120,6 +120,7 @@ export interface ToolHealth {
   chrome_extension_connected: boolean;
   full_disk_access: "not_requested" | "likely_available" | "unavailable";
   outputs_directory: string;
+  lab_root?: string;
   web_read_ready: boolean;
   search_ready: boolean;
   search_backend: "searxng" | "duckduckgo" | "none";
@@ -161,7 +162,7 @@ export interface HealthStatus {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   settings_version: 2,
-  model: "qwen3.5:9b",
+  model: "alpha:9b",
   web_search_enabled: true,
   search_mode: "auto",
   image_search_enabled: true,
@@ -169,7 +170,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   custom_blocked_terms: [],
   blocked_domains: [],
   allowed_domains: [],
-  max_context_tokens: 6144,
+  max_context_tokens: 8192,
   max_output_tokens: 1536,
   memory_enabled: true,
   auto_learn_enabled: true,
@@ -194,7 +195,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   chrome_host_access: "all_urls",
   browser_confirmation_mode: "financial_and_credentials",
   search_provider: "hybrid",
-  code_execution_mode: "docker",
+  code_execution_mode: "host_lab",
   tool_idle_timeout_seconds: 300,
   security_test_domains: [],
   security_active_testing_enabled: true,
@@ -274,7 +275,7 @@ export function sanitizeSettings(value: unknown, fallback = DEFAULT_SETTINGS): A
   const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const previousVersion = typeof input.settings_version === "number" ? input.settings_version : 1;
   const topics = (Array.isArray(input.blocked_topics) ? cleanList(input.blocked_topics) : fallback.blocked_topics).filter((topic) => TOPIC_IDS.has(topic));
-  const model = enumValue(input.model, ["qwen3:4b-instruct", "qwen3.5:9b", "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M"] as const, fallback.model);
+  const model = enumValue(input.model, ["alpha:9b"] as const, fallback.model);
   const fileAccessMode: FileAccessMode = ["off", "ask", "alpha_outputs", "selected_folders", "full_user_files"].includes(String(input.file_access_mode))
     ? input.file_access_mode as FileAccessMode
     : fallback.file_access_mode;
@@ -319,7 +320,7 @@ export function sanitizeSettings(value: unknown, fallback = DEFAULT_SETTINGS): A
     chrome_host_access: "all_urls",
     browser_confirmation_mode: "financial_and_credentials",
     search_provider: "hybrid",
-    code_execution_mode: "docker",
+    code_execution_mode: "host_lab",
     tool_idle_timeout_seconds: clampInteger(input.tool_idle_timeout_seconds, fallback.tool_idle_timeout_seconds, 60, 1800, 30),
     security_test_domains: Array.isArray(input.security_test_domains) ? cleanSecurityDomains(input.security_test_domains) : fallback.security_test_domains,
     security_active_testing_enabled: typeof input.security_active_testing_enabled === "boolean" ? input.security_active_testing_enabled : fallback.security_active_testing_enabled,

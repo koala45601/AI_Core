@@ -1,6 +1,6 @@
 # อัลฟ่า — Local-first AI สำหรับ Mac
 
-อัลฟ่าเป็นผู้ช่วย AI ภาษาไทยที่รัน Qwen3.5 ผ่าน Ollama บน Mac ของคุณ มีแชตแบบ streaming, แถบสถานะการทำงานและ token, สวิตช์อินเทอร์เน็ต, เครื่องมือสร้างไฟล์จริง, ค้นเว็บด้วย SearXNG, ควบคุมเบราว์เซอร์, ความจำที่ลบได้, Skill Lab และ Auto Learn ที่เลือกสิ่งเรียนจากรูปแบบงานล่าสุด
+อัลฟ่าเป็นผู้ช่วย AI ภาษาไทยที่รัน Qwen3.5 ผ่าน Ollama บน Mac ของคุณ มีแชตแบบ streaming, แถบสถานะการทำงานและ token, สวิตช์อินเทอร์เน็ต, เครื่องมือสร้างไฟล์จริง, ค้นเว็บด้วย DuckDuckGo, ควบคุมเบราว์เซอร์, ความจำที่ลบได้, Skill Lab และ Auto Learn ที่เลือกสิ่งเรียนจากรูปแบบงานล่าสุด
 
 ## External HDD
 
@@ -10,8 +10,8 @@
 - เปิดใหม่หลังเสียบดิสก์: ดับเบิลคลิก `เปิดอัลฟ่า.command`
 - ปิดโปรแกรม: ดับเบิลคลิก `ปิดอัลฟ่า.command`
 - ก่อนถอดดิสก์: ดับเบิลคลิก `ถอด petong อย่างปลอดภัย.command`
-- หากดิสก์หลุดระหว่างทำงาน อัลฟ่าจะหยุด Auto Learn, browser และ container ชั่วคราวโดยไม่ติดตั้งงานค้าง เมื่อเสียบกลับให้กดสคริปต์เปิดใหม่ ระบบจะตรวจ UUID และเชื่อมข้อมูลเดิมกลับเอง
-- SearXNG ใช้ Docker image ที่ฝัง config ไว้ใน image ไม่มี bind mount มายัง External HDD จึงไม่ทำให้ Docker แจ้ง path หายเมื่อถอดดิสก์
+- หากดิสก์หลุดระหว่างทำงาน อัลฟ่าจะหยุด Auto Learn และ browser โดยไม่ติดตั้งงานค้าง เมื่อเสียบกลับให้กดสคริปต์เปิดใหม่ ระบบจะตรวจ UUID และเชื่อมข้อมูลเดิมกลับเอง
+- งาน Run/Test และ Skill Lab เก็บใน `/Volumes/petong/Disk/AI_LAB/YYYY-MM-DD/` โดยแยกโฟลเดอร์ใหม่ทุกงาน ไม่สร้างไฟล์ Lab บนดิสก์ระบบ
 
 ## ความต้องการ
 
@@ -19,16 +19,15 @@
 - RAM 16GB
 - [Ollama](https://ollama.com/download/mac)
 - Node.js 22 ขึ้นไป
-- Docker Desktop สำหรับ SearXNG และ Docker sandbox
 - Google Chrome สำหรับ Alpha Browser หรือ Chrome Extension
 
 ## เริ่มใช้งานครั้งแรก
 
-1. ติดตั้ง Ollama, Node.js และ Docker Desktop
+1. ติดตั้ง Ollama และ Node.js
 2. ดับเบิลคลิก `เปิดอัลฟ่า.command` (หรือ `start-alpha.command`)
 3. เปิด `http://localhost:3000`
 
-ไฟล์เปิดอัลฟ่าจะสร้าง bearer token ส่วนตัว, เปิด Tool Service, เปิด Ollama และดาวน์โหลด `qwen3.5:9b` เป็นโมเดลหลักพร้อม `qwen3:4b-instruct` สำหรับโหมดเร็วหากยังไม่มี เมื่อเลิกใช้ให้ดับเบิลคลิก `ปิดอัลฟ่า.command` (หรือ `stop-alpha.command`) เพื่อหยุด Tool Service, Alpha Browser, SearXNG, เว็บเซิร์ฟเวอร์, ปลดโมเดลออกจาก RAM และปิด Ollama ไม่ให้ทำงานเบื้องหลัง สคริปต์จะไม่ปิด Docker Desktop หากผู้ใช้เปิดไว้ก่อนอัลฟ่า
+ไฟล์เปิดอัลฟ่าจะสร้าง bearer token ส่วนตัว, เปิด Tool Service และเปิด Ollama โดยใช้ `alpha:9b` (โปรไฟล์อัลฟ่าที่สร้างจาก Qwen3.5 9B) เป็นโมเดลเพียงตัวเดียว โมเดลจะถูกโหลดไว้แบบ standby ตลอดเวลาที่ Alpha เปิดและใช้ context สูงสุด 8,192 tokens ตามคำสั่งผู้ใช้ เมื่อเลิกใช้ให้ดับเบิลคลิก `ปิดอัลฟ่า.command` (หรือ `stop-alpha.command`) เพื่อหยุด Tool Service, Alpha Browser, เว็บเซิร์ฟเวอร์, ปลดโมเดลออกจาก RAM และปิด Ollama ไม่ให้ทำงานเบื้องหลัง Alpha ไม่เริ่มหรือควบคุม Docker Desktop
 
 ## การสร้างไฟล์จริง
 
@@ -36,18 +35,18 @@
 - รองรับ `.py`, `.js`, `.mjs`, `.html`, `.css`, `.json`, `.md`, `.txt`, `.csv` และ ZIP โปรเจกต์หลายไฟล์
 - ไฟล์เริ่มต้นอยู่ใน `outputs/Alpha Outputs`; ดาวน์โหลด เปิด Finder และ Run/Test ได้จากการ์ด
 - Python/JavaScript ถูกตรวจ syntax ก่อนบันทึก เขียนทับมี backup และ symbolic link/path traversal ถูกบล็อก
-- การลบย้ายลง Trash และการรันใน Docker sandbox ต้องถามยืนยันเสมอ
+- การลบย้ายลง Trash และการรันโปรแกรมต้องถามยืนยันเสมอ งาน Run/Test ทำจากสำเนาใน macOS Lab บน External HDD
 
 ## เว็บและเบราว์เซอร์
 
-- การค้นเว็บใช้ SearXNG local container ที่ `127.0.0.1:8888` พร้อม Safe Search strict และใช้ DuckDuckGo แบบข้อความเป็น fallback เมื่อ SearXNG ไม่พร้อม โดยไม่มี image search
+- การค้นเว็บใช้ DuckDuckGo แบบข้อความโดยตรง ไม่ต้องใช้ API key หรือ Docker ส่วนการอ่าน URL ทำผ่าน Tool Service โดยตรง
 - ปิดสวิตช์อินเทอร์เน็ตแล้วระบบจะบล็อก search/read/browser ก่อนส่งคำขอออกจากเครื่อง
 - เมื่อสวิตช์อินเทอร์เน็ตเปิดและ Search mode เป็น Auto อัลฟ่าสามารถค้น อ่าน URL และเปิดเว็บได้ทันทีโดยไม่ถามอนุมัติการเชื่อมต่อซ้ำ
 - Alpha Browser ใช้โปรไฟล์ Chrome แยกและเปิดไม่เกิน 3 แท็บ
 - หากต้องการใช้ Chrome เดิม ให้เปิด `chrome://extensions`, เปิด Developer mode, กด Load unpacked แล้วเลือกโฟลเดอร์ `chrome-extension`; จากนั้นเลือก “Chrome เดิม” ใน Settings และกรอกรหัสจับคู่ในหน้า Options ของ Extension
 - CAPTCHA, รหัสผ่าน, OTP, ข้อมูลบัตร และหน้าชำระเงินจะหยุดให้ผู้ใช้รับช่วง
 - API Discovery Lab อ่านรายการ `fetch`/XHR/form แบบเดียวกับ Network panel, ปิดบัง secret ในรายงาน และใช้ GET/HEAD/OPTIONS สำรวจได้อัตโนมัติ ส่วน request ที่แก้ข้อมูลต้องเปิด Active testing และเพิ่ม domain ทดสอบเองหนึ่งครั้ง
-- SearXNG และ Alpha Browser ปิดอัตโนมัติหลังว่าง 5 นาที (ปรับได้ 1–30 นาที)
+- Alpha Browser ปิดอัตโนมัติหลังว่างตามค่าที่กำหนด เพื่อลด RAM โดยไม่กระทบโมเดล 9B ที่ผู้ใช้สั่งให้ standby ตลอด
 
 หากต้องการเข้าถึง Mail, Messages หรือพื้นที่ที่ macOS ป้องกัน ต้องให้ Full Disk Access แก่ Node/Terminal ที่ใช้เปิด Alpha Tool Service ด้วยตนเองใน System Settings → Privacy & Security → Full Disk Access กฎของอัลฟ่ายังบล็อก Keychain, ฐานข้อมูลรหัสผ่าน และไฟล์ระบบเสมอ
 
@@ -62,7 +61,7 @@
 - การเรียนรู้อัตโนมัติเปิดเป็นค่าเริ่มต้น แต่กรองรหัสผ่าน OTP เลขบัตร token และข้อมูลอ่อนไหวออก
 - แชตยาวจะถูกสรุปเพื่อใช้ context อย่างประหยัด โดยข้อความฉบับเต็มยังอยู่จนกว่าผู้ใช้จะลบ
 - โหมดค้นคว้าจะค้นเว็บ 1–5 รอบ สรุปช่องว่าง สร้างคำค้นรอบถัดไป และหยุดเมื่อความครบถ้วนโดยประมาณถึง 85% หรือครบจำนวนรอบ
-- Skill Lab รับเป้าหมายและเกณฑ์ผ่าน สร้างสกิลใน Docker sandbox แบบปิดเครือข่าย อ่านผลทดสอบและแก้เองหลาย attempt โดยไม่ถามระหว่าง loop ติดตั้งเฉพาะสกิลที่ผ่าน และลบ environment, container, image และ test output ชั่วคราวเมื่อจบ
+- Skill Lab รับเป้าหมายและเกณฑ์ผ่าน สร้าง environment แยกบน Mac ใน `/Volumes/petong/Disk/AI_LAB/YYYY-MM-DD/` ใช้ Python virtual environment หรือ Node runtime ของเครื่อง อ่านผลทดสอบและแก้เองหลาย attempt โดยไม่ถามระหว่าง loop ติดตั้งเฉพาะสกิลที่ผ่าน และลบ environment ชั่วคราวที่ระบบเป็นเจ้าของเมื่อจบ
 - Auto Learn มีปุ่มเริ่ม 15 นาที–4 ชั่วโมงและปุ่ม “เรียกกลับและสรุปผล” ระบบวิเคราะห์งานจากแชตล่าสุด เช่น ถ้าเขียนโปรแกรมบ่อยจะให้น้ำหนักกับ framework, debugging, testing, architecture, UX, performance และ secure testing
 - ทุก Auto Learn session เทียบประวัติ 100 รายการ เลี่ยงหัวข้อซ้ำด้วย similarity และเมื่อหัวข้อใกล้เดิมต้องระบุพัฒนาการ/เกณฑ์วัดผลที่ลึกขึ้น ทุกสามรอบจะพยายามสร้างสกิลที่ทดสอบได้
 - หลังจบจะบันทึกรายงาน Markdown/JSON ลง `outputs/Alpha Outputs/Auto Learning`, นำความรู้สำเร็จเข้าความจำ และล้าง working environment เหลือเฉพาะรายงานกับสกิลที่ผ่าน
@@ -80,7 +79,7 @@ Qwen3.5 9B ให้คุณภาพดีกว่า Qwen3 4B Instruct แ�
 - `POST /api/messages/:id/feedback` — ให้คะแนนและบันทึกคำแก้ไข
 - `GET/PUT /api/settings` — อ่านและบันทึกการตั้งค่า
 - `POST /api/search` — ค้นเว็บแบบ text-only หลังผ่าน policy
-- `GET /api/health` — สถานะ Ollama, Docker, SearXNG, เบราว์เซอร์, Tool Service และ RAM
+- `GET /api/health` — สถานะ Ollama, macOS Lab, DuckDuckGo search, เบราว์เซอร์, Tool Service และ RAM
 - `GET /api/tools/health` — สถานะเครื่องมือและรหัสจับคู่ Extension
 - `POST /api/tools/confirm` — ยืนยันหรือปฏิเสธงานไฟล์/การรัน
 - `GET /api/artifacts/:id` — ดาวน์โหลดไฟล์ที่สร้างจริง

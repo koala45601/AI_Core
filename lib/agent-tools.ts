@@ -33,7 +33,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "host_fs",
-      description: "Read-only inspection of files and directories on the macOS host. Use this for file existence, path verification, stat/metadata, directory listing, and real read/write/create access checks. This tool never launches Docker or Skill Lab.",
+      description: "Read-only inspection of files and directories on the macOS host. Use this for file existence, path verification, stat/metadata, directory listing, and real read/write/create access checks. This tool never executes the inspected file.",
       parameters: {
         type: "object",
         required: ["action", "path"],
@@ -139,7 +139,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "web_search",
-      description: "Search the live web with local SearXNG. Use for current, obscure, or explicitly requested online information.",
+      description: "Search the live web with DuckDuckGo text search. Use for current, obscure, or explicitly requested online information.",
       parameters: { type: "object", required: ["query"], properties: { query: { type: "string" } } },
     },
   },
@@ -199,14 +199,14 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "run_learned_skill",
-      description: "Run an installed learned skill. Dual-runtime skills can use macOS host automatically when Full local access is enabled; otherwise they run in Docker sandbox. First use list_learned_skills to get the exact skill_id.",
+      description: "Run an installed learned skill. By default it runs in a dated macOS Lab folder under /Volumes/petong/Disk/AI_LAB; skills that need full machine access can use macOS host when Full local access is enabled. First use list_learned_skills to get the exact skill_id.",
       parameters: {
         type: "object",
         required: ["skill_id", "input"],
         properties: {
           skill_id: { type: "string" },
           input: { type: "object", description: "Structured input for the learned skill" },
-          execution_target: { type: "string", enum: ["auto", "sandbox", "macos_host"], description: "Use auto unless the task explicitly requires isolation or real Mac access" },
+          execution_target: { type: "string", enum: ["auto", "macos_lab", "macos_host"], description: "Use auto unless the task explicitly requires full Mac access" },
         },
       },
     },
@@ -216,14 +216,14 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "run_host_artifact",
-      description: "Run a canonical Alpha workspace artifact directly on the user's macOS host when the task genuinely needs real Mac hardware, local network interfaces, local services, filesystem state, or installed CLI tools. This is not Docker. When Settings uses Full user-file access (`full_user_files`), persistent local authority is already granted and repeated host-action approval is skipped; otherwise this tool requests approval. Do not use it for ordinary unit/syntax tests that belong in run_artifact.",
+      description: "Run a canonical Alpha workspace artifact directly on the user's macOS host when the task genuinely needs real Mac hardware, local network interfaces, local services, filesystem state, or installed CLI tools. When Settings uses Full user-file access (`full_user_files`), persistent local authority is already granted and repeated host-action approval is skipped; otherwise this tool requests approval. Do not use it for ordinary unit/syntax tests that belong in run_artifact.",
       parameters: {
         type: "object",
         required: ["path"],
         properties: {
           path: { type: "string", description: "Absolute canonical artifact path under the Alpha workspace" },
           args: { type: "array", maxItems: 32, items: { type: "string" }, description: "Argument array passed directly to the interpreter; never shell syntax" },
-          reason: { type: "string", description: "Why this task needs the real Mac host instead of Docker" },
+          reason: { type: "string", description: "Why this task needs full Mac access instead of the dated macOS Lab" },
           timeout_seconds: { type: "number", minimum: 1, maximum: 600 },
         },
       },
@@ -233,7 +233,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "run_artifact",
-      description: "Run a previously created Python or JavaScript artifact in a network-disabled Docker sandbox. This always requires user confirmation.",
+      description: "Copy and run a previously created Python or JavaScript artifact in a dated macOS Lab folder under /Volumes/petong/Disk/AI_LAB. This always requires user confirmation.",
       parameters: { type: "object", required: ["artifact_id"], properties: { artifact_id: { type: "string" } } },
     },
   },
@@ -247,14 +247,14 @@ export const TOOL_LABELS: Record<string, string> = {
   install_packages: "กำลังเตรียมติดตั้ง dependency ที่ขาดทั้งหมด",
   install_package: "กำลังเตรียมติดตั้งโปรแกรมที่ขาด",
   install_packages: "กำลังเตรียม dependency ที่ขาดทั้งหมด",
-  web_search: "กำลังค้นเว็บด้วย SearXNG",
+  web_search: "กำลังค้นเว็บด้วย DuckDuckGo",
   web_read: "กำลังอ่านหน้าเว็บ",
   browser_action: "กำลังควบคุมเบราว์เซอร์",
   api_discovery: "กำลังวิเคราะห์ Network และ API ของเว็บทดสอบ",
   list_learned_skills: "กำลังตรวจทักษะที่เรียนแล้ว",
   run_learned_skill: "กำลังใช้ทักษะที่เรียนแล้ว",
   run_host_artifact: "กำลังเตรียมรันงานบน Mac จริง",
-  run_artifact: "กำลังเตรียม Docker sandbox",
+  run_artifact: "กำลังเตรียม macOS Lab",
 };
 
 export const TOOL_SYSTEM_INSTRUCTIONS = `
@@ -263,21 +263,20 @@ export const TOOL_SYSTEM_INSTRUCTIONS = `
 - โปรแกรมใหม่ทุกโปรแกรมต้องสร้างใน /Volumes/petong/Disk/AI/Program_Create/<ชื่อโปรแกรม>/ โดยไม่ส่ง destination เอง ระบบจะตั้งชื่อโฟลเดอร์ไม่ซ้ำและไม่เขียนทับของเก่า
 - งานสร้างโปรแกรมให้พิจารณา Python เป็นตัวเลือกแรก แต่ไม่จำกัดภาษา เฟรมเวิร์ก library runtime หรือการทำโปรเจกต์หลายภาษา; เลือก Java/Swift/JavaScript/TypeScript/Go/Rust และ FastAPI/Django/Flask/React/Next.js/Spring/Electron/Playwright/Selenium หรือเครื่องมืออื่นได้อิสระเมื่อเหมาะกว่า พร้อมสร้าง manifest dependency และ start script ที่ติดตั้งสิ่งที่ขาดไว้เฉพาะในโฟลเดอร์โปรแกรม
 - หลัง create_files สำเร็จ ต้องจำ path จากผล tool และบอกตำแหน่งไฟล์จริงในคำตอบ ห้ามเดาพาธ
-- alpha-beta8-permission-domains-v1: แยก permission domain ให้ชัด: code_execution_mode="docker" หมายถึงเฉพาะการรันโค้ดผ่าน run_artifact/Skill Lab ไม่ได้หมายความว่าไฟล์ของผู้ใช้หรือ workspace อยู่ใน Docker
+- code_execution_mode="host_lab" หมายถึง run_artifact และ Skill Lab จะทำงานกับสำเนาใน /Volumes/petong/Disk/AI_LAB/<วันที่> บน Mac เครื่องนี้
 - create_files, manage_file และ host_fs เป็นเครื่องมือ macOS host; เมื่อ path อยู่ใน workspace ของ Alpha หรืออยู่ในขอบเขต file_access_mode ให้ทำกับ host โดยตรง ห้ามย้ายไป sandbox เอง
-- การสร้างไฟล์และการรันไฟล์เป็นคนละขั้น: create_files ต้องสร้าง canonical Artifact บน host ก่อน; run_artifact เป็นเพียงการรันสำเนา/การ mount ใน sandbox และห้ามเปลี่ยน canonical host path ของ Artifact
-- alpha-beta10-host-execution-v1: Sandbox ไม่ใช่สภาพแวดล้อมหลักของอัลฟ่า แต่เป็น isolation domain สำหรับทดสอบโค้ดที่ไม่จำเป็นต้องแตะเครื่องจริงเท่านั้น
-- ถ้างานต้องใช้ hardware, Wi-Fi/network interface, local service, installed CLI หรือ filesystem/runtime state ของ Mac จริง ให้ใช้ run_host_artifact หลังสร้าง Artifact บน host และขออนุญาตผู้ใช้ ห้ามสรุปว่างานทำจริงไม่ได้เพียงเพราะ run_artifact เป็น Docker
-- run_host_artifact และ run_artifact เป็นคนละ execution domain: งานทดสอบโค้ดทั่วไป -> Docker; งานที่ต้อง interact กับ Mac จริง -> macOS host หลัง approval
+- การสร้างไฟล์และการรันไฟล์เป็นคนละขั้น: create_files ต้องสร้าง canonical Artifact บน host ก่อน; run_artifact จะคัดลอกไปยัง macOS Lab ตามวันที่และห้ามเปลี่ยน canonical host path ของ Artifact
+- ถ้างานต้องใช้ hardware, Wi-Fi/network interface, local service, installed CLI หรือ filesystem/runtime state นอก AI_LAB ให้ใช้ run_host_artifact หลังสร้าง Artifact บน host และทำตาม permission ที่ตั้งไว้
+- run_host_artifact และ run_artifact เป็นคนละ execution scope: งานทดสอบโค้ดทั่วไป -> macOS Lab; งานที่ต้อง interact กับ Mac ทั้งเครื่อง -> macOS host
 - alpha-beta11-full-host-permission-v1: ถ้า file_access_mode=full_user_files ให้ถือว่าเป็น persistent Full local permission สำหรับ host actions ที่ผ่าน validation แล้ว: run_host_artifact และ install_package/install_packages ทำต่อได้ทันทีโดยไม่สร้าง approval ซ้ำ
 - Full permission ไม่ยกเลิกขอบเขตความปลอดภัยของระบบ: ยังต้องบล็อก .git, .env*, .dev.vars, macOS system roots, symlink escape, invalid artifact, invalid package/formula และ security target ที่อยู่นอก scope
 - ถ้าไม่ใช่ full_user_files ให้ใช้ approval flow เดิม และแสดง WAITING_APPROVAL ให้ชัดเจน
 - ห้ามใช้ run_host_artifact เพื่อเช็คว่าไฟล์มีอยู่ไหมหรือดู path; งาน metadata ใช้ host_fs โดยตรง และงาน package ใช้ install_package/install_packages
 - งาน security/network ที่ผู้ใช้ยืนยันว่าเป็นระบบหรือ lab ของตนเอง สามารถใช้ host-native execution เมื่อจำเป็นต่อ hardware/local interface จริง แต่ต้องคง target scope ที่ได้รับอนุญาตและอ้างผลจากเครื่องมือจริงเท่านั้น
-- ห้ามสรุปว่าไม่มีสิทธิ์เขียนไฟล์บน Mac เพียงเพราะ execution mode เป็น Docker; ต้องใช้ผล create_files/host_fs/file_access_mode เป็นข้อเท็จจริงเท่านั้น
-- เมื่อผู้ใช้ถามว่าไฟล์/โฟลเดอร์มีจริงไหม, เช็ค path, หาไฟล์ไม่เจอ, ตรวจ metadata หรือขอดูรายการไฟล์ ต้องใช้ host_fs บน macOS host โดยตรง ห้ามใช้ run_artifact, run_learned_skill, Skill Lab หรือ Docker สำหรับงานตรวจ filesystem metadata
+- ห้ามสรุปว่าไม่มีสิทธิ์เขียนไฟล์บน Mac เพียงเพราะใช้ macOS Lab; ต้องใช้ผล create_files/host_fs/file_access_mode เป็นข้อเท็จจริงเท่านั้น
+- เมื่อผู้ใช้ถามว่าไฟล์/โฟลเดอร์มีจริงไหม, เช็ค path, หาไฟล์ไม่เจอ, ตรวจ metadata หรือขอดูรายการไฟล์ ต้องใช้ host_fs บน macOS host โดยตรง ห้ามใช้ run_artifact, run_learned_skill หรือ Skill Lab สำหรับงานตรวจ filesystem metadata
 - ถ้า host_fs คืน exists=false ให้รายงาน NOT_FOUND ตามจริง ห้ามเดาว่า External Drive หลุด; ถ้า path อยู่ใต้ appDir ที่ Alpha กำลังรันอยู่ ให้ถือว่า storage state ต้องยืนยันจาก host tool เท่านั้น
-- alpha-beta12-host-access-routing-v1: คำถามเรื่องการเข้าถึง/read/write/permission/create capability ของ /Volumes/... หรือ /Users/... ต้องเชื่อผล host_fs action=access เท่านั้น; ห้ามอ้างว่า Sandbox/Docker ทำให้แตะ Host ไม่ได้ถ้า host_fs ยังไม่ได้คืน error จริง
+- คำถามเรื่องการเข้าถึง/read/write/permission/create capability ของ /Volumes/... หรือ /Users/... ต้องเชื่อผล host_fs action=access เท่านั้น; ห้ามอ้างว่า macOS Lab ทำให้แตะ Host ไม่ได้ถ้า host_fs ยังไม่ได้คืน error จริง
 - เมื่อ host_filesystem_ready=true ห้ามบอกให้ผู้ใช้ไปเปิด Terminal เพียงเพื่อเช็ค path/access ที่ host_fs ตรวจได้เอง
 - ใช้ manage_file เมื่อผู้ใช้ต้องการอ่าน แก้ ย้าย ZIP เปิดใน Finder หรือลบไฟล์จริง ลบได้เฉพาะเมื่อระบบขอและผู้ใช้ยืนยัน
 - ก่อนบอกว่า Mac ขาด hardware, driver, permission, runtime หรือโปรแกรม ต้องเรียก system_capability เพื่อตรวจเครื่องจริงก่อน ห้ามเดาจากข้อจำกัดทั่วไปของแพลตฟอร์ม

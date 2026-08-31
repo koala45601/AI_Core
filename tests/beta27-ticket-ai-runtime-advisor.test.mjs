@@ -121,7 +121,8 @@ test("launcher rejects a stale Tool Service and synchronizes the installed ticke
   assert.match(launcher, /scripts\/sync-bundled-skills\.mjs/);
   assert.match(launcher, /"app_version":"'"\$ALPHA_APP_VERSION"'"/);
   assert.match(launcher, /warm_primary_model/);
-  assert.match(launcher, /"keep_alive":-1/);
+  assert.match(launcher, /OLLAMA_MAX_LOADED_MODELS=1/);
+  assert.match(launcher, /OLLAMA_KEEP_ALIVE=-1/);
 
   const temporary = await mkdtemp(join(tmpdir(), "alpha-beta27-sync-"));
   const skillDir = join(temporary, "outputs", "Alpha Outputs", "Learned Skills", "concert-ticket-purchase-assistant");
@@ -157,4 +158,17 @@ test("Tool Service passes its configured Ollama endpoint to generated ticket run
   assert.match(server, /ollamaBaseUrl,/);
   assert.match(manager, /ollamaBaseUrl = "http:\/\/127\.0\.0\.1:11435"/);
   assert.match(manager, /ALPHA_OLLAMA_BASE_URL: String\(ollamaBaseUrl/);
+});
+
+test("Ticket Studio never leaves Create and Run as a silent no-op after an interrupted request", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const service = await readFile(new URL("../tool-service/server.mjs", import.meta.url), "utf8");
+  assert.match(page, /ticketRunPendingSinceRef/);
+  assert.match(page, /stalePendingLock = ticketStage !== "building" \|\| pendingAge > 120_000/);
+  assert.match(page, /A hot reload, interrupted fetch, or crashed runtime must never leave/);
+  assert.match(page, /กรุณาเลือกคอนเสิร์ตก่อนสร้างบอท/);
+  assert.match(page, /กำลังสร้างหรือเริ่ม Ticket Bot อยู่ กรุณารอผลลัพธ์จากคำสั่งเดิม/);
+  assert.match(service, /async function ensureBundledSkillCurrent\(id, directory\)/);
+  assert.match(service, /installed !== source/);
+  assert.match(service, /await ensureBundledSkillCurrent\(id, directory\)/);
 });

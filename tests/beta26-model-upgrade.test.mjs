@@ -5,18 +5,17 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, root), "utf8");
 
-test("14B abliterated remains optional while benchmarked 9B stays the default", async () => {
+test("9B is the only selectable and downloadable model", async () => {
   const [types, page, launcher] = await Promise.all([
     source("lib/types.ts"),
     source("app/page.tsx"),
     source("start-alpha.command"),
   ]);
-  const model = "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
-  assert.match(types, new RegExp(model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(types, /Qwen3-14B|qwen3:4b-instruct/);
   assert.match(types, /model: "qwen3\.5:9b"/);
-  assert.match(page, /Qwen3 14B Abliterated Q4/);
-  assert.match(page, /benchmark 85\/100 เท่ากับ 14B/);
-  assert.doesNotMatch(launcher, /ALPHA_14B_MODEL/);
+  assert.match(page, /Qwen3\.5 9B/);
+  assert.doesNotMatch(page, /Qwen3 14B|Qwen3 4B/);
+  assert.doesNotMatch(launcher, /qwen3:4b-instruct|Qwen3-14B/);
 });
 
 test("model benchmark measures Thai context, reasoning, code, JSON and real tool calling", async () => {
@@ -29,9 +28,10 @@ test("model benchmark measures Thai context, reasoning, code, JSON and real tool
   assert.match(benchmark, /recommendation/);
 });
 
-test("14B chat and tool planning cap context at 6144 and avoid the empty thinking-only response", async () => {
+test("9B chat and tool planning use the configured 8192-token context and stay resident", async () => {
   const ollama = await source("lib/ollama.ts");
-  assert.match(ollama, /largeLocalModel/);
-  assert.match(ollama, /Math\.min\(6144, configuredCtx\)/);
-  assert.match(ollama, /think: !largeLocalModel/);
+  assert.doesNotMatch(ollama, /largeLocalModel|24_576|16_384/);
+  assert.match(ollama, /Math\.min\(8192, Math\.max\(4096/);
+  assert.match(ollama, /keep_alive: -1/);
+  assert.doesNotMatch(ollama, /keep_alive: "5m"/);
 });

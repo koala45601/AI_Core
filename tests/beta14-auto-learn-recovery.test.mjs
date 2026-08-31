@@ -59,7 +59,7 @@ test("beta14 repairs an already-patched legacy runtime", async () => {
     await execFileAsync(process.execPath, [resolve(root, "scripts/apply-beta14-auto-learn-recovery.mjs"), temporary]);
     const repaired = await fs.readFile(ollamaPath, "utf8");
     assert.doesNotMatch(repaired, /deepWorkerOptions\(settings, deepWorker\.numPredict\)/);
-    assert.match(repaired, /const deepWorker = \{ think: false, numCtx: Math\.min\(settings\.max_context_tokens, 4096\), numPredict: Math\.min\(1200/);
+    assert.match(repaired, /const deepWorker = \{ think: false, numCtx: Math\.min\(8192, Math\.max\(4096, settings\.max_context_tokens \|\| 8192\)\), numPredict: Math\.min\(1200/);
     assert.match(repaired, /num_predict: deepWorker\.numPredict/);
     assert.equal(JSON.parse(await fs.readFile(resolve(temporary, "package.json"), "utf8")).version, "1.1.0-beta.14");
   } finally {
@@ -125,7 +125,7 @@ test("requested security skills are verified dual-runtime installers", async () 
   assert.match(installer, /name: "skill_lab_test"/);
   assert.match(installer, /hidden_test_cases/);
   assert.match(installer, /verification_status !== "verified"/);
-  assert.match(installer, /execution_targets: \["sandbox", "macos_host"\]/);
+  assert.match(installer, /execution_targets: \["macos_lab", "macos_host"\]/);
   assert.match(installer, /id: "concert-ticket-purchase-assistant"[\s\S]+?execution_targets: \["macos_host"\]/);
   assert.match(installer, /needs_event_selection/);
   assert.match(installer, /available_event_choices/);
@@ -160,13 +160,13 @@ test("learned skill runner selects macOS host only for dual-runtime skills in Fu
   assert.match(server, /needs_user_clarification: ambiguous_roles\.length > 0/);
   assert.match(server, /const programCreateDir = resolve\(appDir, "Program_Create"\)/);
   assert.match(server, /async function inspectBrowserEvents\(page\)/);
-  assert.match(server, /skipTestOutput && relativePath === "\.test-output"/);
+  assert.match(server, /skipTestOutput && \["\.test-output", "\.alpha-runtime"\]\.includes\(relativePath\)/);
   assert.match(server, /entry\.name\.startsWith\("\._"\)/);
   assert.match(server, /entry\.name === "\.DS_Store"/);
   assert.match(server, /listFilesRecursive\(candidateDirectory, "", true\)/);
   assert.match(server, /fs\.access\(join\(destination, skill\.entrypoint\)\)/);
   assert.match(server, /while \(await fs\.access\(requestedDestination\)/);
-  assert.match(types, /execution_targets\?: Array<"sandbox" \| "macos_host">/);
+  assert.match(types, /execution_targets\?: Array<"macos_lab" \| "macos_host">/);
 });
 
 test("Beta14 launcher applies every runtime patch and installs missing core skills", async () => {

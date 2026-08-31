@@ -21,9 +21,9 @@ function replaceRequired(source, before, after, alreadyPresent, label) {
 }
 
 const workerRepairs = [
-  ["export async function designSkillGoal(", "export async function designHiddenSkillTests(", 'const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 4096), numPredict: Math.min(1200, settings.max_output_tokens), timeoutMs: 240_000 };'],
-  ["export async function designHiddenSkillTests(", "export async function buildSkillAttempt(", 'const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 4096), numPredict: Math.min(1000, settings.max_output_tokens), timeoutMs: 240_000 };'],
-  ["export async function buildSkillAttempt(", "export async function synthesizeResearchRound(", 'const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 6144), numPredict: Math.min(3200, Math.max(1800, settings.max_output_tokens * 2)), timeoutMs: 360_000 };'],
+  ["export async function designSkillGoal(", "export async function designHiddenSkillTests(", 'const deepWorker = { think: false, numCtx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), numPredict: Math.min(1200, settings.max_output_tokens), timeoutMs: 240_000 };'],
+  ["export async function designHiddenSkillTests(", "export async function buildSkillAttempt(", 'const deepWorker = { think: false, numCtx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), numPredict: Math.min(1000, settings.max_output_tokens), timeoutMs: 240_000 };'],
+  ["export async function buildSkillAttempt(", "export async function synthesizeResearchRound(", 'const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 8192), numPredict: Math.min(3200, Math.max(1800, settings.max_output_tokens * 2)), timeoutMs: 360_000 };'],
   ["export async function synthesizeResearchRound(", "export async function unloadModel(", "const deepWorker = deepWorkerOptions(settings, Math.min(settings.max_output_tokens, 1200));"],
 ];
 
@@ -363,7 +363,7 @@ if (await update("tool-service/server.mjs", (source) => {
   source = replaceRequired(
     source,
     `  if (!tests.length) throw new Error("Skill Lab ต้องมี test case อย่างน้อย 1 รายการ");\n  return {`,
-    `  if (!tests.length) throw new Error("Skill Lab ต้องมี test case อย่างน้อย 1 รายการ");\n  const executionTargets = [...new Set((Array.isArray(raw?.execution_targets) ? raw.execution_targets : ["sandbox"])\n    .map(String).filter((target) => ["sandbox", "macos_host"].includes(target)))];\n  if (!executionTargets.length) executionTargets.push("sandbox");\n  return {`,
+    `  if (!tests.length) throw new Error("Skill Lab ต้องมี test case อย่างน้อย 1 รายการ");\n  const executionTargets = [...new Set((Array.isArray(raw?.execution_targets) ? raw.execution_targets : ["macos_lab"])\n    .map(String).filter((target) => ["macos_lab", "macos_host"].includes(target)))];\n  if (!executionTargets.length) executionTargets.push("macos_lab");\n  return {`,
     "const executionTargets = [...new Set",
     "dual-runtime manifest validation",
   );
@@ -398,7 +398,7 @@ if (await update("tool-service/server.mjs", (source) => {
   source = replaceRequired(
     source,
     `  const skill = validateSkillDefinition(savedManifest);\n  const input = args.input && typeof args.input === "object" ? args.input : { prompt: String(args.input || "") };`,
-    `  const skill = validateSkillDefinition(savedManifest);\n  const targets = Array.isArray(savedManifest.execution_targets) ? savedManifest.execution_targets.map(String) : ["sandbox"];\n  const requestedTarget = ["auto", "sandbox", "macos_host"].includes(String(args.execution_target)) ? String(args.execution_target) : "auto";\n  const hostAllowed = targets.includes("macos_host") && settings.file_access_mode === "full_user_files";\n  if (requestedTarget !== "auto" && !targets.includes(requestedTarget)) throw new Error(\`สกิลนี้ไม่ได้รับรองการรันบน \${requestedTarget}\`);\n  if (requestedTarget === "macos_host" && !hostAllowed) throw new Error("ต้องเปิด Full local access ก่อนรันสกิลบน macOS host");\n  if (requestedTarget === "auto" && !hostAllowed && !targets.includes("sandbox")) throw new Error("สกิลนี้รันบน macOS host เท่านั้น ต้องเปิด Full local access ก่อนใช้งาน");\n  const executionTarget = requestedTarget === "sandbox" ? "sandbox" : hostAllowed ? "macos_host" : "sandbox";\n  const input = args.input && typeof args.input === "object" ? args.input : { prompt: String(args.input || "") };`,
+    `  const skill = validateSkillDefinition(savedManifest);\n  const targets = Array.isArray(savedManifest.execution_targets) ? savedManifest.execution_targets.map(String) : ["macos_lab"];\n  const requestedTarget = ["auto", "macos_lab", "macos_host"].includes(String(args.execution_target)) ? String(args.execution_target) : "auto";\n  const hostAllowed = targets.includes("macos_host") && settings.file_access_mode === "full_user_files";\n  if (requestedTarget !== "auto" && !targets.includes(requestedTarget)) throw new Error(\`สกิลนี้ไม่ได้รับรองการรันบน \${requestedTarget}\`);\n  if (requestedTarget === "macos_host" && !hostAllowed) throw new Error("ต้องเปิด Full local access ก่อนรันสกิลบน macOS host");\n  if (requestedTarget === "auto" && !hostAllowed && !targets.includes("macos_lab")) throw new Error("สกิลนี้รันบน macOS host เท่านั้น ต้องเปิด Full local access ก่อนใช้งาน");\n  const executionTarget = requestedTarget === "macos_lab" ? "macos_lab" : hostAllowed ? "macos_host" : "macos_lab";\n  const input = args.input && typeof args.input === "object" ? args.input : { prompt: String(args.input || "") };`,
     "const hostAllowed = targets.includes(\"macos_host\")",
     "dual-runtime selection",
   );
@@ -420,7 +420,7 @@ if (await update("tool-service/server.mjs", (source) => {
     source,
     "    return { ok: succeeded, skill: { id: skill.id, name: skill.name },",
     "    return { ok: succeeded, execution_target: executionTarget, skill: { id: skill.id, name: skill.name },",
-    "execution_target: executionTarget, skill:",
+    "execution_target: executionTarget,",
     "execution target result",
   );
   source = replaceRequired(
@@ -465,16 +465,16 @@ if (await update("lib/agent-tools.ts", (source) => {
   );
   source = replaceRequired(
     source,
-    "Run an installed learned skill in a network-disabled Docker sandbox. First use list_learned_skills to get the exact skill_id.",
-    "Run an installed learned skill. Dual-runtime skills can use macOS host automatically when Full local access is enabled; otherwise they run in Docker sandbox. First use list_learned_skills to get the exact skill_id.",
-    "Dual-runtime skills can use macOS host automatically",
+    "Run an installed learned skill in an isolated runtime. First use list_learned_skills to get the exact skill_id.",
+    "Run an installed learned skill. Dual-runtime skills can use macOS host automatically when Full local access is enabled; otherwise they run in the dated macOS Lab. First use list_learned_skills to get the exact skill_id.",
+    "dated macOS Lab folder under /Volumes/petong/Disk/AI_LAB",
     "dual-runtime tool description",
   );
   source = replaceRequired(
     source,
     `          input: { type: "object", description: "Structured input for the learned skill" },\n        },`,
-    `          input: { type: "object", description: "Structured input for the learned skill" },\n          execution_target: { type: "string", enum: ["auto", "sandbox", "macos_host"], description: "Use auto unless the task explicitly requires isolation or real Mac access" },\n        },`,
-    "execution_target: { type: \"string\", enum: [\"auto\", \"sandbox\", \"macos_host\"]",
+    `          input: { type: "object", description: "Structured input for the learned skill" },\n          execution_target: { type: "string", enum: ["auto", "macos_lab", "macos_host"], description: "Use auto unless the task explicitly requires the dated Lab or full Mac access" },\n        },`,
+    "execution_target: { type: \"string\", enum: [\"auto\", \"macos_lab\", \"macos_host\"]",
     "execution target tool schema",
   );
   source = replaceRequired(
@@ -619,15 +619,15 @@ if (await update("lib/types.ts", (source) => {
   source = replaceRequired(
     source,
     `  runtime: "python" | "node";\n  dependencies: string[];`,
-    `  runtime: "python" | "node";\n  execution_targets?: Array<"sandbox" | "macos_host">;\n  dependencies: string[];`,
-    "execution_targets?: Array<\"sandbox\" | \"macos_host\">",
+    `  runtime: "python" | "node";\n  execution_targets?: Array<"macos_lab" | "macos_host">;\n  dependencies: string[];`,
+    "execution_targets?: Array<\"macos_lab\" | \"macos_host\">",
     "skill execution target type",
   );
   source = replaceRequired(
     source,
     `  last_run_at: string;\n  last_error: string;`,
-    `  last_run_at: string;\n  last_execution_target?: "sandbox" | "macos_host";\n  last_error: string;`,
-    "last_execution_target?: \"sandbox\" | \"macos_host\"",
+    `  last_run_at: string;\n  last_execution_target?: "macos_lab" | "macos_host";\n  last_error: string;`,
+    "last_execution_target?: \"macos_lab\" | \"macos_host\"",
     "last execution target type",
   );
   return source;
@@ -645,7 +645,7 @@ if (await update("tool-service/server.mjs", (source) => {
     source,
     '    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;\n    const absolute = join(directory, entry.name);\n    if (entry.isDirectory()) found.push(...await listFilesRecursive(absolute, relativePath));',
     '    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;\n    if (skipTestOutput && relativePath === ".test-output") continue;\n    const absolute = join(directory, entry.name);\n    if (entry.isDirectory()) found.push(...await listFilesRecursive(absolute, relativePath, skipTestOutput));',
-    'skipTestOutput && relativePath === ".test-output"',
+    'skipTestOutput && [".test-output", ".alpha-runtime"].includes(relativePath)',
     "test-output traversal skip",
   );
   source = replaceRequired(

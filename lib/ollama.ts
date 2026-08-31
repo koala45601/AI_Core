@@ -75,9 +75,7 @@ function adaptiveReasoningProfile(
   purpose: "chat" | "single" | "tool",
 ): AlphaReasoningProfile {
   const text = lastUserText(messages);
-  const largeLocalModel = settings.model === "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
-  const configuredCtx = Math.max(4096, settings.max_context_tokens || 6144);
-  const baseCtx = largeLocalModel ? Math.min(6144, configuredCtx) : configuredCtx;
+  const baseCtx = Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192));
   const basePredict = Math.max(768, settings.max_output_tokens || 1536);
   const deepIntent = /(วิเคราะห์|วางแผน|ออกแบบ|architecture|debug|bug|แก้โค้ด|เขียนโค้ด|โปรแกรม|security|cyber|pentest|wifi|wi-fi|wireless|audit|docker|api|database|incident|root cause|rca|reason|logic|หลายขั้น|workflow|agent|tool|ทดสอบ|ตรวจสอบ|เปรียบเทียบ|optimi[sz]e)/i.test(text);
   const mediumIntent = deepIntent || text.length > 700 || /(?:ทำไม|อย่างไร|ยังไง|อธิบาย|คิด|ประเมิน|recommend|แนะนำ)/i.test(text);
@@ -85,10 +83,10 @@ function adaptiveReasoningProfile(
   if (purpose === "tool") {
     return {
       tier: "deep",
-      think: !largeLocalModel,
-      numCtx: largeLocalModel ? baseCtx : Math.min(24_576, Math.max(baseCtx, 16_384)),
-      numPredict: largeLocalModel ? Math.min(1_536, basePredict) : Math.min(3_072, Math.max(basePredict, 2_048)),
-      timeoutMs: largeLocalModel ? 240_000 : 300_000,
+      think: true,
+      numCtx: baseCtx,
+      numPredict: Math.min(2_048, Math.max(basePredict, 1_536)),
+      timeoutMs: 300_000,
     };
   }
 
@@ -99,20 +97,20 @@ function adaptiveReasoningProfile(
   if (deepIntent) {
     return {
       tier: "deep",
-      think: !largeLocalModel,
-      numCtx: largeLocalModel ? baseCtx : Math.min(24_576, Math.max(baseCtx, 16_384)),
-      numPredict: largeLocalModel ? Math.min(1_536, basePredict) : Math.min(3_072, Math.max(basePredict, 2_048)),
-      timeoutMs: largeLocalModel ? 240_000 : 300_000,
+      think: true,
+      numCtx: baseCtx,
+      numPredict: Math.min(2_048, Math.max(basePredict, 1_536)),
+      timeoutMs: 300_000,
     };
   }
 
   if (mediumIntent || purpose === "single") {
     return {
       tier: "balanced",
-      think: !largeLocalModel,
-      numCtx: largeLocalModel ? baseCtx : Math.min(16_384, Math.max(baseCtx, 8_192)),
-      numPredict: largeLocalModel ? Math.min(1_536, basePredict) : Math.min(2_048, Math.max(basePredict, 1_536)),
-      timeoutMs: largeLocalModel ? 210_000 : 240_000,
+      think: true,
+      numCtx: baseCtx,
+      numPredict: Math.min(2_048, Math.max(basePredict, 1_536)),
+      timeoutMs: 240_000,
     };
   }
 
@@ -120,12 +118,11 @@ function adaptiveReasoningProfile(
 }
 
 function deepWorkerOptions(settings: AppSettings, requestedPredict: number) {
-  const largeLocalModel = settings.model === "hf.co/RootMonsteR/Qwen3-14B-Abliterated-GGUF:Q4_K_M";
   return {
-    think: !largeLocalModel,
-    numCtx: largeLocalModel ? Math.min(6144, Math.max(4096, settings.max_context_tokens || 6144)) : Math.min(24_576, Math.max(settings.max_context_tokens || 6144, 16_384)),
-    numPredict: largeLocalModel ? Math.min(1_536, Math.max(requestedPredict, settings.max_output_tokens || 1536)) : Math.min(4_096, Math.max(requestedPredict, settings.max_output_tokens || 1536)),
-    timeoutMs: largeLocalModel ? 240_000 : 300_000,
+    think: true,
+    numCtx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)),
+    numPredict: Math.min(2_048, Math.max(requestedPredict, settings.max_output_tokens || 1536)),
+    timeoutMs: 300_000,
   };
 }
 
@@ -137,8 +134,8 @@ export async function decideSearchWithModel(message: string, settings: AppSettin
       model: settings.model,
       stream: false,
       think: false,
-      keep_alive: "5m",
-      options: { num_ctx: 2048, num_predict: 4, temperature: 0 },
+      keep_alive: -1,
+      options: { num_ctx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), num_predict: 4, temperature: 0 },
       messages: [
         {
           role: "system",
@@ -167,7 +164,7 @@ export async function requestChatStream(
       messages,
       stream: true,
       think: reasoning.think,
-      keep_alive: "5m",
+      keep_alive: -1,
       options: {
         num_ctx: reasoning.numCtx,
         num_predict: reasoning.numPredict,
@@ -193,7 +190,7 @@ export async function requestChatOnce(
       messages,
       stream: false,
       think: reasoning.think,
-      keep_alive: "5m",
+      keep_alive: -1,
       options: {
         num_ctx: reasoning.numCtx,
         num_predict: reasoning.numPredict,
@@ -226,7 +223,7 @@ export async function requestToolPlan(
       tools: AGENT_TOOLS,
       stream: false,
       think: reasoning.think,
-      keep_alive: "5m",
+      keep_alive: -1,
       options: {
         num_ctx: reasoning.numCtx,
         num_predict: reasoning.numPredict,
@@ -252,8 +249,8 @@ export async function extractDurableMemory(
       model: settings.model,
       stream: false,
       think: false,
-      keep_alive: "5m",
-      options: { num_ctx: 2048, num_predict: 120, temperature: 0 },
+      keep_alive: -1,
+      options: { num_ctx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), num_predict: 120, temperature: 0 },
       messages: [
         {
           role: "system",
@@ -291,8 +288,8 @@ export async function extractDurableMemories(
       stream: false,
       think: false,
       format: "json",
-      keep_alive: "5m",
-      options: { num_ctx: 3072, num_predict: 500, temperature: 0 },
+      keep_alive: -1,
+      options: { num_ctx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), num_predict: 500, temperature: 0 },
       messages: [
         {
           role: "system",
@@ -337,8 +334,8 @@ export async function summarizeChat(
       model: settings.model,
       stream: false,
       think: false,
-      keep_alive: "5m",
-      options: { num_ctx: Math.min(settings.max_context_tokens, 6144), num_predict: 900, temperature: 0.1 },
+      keep_alive: -1,
+      options: { num_ctx: Math.min(settings.max_context_tokens, 8192), num_predict: 900, temperature: 0.1 },
       messages: [
         {
           role: "system",
@@ -554,13 +551,13 @@ export async function designSkillGoal(
   settings: AppSettings,
   signal?: AbortSignal,
 ): Promise<SkillPlanResult> {
-  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 4096), numPredict: Math.min(1200, settings.max_output_tokens), timeoutMs: 240_000 };
+  const deepWorker = { think: false, numCtx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), numPredict: Math.min(1200, settings.max_output_tokens), timeoutMs: 240_000 };
   const sourceText = evidence.slice(0, settings.search_result_limit || undefined).map((item) => `- ${item.title}: ${item.snippet}\n${item.url}`).join("\n\n");
-  const systemPrompt = `คุณเป็นสถาปนิก Skill Lab ของอัลฟ่า ออกแบบสเปกทักษะที่ทดสอบได้และรันแบบออฟไลน์ใน Docker
+  const systemPrompt = `คุณเป็นสถาปนิก Skill Lab ของอัลฟ่า ออกแบบสเปกทักษะที่ทดสอบได้และรันใน macOS Lab แยกที่ /Volumes/petong/Disk/AI_LAB/<วันที่>
 runtime ที่ใช้ได้: python หรือ node
 trusted dependency ids ที่ใช้ได้เท่านั้น: python-stdlib, python-pillow, python-numpy, node-stdlib
 โปรแกรมต้องรับ JSON จาก argv[1], ใช้ ALPHA_OUTPUT_DIR หากต้องสร้างไฟล์, ห้ามใช้ network ระหว่างรัน
-อนุญาตงาน cybersecurity เต็มรูปแบบเมื่อเป้าหมายระบุว่าเป็นโปรแกรมของผู้ใช้หรือ lab: code audit, fuzzing, static analysis, สร้าง proof-of-concept ใน sandbox และ regression test
+	อนุญาตงาน cybersecurity เต็มรูปแบบเมื่อเป้าหมายระบุว่าเป็นโปรแกรมของผู้ใช้หรือ lab: code audit, fuzzing, static analysis, สร้าง proof-of-concept ใน macOS Lab และ regression test
 หากเป้าหมายภายนอกไม่ได้รับอนุญาต ให้ออกแบบ lab จำลองที่ทดสอบเทคนิคได้โดยไม่แตะระบบจริง
 test_cases เป็น field บังคับ ต้องมีอย่างน้อย 2 รายการ${settings.skill_test_case_limit ? `และไม่เกิน ${settings.skill_test_case_limit} รายการ` : "โดยไม่มีเพดานตายตัว"}จากเกณฑ์ผู้ใช้ แต่ละรายการต้องมี stdout_contains ที่ไม่ว่าง หรือ expected_files ที่ระบุชื่อไฟล์จริง
 trigger_examples ต้องเป็น array ของข้อความเท่านั้น เช่น ["คำนวณค่าเฉลี่ยให้หน่อย"] ห้ามใส่ object
@@ -579,8 +576,8 @@ trigger_examples ต้องเป็น array ของข้อความ�
         stream: false,
         think: deepWorker.think,
         format: skillPlanSchema,
-        keep_alive: "5m",
-        options: { num_ctx: Math.min(settings.max_context_tokens, 4096), num_predict: Math.min(1200, settings.max_output_tokens), temperature: planAttempt === 1 ? 0.1 : 0 },
+        keep_alive: -1,
+        options: { num_ctx: deepWorker.numCtx, num_predict: Math.min(1200, settings.max_output_tokens), temperature: planAttempt === 1 ? 0.1 : 0 },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `เป้าหมาย:\n${objective}\n\nเกณฑ์สำเร็จ:\n${successCriteria || "ทำตามเป้าหมายได้จริงและผลทดสอบตรวจซ้ำได้"}\n\nข้อมูลจากเว็บ (อาจไม่มี):\n${sourceText || "ไม่มี"}${repair}` },
@@ -612,7 +609,7 @@ export async function designHiddenSkillTests(
   settings: AppSettings,
   signal?: AbortSignal,
 ): Promise<{ tests: SkillTestCase[]; prompt_tokens: number; response_tokens: number }> {
-  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 4096), numPredict: Math.min(1000, settings.max_output_tokens), timeoutMs: 240_000 };
+  const deepWorker = { think: false, numCtx: Math.min(8192, Math.max(4096, settings.max_context_tokens || 8192)), numPredict: Math.min(1000, settings.max_output_tokens), timeoutMs: 240_000 };
   const requested = settings.skill_hidden_test_runs;
   let promptTokens = 0;
   let responseTokens = 0;
@@ -626,8 +623,8 @@ export async function designHiddenSkillTests(
         stream: false,
         think: deepWorker.think,
         format: hiddenTestsSchema,
-        keep_alive: "5m",
-        options: { num_ctx: Math.min(settings.max_context_tokens, 4096), num_predict: Math.min(1000, settings.max_output_tokens), temperature: attempt === 1 ? 0.15 : 0 },
+        keep_alive: -1,
+        options: { num_ctx: deepWorker.numCtx, num_predict: Math.min(1000, settings.max_output_tokens), temperature: attempt === 1 ? 0.15 : 0 },
         messages: [
           {
             role: "system",
@@ -676,7 +673,7 @@ export async function buildSkillAttempt(
       content: `${file.content.slice(0, headLength)}\n# ... source middle omitted from repair prompt ...\n${file.content.slice(-tailLength)}`,
     };
   });
-  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 6144), numPredict: Math.min(3200, Math.max(1800, settings.max_output_tokens * 2)), timeoutMs: 360_000 };
+  const deepWorker = { think: false, numCtx: Math.min(settings.max_context_tokens, 8192), numPredict: Math.min(3200, Math.max(1800, settings.max_output_tokens * 2)), timeoutMs: 360_000 };
   const previousSource = JSON.stringify(promptFiles);
   let promptTokens = 0;
   let responseTokens = 0;
@@ -690,7 +687,7 @@ export async function buildSkillAttempt(
         stream: false,
         think: deepWorker.think,
         format: skillBuildSchema,
-        keep_alive: "5m",
+        keep_alive: -1,
         options: { num_ctx: deepWorker.numCtx, num_predict: Math.min(3600, Math.max(2200, settings.max_output_tokens * 2)), temperature: responseAttempt === 1 ? 0.15 : 0 },
         messages: [
           {
@@ -762,7 +759,7 @@ export async function synthesizeResearchRound(
       stream: false,
       think: deepWorker.think,
       format: "json",
-      keep_alive: "5m",
+      keep_alive: -1,
       options: {
         num_ctx: deepWorker.numCtx,
         num_predict: deepWorker.numPredict,

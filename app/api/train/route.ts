@@ -23,8 +23,8 @@ function streamError(message: string, status = 400) {
 }
 
 function classifySkillFailure(reason: string): "infrastructure" | "candidate_timeout" | "candidate_syntax" | "candidate_behavior" | "capability_gap" {
-  if (/(scandir|docker daemon|cannot connect|mount|resource busy|eagain|system error|tool service|ECONNREFUSED)/i.test(reason)) return "infrastructure";
-  if (/(หมดเวลารอ docker|timed?\s*out|timeout)/i.test(reason)) return "candidate_timeout";
+  if (/(scandir|mount|resource busy|eagain|system error|tool service|ECONNREFUSED|venv|python runtime|node runtime)/i.test(reason)) return "infrastructure";
+  if (/(หมดเวลารอ|timed?\s*out|timeout)/i.test(reason)) return "candidate_timeout";
   if (/(syntax|parse error|indentation|compile)/i.test(reason)) return "candidate_syntax";
   if (/(dependency|package|trusted catalog|ไม่อยู่ใน trusted)/i.test(reason)) return "capability_gap";
   return "candidate_behavior";
@@ -207,7 +207,7 @@ async function runSkillLab(
       }));
     }
 
-    controller.enqueue(event("status", { label: `Attempt ${attempt}: กำลังรัน test ใน Docker แบบปิดเครือข่าย`, round: attempt }));
+    controller.enqueue(event("status", { label: `Attempt ${attempt}: กำลังรัน test ใน macOS Lab ตามวันที่`, round: attempt }));
     let result: Record<string, unknown>;
     try {
       result = await executeTool("skill_lab_test", {
@@ -218,7 +218,7 @@ async function runSkillLab(
         origin, cleanup_run: attempt === maxAttempts,
       }, settings, signal);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "Docker test ทำงานไม่สำเร็จ";
+      const reason = error instanceof Error ? error.message : "macOS Lab test ทำงานไม่สำเร็จ";
       result = { ok: false, passed: false, reason, failure_kind: classifySkillFailure(reason) };
     }
     const tests = Array.isArray(result.tests) ? result.tests : [];

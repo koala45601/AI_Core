@@ -231,7 +231,22 @@ function safeApiEvidence(value: unknown): Array<Record<string, unknown>> {
 }
 
 function parseSkillOutput(result: ToolExecutionResult): Record<string, unknown> {
-  const stdout = asText(result.stdout, 20_000);
+  const structuredOutput = result.structured_output;
+  if (structuredOutput && typeof structuredOutput === "object" && !Array.isArray(structuredOutput)) {
+    return structuredOutput as Record<string, unknown>;
+  }
+  // Generated ticket plans include the discovered event catalogue and can
+  // legitimately exceed the small UI-oriented text limit. Truncating stdout
+  // before parsing turns a successfully verified project into an empty object
+  // and makes the build endpoint return a false 422.
+  const rawStdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
+  if (rawStdout) {
+    try {
+      const parsed = JSON.parse(rawStdout);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* fall through to JSON-lines output */ }
+  }
+  const stdout = rawStdout.slice(-2_000_000);
   const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean).reverse();
   for (const line of lines) {
     try {
