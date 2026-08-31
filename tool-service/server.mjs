@@ -806,6 +806,7 @@ async function inspectBrowserForm(page) {
     const id = element.getAttribute("id") || "";
     const name = element.getAttribute("name") || "";
     const dataButton = element.getAttribute("data-button") || "";
+    const price = element.getAttribute("data-price") || element.getAttribute("data-ticket-price") || element.getAttribute("data-amount") || element.getAttribute("data-ticket-amount") || element.getAttribute("price") || "";
     const href = element.getAttribute("href") || "";
     const onclick = element.getAttribute("onclick") || "";
     const targetMatch = onclick.match(/https?:\/\/[^'"\s)]+/i);
@@ -819,14 +820,14 @@ async function inspectBrowserForm(page) {
             ? `a[href="${CSS.escape(element.getAttribute("href"))}"]`
           : "";
     const options = element.tagName === "SELECT"
-      ? [...element.options].slice(0, 100).map((option) => ({ text: String(option.textContent || "").trim().slice(0, 160), value: String(option.value || "").slice(0, 160) }))
+      ? [...element.options].slice(0, 100).map((option) => ({ text: String(option.textContent || "").trim().slice(0, 160), value: String(option.value || "").slice(0, 160), price: option.getAttribute("data-price") || option.getAttribute("data-amount") || "" }))
       : [];
     return {
       tag: element.tagName.toLowerCase(), type: element.getAttribute("type") || "", id, name,
       autocomplete: element.getAttribute("autocomplete") || "", placeholder: element.getAttribute("placeholder") || "",
       aria_label: element.getAttribute("aria-label") || "", label: String(explicit || wrapping || element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
       context_text: String(element.closest("tr, li, .row, .showtime, .round, .event, article, section, div")?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 300),
-      selector, data_button: dataButton, href: href.slice(0, 2_000), target_url: String(targetMatch?.[0] || "").slice(0, 2_000), options,
+      selector, data_button: dataButton, price, data_price: price, href: href.slice(0, 2_000), target_url: String(targetMatch?.[0] || "").slice(0, 2_000), options,
       disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true" || element.classList.contains("disabled"), required: Boolean(element.required),
     };
   }));
@@ -848,6 +849,12 @@ async function inspectBrowserForm(page) {
           name: String(item.name || item.headline || ""),
           start_date: String(item.startDate || ""),
           sale_open_at: String(offers.validFrom || item.saleOpenAt || ""),
+          offers: {
+            price: offers.price,
+            lowPrice: offers.lowPrice,
+            highPrice: offers.highPrice,
+            priceRange: offers.priceRange,
+          },
         });
       }
       if (Array.isArray(item["@graph"])) item["@graph"].forEach(visit);
@@ -882,6 +889,7 @@ async function inspectBrowserForm(page) {
           const href = control?.getAttribute("href") || "";
           const targetMatch = onclick.match(/https?:\/\/[^'"\s)]+/i);
           const dataButton = control?.getAttribute("data-button") || "";
+          const price = control?.getAttribute("data-price") || control?.getAttribute("data-ticket-price") || control?.getAttribute("data-amount") || control?.getAttribute("data-ticket-amount") || control?.getAttribute("price") || "";
           const id = control?.getAttribute("id") || "";
           const label = String(control?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
           let branch = control;
@@ -910,6 +918,8 @@ async function inspectBrowserForm(page) {
             selectable: status === "open",
             selector,
             data_button: dataButton,
+            price,
+            data_price: price,
             target_url: String(targetUrl || "").slice(0, 2_000),
             disabled,
           };

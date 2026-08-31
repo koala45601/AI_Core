@@ -194,6 +194,7 @@ interface TicketFormInspection {
     ticket_status?: string;
     venue?: string;
     prices?: number[];
+    price_tiers?: Array<{ zone?: string; prices?: number[]; source?: string; evidence?: string }>;
     purchase_controls?: Array<{ selector?: string; label?: string }>;
     sale_entry_controls?: TicketPerformanceOption[];
     performance_options?: TicketPerformanceOption[];
@@ -395,6 +396,12 @@ function normalizedTicketPerformanceOptions(options?: TicketPerformanceOption[])
   });
 }
 
+function ticketFactPrices(facts?: TicketFormInspection["facts"]): number[] {
+  const direct = Array.isArray(facts?.prices) ? facts.prices : [];
+  const tierPrices = Array.isArray(facts?.price_tiers) ? facts.price_tiers.flatMap((tier) => Array.isArray(tier.prices) ? tier.prices : []) : [];
+  return [...new Set([...direct, ...tierPrices].filter((price) => Number.isFinite(price) && price >= 100 && price <= 1_000_000))].sort((left, right) => right - left);
+}
+
 function retainTicketPerformanceSelection(current: string, options: TicketPerformanceOption[], fallback = "") {
   if (!options.length) return current || fallback;
   const exact = options.find((option) => ticketPerformanceValue(option) === current);
@@ -423,7 +430,7 @@ function ticketRunLogLabel(text: string) {
     if (kind === "zone_switch") return `เปลี่ยนโซน: ${String(item.from_zone || "เดิม")} → ${String(item.to_zone || item.zone || "ถัดไป")}`;
     if (kind === "reservation_verified") return `ยืนยันการถือบัตรแล้ว ${String(item.selected || item.wanted || 0)}/${String(item.wanted || 0)}`;
     if (kind === "queue_analysis") return item.queue_position_verified ? `คิวลำดับ ${String(item.queue_position)}` : "กำลังรักษาคิวเดิม · ห้าม refresh";
-    if (kind === "recovery") return `Recovery: ${String(item.status || item.action || "กำลังแก้สถานะ")}`;
+    if (kind === "recovery") return item.status === "NO_COMPLETE_SET_FOR_SELECTED_PRICE" ? `Recovery: ยังไม่มีชุดครบตามราคา ${Array.isArray(item.preferred_prices) ? item.preferred_prices.map((price) => Number(price).toLocaleString()).join(" / ") : "ที่เลือก"} · กำลังสแกน/เปลี่ยนโซนที่อนุญาต` : `Recovery: ${String(item.status || item.action || "กำลังแก้สถานะ")}`;
     if (kind === "ai_analysis") return item.status === "QUEUED" ? `AI กำลังวิเคราะห์ ${String(item.state || "หน้าเว็บ")} เบื้องหลัง` : `AI วิเคราะห์: ${String(item.diagnosis || item.reason || item.action || "เสร็จแล้ว")}`;
     if (kind === "ai_action") return `AI ${item.executed ? "แก้สำเร็จ" : "กำลังหาวิธีถัดไป"}: ${String(item.action || "recovery")}`;
     if (kind === "ai_strategy_learned") return `AI จำวิธีแก้ ${String(item.action || "strategy")} สำหรับครั้งต่อไปแล้ว`;
@@ -630,6 +637,7 @@ export default function Home() {
   const [ticketSeatNumbers, setTicketSeatNumbers] = useState("");
   const [ticketSeatFallback, setTicketSeatFallback] = useState<"exact" | "nearest" | "zone_any">("nearest");
   const [ticketQuantity, setTicketQuantity] = useState(1);
+  const [ticketPreferredPrices, setTicketPreferredPrices] = useState<number[]>([]);
   const [ticketBudget, setTicketBudget] = useState(0);
   const [ticketCustomerName, setTicketCustomerName] = useState("");
   const [ticketAttendeeNames, setTicketAttendeeNames] = useState("");
@@ -1564,6 +1572,7 @@ export default function Home() {
     setTicketStatusFilter("all");
     setTicketSelectedId("");
     setTicketInspection(null);
+    setTicketPreferredPrices([]);
     setTicketBuildReport(null);
     try {
       const response = await fetch("/api/ticket-bot", {
@@ -1828,6 +1837,7 @@ export default function Home() {
             preferred_zones: ticketZones.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
             preferred_rows: ticketRows.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
             preferred_seat_numbers: ticketSeatNumbers.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+            preferred_prices: ticketPreferredPrices,
             seat_fallback_mode: ticketSeatFallback,
             quantity: ticketQuantity,
             budget: ticketBudget,
@@ -1871,6 +1881,7 @@ export default function Home() {
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const selectedTicketEvent = ticketEvents.find((event) => event.id === ticketSelectedId);
   const currentTicketPerformanceOptions = normalizedTicketPerformanceOptions(ticketInspection?.facts?.performance_options);
+  const ticketDetectedPrices = ticketFactPrices(ticketInspection?.facts);
   const generatedTicketProjectName = automaticTicketProjectName(selectedTicketEvent);
   const effectiveTicketProjectName = ticketProjectName.trim() || generatedTicketProjectName;
   const ticketRunActive = Boolean(ticketRun && ["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status));
@@ -2272,6 +2283,7 @@ export default function Home() {
                   <label className={`ticket-event-card ${ticketSelectedId === event.id ? "selected" : ""} ${selectable ? "" : "unavailable"}`} key={event.id}>
                     <input type="radio" name="ticket-event" disabled={!selectable} checked={ticketSelectedId === event.id} onChange={() => {
                       setTicketSelectedId(event.id);
+                      setTicketPreferredPrices([]);
                       setTicketProjectName("");
                       const cachedInspection = event.cached_inspection ?? null;
                       const cachedOptions = normalizedTicketPerformanceOptions(event.performance_options ?? cachedInspection?.facts?.performance_options);
@@ -2321,6 +2333,7 @@ export default function Home() {
                       <p>สถานะ: {ticketInspection.functional_preflight?.workflow_state || "unknown"} · วันแสดง: {ticketInspection.facts?.show_dates?.[0]?.raw || ticketInspection.facts?.show_dates?.[0]?.iso || "ไม่พบ"} · เปิดขาย: {ticketInspection.facts?.sale_open_at_raw || ticketInspection.facts?.sale_open_at || "ไม่พบ"}</p>
                       <p>การตรวจสอบรายการใช้หน้าสาธารณะโดยไม่ล็อกอิน{ticketInspection.page?.used_public_fallback ? ` · หน้าแรกถูกปฏิเสธ จึงใช้หน้า official สำรอง ${ticketInspection.page.inspection_url || ""}` : ""} ส่วนโปรแกรมจริงจะต้องยืนยัน Login ก่อน Checkout</p>
                       {ticketInspection.facts?.prices?.length ? <p>ราคาที่อ่านได้: {ticketInspection.facts.prices.map((price) => price.toLocaleString()).join(" / ")} บาท</p> : null}
+                      {ticketInspection.facts?.price_tiers?.length ? <p>ราคาที่ผูกกับโซน/ตัวควบคุมได้: {ticketInspection.facts.price_tiers.map((tier) => `${tier.zone === "*" ? "ทั้งงาน" : `โซน ${tier.zone}`}: ${(tier.prices || []).map((price) => price.toLocaleString()).join(" / ")} บาท`).join(" · ")}</p> : null}
                       <p>ปุ่มเข้าซื้อ: {ticketInspection.functional_preflight?.purchase_controls_ready ? "พบจาก DOM จริง" : ticketInspection.functional_preflight?.workflow_state === "pre_sale" ? "ยังไม่เปิด (COMING SOON)" : "ยังยืนยันไม่ได้"}</p>
                       {ticketInspection.functional_preflight?.unresolved?.length ? <p>ข้อมูลที่ยังขาด: {ticketInspection.functional_preflight.unresolved.join(", ")} — ระบบจะไม่สร้างผลผ่านปลอม</p> : null}
                       {ticketInspection.ambiguous_roles.length > 0 && <p>ฟิลด์ที่มีหลายตัวเลือก: {ticketInspection.ambiguous_roles.join(", ")} — จะไม่ใช้ปุ่ม submit ทั่วไปแทนปุ่มซื้อ</p>}
@@ -2344,6 +2357,7 @@ export default function Home() {
                           <label className="field"><span>ถ้าที่นั่งเป้าหมายไม่ว่าง</span><select value={ticketSeatFallback} onChange={(event) => setTicketSeatFallback(event.target.value as typeof ticketSeatFallback)}><option value="exact">เอาตรงตามที่ระบุเท่านั้น</option><option value="nearest">เลือกเลขใกล้ที่สุดในโซนเดิม</option><option value="zone_any">ใบไหนก็ได้ แต่ต้องอยู่โซนเดิม</option></select></label>
                         </>}
                         <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
+                        {ticketSeatMode === "reserved" && ticketDetectedPrices.length ? <label className="field ticket-field-wide"><span>ราคาต่อใบที่ต้องการ (ไม่บังคับ)</span><select multiple size={Math.min(6, Math.max(2, ticketDetectedPrices.length))} value={ticketPreferredPrices.map(String)} onChange={(event) => setTicketPreferredPrices(Array.from(event.target.selectedOptions).map((option) => Number(option.value)).filter((price) => Number.isFinite(price)))}><option value="" disabled>เลือกได้มากกว่าหนึ่งราคา</option>{ticketDetectedPrices.map((price) => <option key={price} value={price}>{price.toLocaleString()} บาท</option>)}</select><small>ไม่เลือก = ใช้พฤติกรรมเดิมและสุ่ม/เลือกตามโซนที่ว่าง หากเลือก ระบบจะยืนยันราคาจากข้อมูล seat map ที่เว็บเปิดเผยจริงก่อนกด ถ้าราคาต่อที่นั่งยังไม่ถูกเปิดเผยจะไม่เดาและจะแจ้งใน runtime</small></label> : null}
                         <label className="field"><span>งบสูงสุดรวม (ไม่บังคับ)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่จำกัดงบ" /><small>ปล่อยเป็น 0 ได้ บอทจะไม่ใช้ราคาเป็นเงื่อนไขตัดออก</small></label>
                         <div className="ticket-project-destination ticket-field-wide">
                           <span>ตำแหน่งไฟล์โปรแกรม</span>

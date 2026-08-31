@@ -42,6 +42,16 @@ seat_grouping = str(payload.get("seat_grouping", "adjacent")).casefold()
 zones = [str(item).strip().upper() for item in payload.get("preferred_zones", []) if str(item).strip()] if isinstance(payload.get("preferred_zones"), list) else []
 rows = [str(item).strip().upper() for item in payload.get("preferred_rows", []) if str(item).strip()] if isinstance(payload.get("preferred_rows"), list) else []
 seat_numbers = [str(item).strip().upper() for item in payload.get("preferred_seat_numbers", []) if str(item).strip()] if isinstance(payload.get("preferred_seat_numbers"), list) else []
+preferred_prices = []
+if isinstance(payload.get("preferred_prices"), list):
+    for value in payload.get("preferred_prices", []):
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 100 <= price <= 1_000_000 and price not in preferred_prices:
+            preferred_prices.append(int(price) if price.is_integer() else price)
+preferred_prices.sort(reverse=True)
 seat_fallback_mode = str(payload.get("seat_fallback_mode", "nearest")).casefold()
 quantity = max(0, int(payload.get("quantity", 0) or 0))
 budget = max(0.0, float(payload.get("budget", 0) or 0))
@@ -137,6 +147,8 @@ if not missing:
         "preferredZones": zones,
         "preferredRows": rows,
         "preferredSeatNumbers": seat_numbers,
+        "preferredPrices": preferred_prices,
+        "priceTiers": facts.get("price_tiers", []) if isinstance(facts.get("price_tiers"), list) else [],
         "seatFallbackMode": seat_fallback_mode,
         "budget": budget,
         "customerName": customer_name,
@@ -410,6 +422,21 @@ def _preferred_seat_numbers(values):
     return list(dict.fromkeys(numbers))
 
 
+def _price_value(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        price = float(value)
+        return int(price) if price.is_integer() else price
+    match = re.search(r"(?<!\d)(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\.\d{1,2})?(?!\d)", str(value or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
 def expand_zone_preferences(values):
     """Expand user-friendly zone ranges while preserving the requested order."""
     expanded = []
@@ -425,14 +452,19 @@ def expand_zone_preferences(values):
     return list(dict.fromkeys(expanded))
 
 
-def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=None, preferred_rows=None, preferred_numbers=None, fallback_mode="nearest"):
+def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=None, preferred_rows=None, preferred_numbers=None, fallback_mode="nearest", preferred_prices=None):
     wanted = max(1, int(quantity))
     zones = expand_zone_preferences(preferred_zones)
     rows = [str(item).upper() for item in (preferred_rows or [])]
     numbers = _preferred_seat_numbers(preferred_numbers)
+    target_prices = {_price_value(value) for value in (preferred_prices or [])}
+    target_prices.discard(None)
     available = []
     for index, seat in enumerate(seats):
         if not isinstance(seat, dict) or seat.get("available", True) is False:
+            continue
+        seat_price = _price_value(seat.get("price"))
+        if target_prices and (seat_price is None or seat_price not in target_prices):
             continue
         zone = str(seat.get("zone", "")).upper()
         row = str(seat.get("row", "")).upper()
@@ -508,6 +540,37 @@ CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 REPORT = ROOT / "run-report.jsonl"
 ACTIONABLE_SELECTOR = "button, a[href], area[href], input[type=button], input[type=submit], input[type=image], [role=button], [role=link], [onclick]"
 SEAT_SELECTOR = ".seatuncheck, .seatcheck, [data-seat][data-seatk], [data-seat][data-available='true'], [data-seat][data-status='available'], [data-seat-number], [role='button'][aria-label*='seat' i]"
+
+
+def seat_price_value(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        price = float(value)
+        return int(price) if price.is_integer() else price
+    match = re.search(r"(?<!\d)(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\.\d{1,2})?(?!\d)", str(value or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def configured_single_price(zone):
+    zone_key = str(zone or "").strip().upper()
+    candidates = []
+    for tier in CONFIG.get("priceTiers", []) if isinstance(CONFIG.get("priceTiers"), list) else []:
+        if not isinstance(tier, dict):
+            continue
+        tier_zone = str(tier.get("zone") or "*").strip().upper()
+        prices = [seat_price_value(value) for value in tier.get("prices", [])] if isinstance(tier.get("prices"), list) else []
+        prices = [value for value in prices if value is not None]
+        if len(prices) != 1:
+            continue
+        if tier_zone == zone_key or tier_zone == "*":
+            candidates.append(prices[0])
+    return candidates[0] if len(set(candidates)) == 1 else None
 SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
 LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "body": "", "at": 0.0}
@@ -2492,6 +2555,9 @@ def collect_seat_inventory(page, fallback_zone=""):
               const rect = element.getBoundingClientRect();
               const className = typeof element.className === 'string' ? element.className : (element.getAttribute('class') || '');
               const classes = className.toLowerCase().split(/\\s+/).filter(Boolean);
+              const priceLabel = [element.getAttribute('aria-label') || '', element.getAttribute('title') || '', element.textContent || ''].join(' ');
+              const labelledPriceMatch = /(?:฿\s*|(?:ราคา|price)\s*[:：-]?\s*)(\d{1,3}(?:,\d{3})+|\d{3,6})|(\d{1,3}(?:,\d{3})+|\d{3,6})\s*(?:บาท|baht|thb)/i.exec(priceLabel);
+              const labelledPrice = /(?:ราคา|price|฿|บาท|baht|thb)/i.test(priceLabel) ? (labelledPriceMatch?.[1] || labelledPriceMatch?.[2] || '') : '';
               const selected = classes.some(name => ['seatcheck','seat-selected','selected-seat','selected','active'].includes(name))
                 || (element.getAttribute('aria-pressed') || '').toLowerCase() === 'true'
                 || (element.getAttribute('data-selected') || '').toLowerCase() === 'true'
@@ -2502,6 +2568,7 @@ def collect_seat_inventory(page, fallback_zone=""):
                 zone: element.getAttribute('data-zone') || element.getAttribute('data-section') || '',
                 row: element.getAttribute('data-row') || '',
                 number: element.getAttribute('data-seat-number') || '',
+                price: element.getAttribute('data-price') || element.getAttribute('data-ticket-price') || element.getAttribute('data-amount') || element.getAttribute('data-ticket-amount') || element.getAttribute('price') || labelledPrice,
                 class_name: className,
                 selected,
                 visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
@@ -2520,8 +2587,9 @@ def collect_seat_inventory(page, fallback_zone=""):
                 zone = str(raw.get("zone") or fallback_zone).strip().upper()
                 row = str(raw.get("row") or (parsed.group(1) if parsed else "")).strip().upper()
                 number = str(raw.get("number") or (parsed.group(2) if parsed else raw_seat)).strip()
+                price = seat_price_value(raw.get("price")) or configured_single_price(zone)
                 available = bool(raw.get("visible") and raw.get("enabled") and not selected and class_tokens.isdisjoint(blocked_tokens))
-                item = {"zone": zone, "row": row, "number": number, "label": "-".join(value for value in (zone, row, number) if value)[:120], "available": available, "selected": selected, "visible": bool(raw.get("visible")), "scope_index": scope_index, "control_index": control_index}
+                item = {"zone": zone, "row": row, "number": number, "price": price, "label": "-".join(value for value in (zone, row, number) if value)[:120], "available": available, "selected": selected, "visible": bool(raw.get("visible")), "scope_index": scope_index, "control_index": control_index}
                 conflict_key = seat_conflict_key(item)
                 current_generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0)
                 if conflict_key in SEAT_CONFLICT_BLACKLIST or SEAT_CONFLICT_GENERATION.get(conflict_key) == current_generation:
@@ -2732,6 +2800,8 @@ def fast_reserved_seat_recovery(page):
     wanted = max(1, int(CONFIG.get("quantity", 1)))
     rows = [str(item).strip().upper() for item in CONFIG.get("preferredRows", []) if str(item).strip()]
     seat_numbers = [str(item).strip().upper() for item in CONFIG.get("preferredSeatNumbers", []) if str(item).strip()]
+    preferred_prices = [seat_price_value(item) for item in CONFIG.get("preferredPrices", [])] if isinstance(CONFIG.get("preferredPrices"), list) else []
+    preferred_prices = [item for item in preferred_prices if item is not None]
     grouping = str(CONFIG.get("seatGrouping", "adjacent"))
     fallback_mode = str(CONFIG.get("seatFallbackMode", "nearest"))
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
@@ -2858,10 +2928,13 @@ def fast_reserved_seat_recovery(page):
         current_zone = current_zone_from_page(page) or active_zone
         metadata, locators, scopes = collect_seat_inventory(page, current_zone)
         available_count = sum(1 for item in metadata if item.get("available"))
-        record("seat_scan", {"zone": current_zone, "available": available_count, "candidate_count": len(metadata), "wanted": wanted, "attempt": attempt + 1, "scope_count": len(scopes)})
+        record("seat_scan", {"zone": current_zone, "available": available_count, "candidate_count": len(metadata), "wanted": wanted, "preferred_prices": preferred_prices, "attempt": attempt + 1, "scope_count": len(scopes)})
         zone_filter = [current_zone] if current_zone else zones
-        indices = choose_seat_indices(metadata, wanted, grouping, zone_filter, rows, seat_numbers, fallback_mode)
+        indices = choose_seat_indices(metadata, wanted, grouping, zone_filter, rows, seat_numbers, fallback_mode, preferred_prices)
         if len(indices) != wanted:
+            if preferred_prices:
+                price_available_count = sum(1 for item in metadata if item.get("available") and seat_price_value(item.get("price")) in preferred_prices)
+                record("recovery", {"status": "NO_COMPLETE_SET_FOR_SELECTED_PRICE", "zone": current_zone, "preferred_prices": preferred_prices, "available_with_price_filter": price_available_count, "wanted": wanted, "terminal": False, "next_action": "rescan_or_switch_allowed_zone"})
             unknown_layout_rounds = unknown_layout_rounds + 1 if not metadata else 0
             if not metadata and visible_human_challenge(page):
                 evidence_path = capture_status_evidence(page, "CAPTCHA_AT_SEAT_MAP")
@@ -2876,7 +2949,7 @@ def fast_reserved_seat_recovery(page):
                 continue
             exhausted_rounds += 1
             zone_cursor = 0
-            record("recovery", {"status": "WAITING_FOR_COMPLETE_SET", "zones": zones or [current_zone], "wanted": wanted, "round": exhausted_rounds, "next_action": "rescan_inventory", "terminal": False})
+            record("recovery", {"status": "WAITING_FOR_COMPLETE_SET", "zones": zones or [current_zone], "wanted": wanted, "preferred_prices": preferred_prices, "round": exhausted_rounds, "next_action": "rescan_inventory", "terminal": False})
             if zones and semantic_click(page, ["เลือกโซนอื่น", "เลือกโซน", "choose another zone", "back to zones"]):
                 wait_for_page_change(page, loop_marker.get("url", ""), timeout_ms=3000)
                 changed = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
@@ -2912,7 +2985,7 @@ def fast_reserved_seat_recovery(page):
 
         attempt += 1
         planned = [str(metadata[index].get("label") or metadata[index].get("number") or index) for index in indices]
-        record("seat_set_planned", {"zone": current_zone, "seats": planned, "wanted": wanted, "grouping": grouping, "attempt": attempt})
+        record("seat_set_planned", {"zone": current_zone, "seats": planned, "wanted": wanted, "preferred_prices": preferred_prices, "grouping": grouping, "attempt": attempt})
         before_click = navigation_marker(page)
         if before_click.get("generation") != loop_marker.get("generation") or before_click.get("url") != loop_marker.get("url"):
             changed = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))

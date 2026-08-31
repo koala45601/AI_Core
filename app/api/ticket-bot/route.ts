@@ -56,6 +56,7 @@ interface TicketBuildInput {
   preferred_zones?: unknown;
   preferred_rows?: unknown;
   preferred_seat_numbers?: unknown;
+  preferred_prices?: unknown;
   seat_fallback_mode?: unknown;
   quantity?: unknown;
   budget?: unknown;
@@ -635,6 +636,13 @@ export async function POST(request: Request) {
       if (!new Set(["qr", "promptpay"]).has(paymentMethod)) throw new Error("รองรับวิธีชำระเงิน QR หรือ PromptPay ใน Full Loop นี้");
       const quantity = Math.min(10, Math.max(1, Math.floor(Number(input.quantity || 1))));
       const budget = Math.max(0, Number(input.budget || 0));
+      const rawPreferredPrices = input.preferred_prices === undefined ? [] : input.preferred_prices;
+      if (!Array.isArray(rawPreferredPrices)) throw new Error("preferred_prices ต้องเป็นรายการราคา");
+      const preferredPrices = rawPreferredPrices.map((item) => Number(item)).filter((item) => Number.isFinite(item));
+      if (preferredPrices.length !== rawPreferredPrices.length || preferredPrices.some((item) => item < 100 || item > 1_000_000)) {
+        throw new Error("ราคาต่อใบต้องอยู่ระหว่าง 100 ถึง 1,000,000 บาท");
+      }
+      const uniquePreferredPrices = [...new Set(preferredPrices.map((item) => Math.round(item * 100) / 100))].sort((left, right) => right - left).slice(0, 50);
       const selectedPerformance = safeSelectedPerformance(input.selected_performance);
       const announcedPerformances = Array.isArray(eventFacts.performance_options) ? eventFacts.performance_options : [];
       if (announcedPerformances.length > 1 && !selectedPerformance) throw new Error("คอนเสิร์ตนี้มีหลายรอบ กรุณาเลือกวันและเวลาที่แน่นอนก่อนเริ่มบอท เพื่อไม่ให้เลือกรอบผิดหลังผ่านคิว");
@@ -669,6 +677,7 @@ export async function POST(request: Request) {
           preferred_zones: Array.isArray(input.preferred_zones) ? input.preferred_zones.map((item) => asText(item, 120).toUpperCase()).filter(Boolean).slice(0, 20) : [],
           preferred_rows: Array.isArray(input.preferred_rows) ? input.preferred_rows.map((item) => asText(item, 30).toUpperCase()).filter(Boolean).slice(0, 50) : [],
           preferred_seat_numbers: Array.isArray(input.preferred_seat_numbers) ? input.preferred_seat_numbers.map((item) => asText(item, 30).toUpperCase()).filter(Boolean).slice(0, 100) : [],
+          preferred_prices: uniquePreferredPrices,
           seat_fallback_mode: seatFallbackMode,
           customer_name: asText(input.customer_name, 200),
           attendee_names: Array.isArray(input.attendee_names) ? input.attendee_names.map((item) => asText(item, 200)).filter(Boolean).slice(0, quantity) : [],
