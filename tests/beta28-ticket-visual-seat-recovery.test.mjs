@@ -40,8 +40,8 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
   assert.equal(pkg.version, "2.0.0-alpha.1");
-  assert.match(template, /"runtimeRevision": "(?:page-ready-gate-1|ticket-speed-mode-1)"/);
-  assert.match(template, /"runtime_revision": "(?:page-ready-gate-1|ticket-speed-mode-1)"/);
+  assert.match(template, /"runtimeRevision": "ticket-speed-mode-1"/);
+  assert.match(template, /"runtime_revision": "ticket-speed-mode-1"/);
   assert.match(template, /zones = list\(discovered_names\)/);
   assert.match(template, /"candidate_order": zones/);
   assert.match(template, /def visible_human_challenge\(page\):/);

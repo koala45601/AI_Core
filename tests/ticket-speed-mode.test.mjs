@@ -32,8 +32,9 @@ test("ticket speed mode is opt-in and keeps the existing generator version", asy
   assert.match(template, /API_RETRY_AFTER_UNTIL/);
   assert.match(template, /RETRY_AFTER_HONORED/);
 
-  // The UI accepts the new runtime revision while preserving the legacy one.
-  assert.match(page, /\["page-ready-gate-1", "ticket-speed-mode-1"\]/);
+  // A legacy generated bot is rebuilt so the user actually gets this runtime.
+  assert.match(page, /ticketBuildReport\.runtime_revision === "ticket-speed-mode-1"/);
+  assert.doesNotMatch(page, /\["page-ready-gate-1", "ticket-speed-mode-1"\]/);
 });
 
 test("ticket speed mode removes blind waits from the fast paths", async () => {
