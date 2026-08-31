@@ -139,6 +139,7 @@ test("Alpha 2.0 generator contains official availability, navigation interruptio
   assert.match(server, /ticketRunEventStream/);
   assert.match(server, /repairV2Match/);
   assert.match(server, /tool_supervisor/);
+  assert.match(server, /const forcedExit = setTimeout\(\(\) => process\.exit\(0\), 3_000\)/);
   assert.match(supervisor, /ALPHA_TOOL_SUPERVISED: "1"/);
   assert.match(supervisor, /Tool Service heartbeat/);
   assert.match(launcher, /tool-service\/supervisor\.mjs/);
@@ -242,6 +243,62 @@ setInterval(() => {}, 1_000);
     assert.equal(stopped.status, "stopped");
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Alpha 2.0 Tool Service supervisor reloads the core when package version changes", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "alpha2-tool-version-reload-"));
+  const toolServiceDir = join(temporary, "tool-service");
+  const launchesFile = join(temporary, "launches.txt");
+  const supervisorPath = new URL("../tool-service/supervisor.mjs", import.meta.url);
+  await mkdir(toolServiceDir, { recursive: true });
+  await writeFile(join(temporary, "package.json"), JSON.stringify({ version: "2.0.0-alpha.2" }), "utf8");
+  await writeFile(join(toolServiceDir, "server.mjs"), `import { promises as fs } from "node:fs";
+const packageInfo = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8"));
+await fs.appendFile(${JSON.stringify(launchesFile)}, packageInfo.version + "\\n", "utf8");
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1_000);
+`, "utf8");
+  const child = spawn(process.execPath, [supervisorPath.pathname, temporary], { stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    await waitFor(async () => (await readFile(launchesFile, "utf8").catch(() => "")).includes("2.0.0-alpha.2"), 4_000);
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ version: "2.0.0-alpha.3" }), "utf8");
+    const reloaded = await waitFor(async () => {
+      const launches = await readFile(launchesFile, "utf8").catch(() => "");
+      const state = await readFile(join(temporary, "work", "tool-service-supervisor.json"), "utf8").then(JSON.parse).catch(() => null);
+      return launches.includes("2.0.0-alpha.3") && state?.app_version === "2.0.0-alpha.3" ? state : null;
+    }, 10_000);
+    assert.ok(reloaded.restart_count >= 1);
+    child.kill("SIGTERM");
+    await new Promise((resolveExit, rejectExit) => {
+      child.once("error", rejectExit);
+      child.once("close", resolveExit);
+    });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Alpha 2.0 runtime accepts supported alpha.2 bots after a runtime-only version bump", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "alpha2-generator-compatibility-"));
+  const root = join(temporary, "Program_Create");
+  await mkdir(root);
+  const path = await project(root, `#!/bin/bash
+echo '{"kind":"input_required","field":"fixture","stage":"waiting_fixture","prompt":"fixture"}'
+IFS= read -r done
+exit 0
+`);
+  await writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: "2.0.0-alpha.2" }), "utf8");
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: CURRENT_VERSION });
+  try {
+    const started = await manager.start({ project_path: path });
+    const waiting = await waitFor(() => manager.get(started.run.id).run.status === "waiting_handoff" ? manager.get(started.run.id).run : null);
+    assert.equal(waiting.stage, "waiting_fixture");
+    await manager.input(started.run.id, "");
+  } finally {
+    await manager.stopAll();
     await rm(temporary, { recursive: true, force: true });
   }
 });

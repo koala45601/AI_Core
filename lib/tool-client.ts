@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { AppSettings, ArtifactRecord, ToolHealth } from "./types";
+import { ALPHA_VERSION } from "./version";
 
 interface RuntimeEnv {
   ALPHA_TOOL_BASE_URL?: string;
@@ -71,6 +72,29 @@ export async function getToolHealth(): Promise<ToolHealth> {
       last_tool_error: "",
     };
   }
+}
+
+export async function waitForCompatibleToolService(timeout = 8_000): Promise<ToolHealth> {
+  const deadline = Date.now() + Math.max(0, timeout);
+  let health = await getToolHealth();
+  while (health.connected && health.app_version !== ALPHA_VERSION && Date.now() < deadline) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    health = await getToolHealth();
+  }
+  if (!health.connected) {
+    throw new ToolServiceError("Tool Service ยังไม่พร้อม ระบบไม่เริ่มบอทจนกว่าบริการจะเชื่อมต่อสำเร็จ", 503, {
+      code: "tool_service_unavailable",
+      expected_app_version: ALPHA_VERSION,
+    });
+  }
+  if (health.app_version !== ALPHA_VERSION) {
+    throw new ToolServiceError(`Tool Service รุ่น ${health.app_version || "ไม่ทราบ"} ไม่ตรงกับ Alpha ${ALPHA_VERSION} ระบบกำลังโหลดบริการรุ่นใหม่ กรุณากดเริ่มบอทอีกครั้ง`, 503, {
+      code: "tool_service_version_mismatch",
+      expected_app_version: ALPHA_VERSION,
+      actual_app_version: health.app_version || "",
+    });
+  }
+  return health;
 }
 
 export interface ToolExecutionResult extends Record<string, unknown> {
@@ -169,6 +193,7 @@ export interface TicketRunView extends Record<string, unknown> {
 }
 
 export async function startTicketRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  await waitForCompatibleToolService();
   const response = await toolFetch("/v2/ticket-runs", { method: "POST", body: JSON.stringify(input) }, 15_000);
   return payload(response);
 }

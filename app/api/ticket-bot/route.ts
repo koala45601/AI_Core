@@ -1,6 +1,6 @@
 import { domainAllowed } from "@/lib/policy.js";
 import { getSettings } from "@/lib/settings-store";
-import { executeTool, getTicketRun, promoteTicketRepair, repairTicketRun, resumeTicketRun, rollbackTicketRepair, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult } from "@/lib/tool-client"; // alpha-v2-autonomous-runtime
+import { executeTool, getTicketRun, promoteTicketRepair, repairTicketRun, resumeTicketRun, rollbackTicketRepair, sendTicketRunInput, startTicketRun, stopTicketRun, ToolExecutionResult, ToolServiceError } from "@/lib/tool-client"; // alpha-v2-autonomous-runtime
 import { AppSettings } from "@/lib/types";
 import { loadTicketScheduleCache, saveTicketScheduleCache } from "@/lib/ticket-event-cache";
 import { evaluateTicketPreflight, extractTicketPageFacts } from "@/lib/ticket-workflow.js";
@@ -742,6 +742,8 @@ export async function POST(request: Request) {
 
     return Response.json({ error: "ไม่รู้จัก action ของ Ticket Bot" }, { status: 400 });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Ticket Bot Full Loop ไม่สำเร็จ" }, { status: 500 });
+    const status = error instanceof ToolServiceError ? error.status : 500;
+    const details = error instanceof ToolServiceError ? error.payload : {};
+    return Response.json({ error: error instanceof Error ? error.message : "Ticket Bot Full Loop ไม่สำเร็จ", ...details }, { status });
   }
 }

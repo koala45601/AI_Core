@@ -31,7 +31,7 @@ ALPHA_TOOL_SERVICE="com.alpha.local.tools"
 alpha_health_ready() {
   local health_json
   health_json="$(curl --max-time 5 -fsS "$ALPHA_URL/api/health" 2>/dev/null || true)"
-  [[ "$health_json" == *'"ollama_connected":true'* && "$health_json" == *'"tool_service":{"app_version"'* && "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* ]]
+  [[ "$health_json" == *'"app_version":"'"$ALPHA_APP_VERSION"'"'* && "$health_json" == *'"ollama_connected":true'* && "$health_json" == *'"tool_service":{"app_version":"'"$ALPHA_APP_VERSION"'"'* && "$health_json" == *'"storage_connected":true'* && "$health_json" == *'"storage_root":"'"$ALPHA_DIR"'"'* ]]
 }
 
 ollama_ready() {

@@ -443,6 +443,17 @@ export function createTicketRunManager({
   const learnedRepairSkillsRoot = repairSkillsDir ? resolve(repairSkillsDir) : "";
   const learnedSkillsIndex = skillsIndexFile ? resolve(skillsIndexFile) : "";
 
+  function compatibleGeneratorVersion(candidate, required) {
+    if (candidate === required) return true;
+    const candidateAlpha = String(candidate || "").match(/^(\d+)\.(\d+)\.(\d+)-alpha\.(\d+)$/);
+    const requiredAlpha = String(required || "").match(/^(\d+)\.(\d+)\.(\d+)-alpha\.(\d+)$/);
+    if (!candidateAlpha || !requiredAlpha) return false;
+    const sameRelease = candidateAlpha.slice(1, 4).every((part, index) => part === requiredAlpha[index + 1]);
+    const candidateRevision = Number(candidateAlpha[4]);
+    const requiredRevision = Number(requiredAlpha[4]);
+    return sameRelease && candidateRevision >= 2 && candidateRevision <= requiredRevision;
+  }
+
   async function writeJsonAtomic(destination, value) {
     const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
     await fs.mkdir(dirname(destination), { recursive: true });
@@ -907,8 +918,9 @@ export function createTicketRunManager({
     }
     if (requiredGeneratorVersion) {
       const config = JSON.parse(await fs.readFile(resolve(projectReal, "config.json"), "utf8"));
-      if (safeText(config?.generatorVersion, 80) !== requiredGeneratorVersion) {
-        throw new Error(`โปรเจกต์ Ticket Bot เป็นเวอร์ชันเก่าหรือไม่ทราบเวอร์ชัน กรุณาสร้างใหม่ด้วย ${requiredGeneratorVersion}`);
+      const generatorVersion = safeText(config?.generatorVersion, 80);
+      if (!compatibleGeneratorVersion(generatorVersion, requiredGeneratorVersion)) {
+        throw new Error(`โปรเจกต์ Ticket Bot รุ่น ${generatorVersion || "ไม่ทราบ"} ไม่รองรับ runtime ${requiredGeneratorVersion} กรุณาสร้างใหม่`);
       }
     }
     return projectReal;

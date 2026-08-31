@@ -110,6 +110,15 @@ export interface ArtifactRecord {
 
 export interface ToolHealth {
   app_version?: string;
+  tool_supervisor?: {
+    supervised?: boolean;
+    status?: string;
+    fresh?: boolean;
+    supervisor_pid?: number | null;
+    child_pid?: number | null;
+    restart_count?: number;
+    updated_at?: number | null;
+  };
   connected: boolean;
   storage_connected?: boolean;
   storage_root?: string;

@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 
 const appDir = resolve(process.env.ALPHA_APP_DIR || process.argv[2] || process.cwd());
 const serverPath = resolve(appDir, "tool-service", "server.mjs");
+const packagePath = resolve(appDir, "package.json");
 const workDir = resolve(appDir, "work");
 const statePath = resolve(workDir, "tool-service-supervisor.json");
 const pidPath = resolve(workDir, "alpha-tool.pid");
@@ -13,6 +14,17 @@ let stopping = false;
 let restartCount = 0;
 let restartTimer = null;
 let heartbeatTimer = null;
+let supervisedAppVersion = "";
+let versionRestartPending = false;
+
+async function readAppVersion() {
+  try {
+    const packageInfo = JSON.parse(await fs.readFile(packagePath, "utf8"));
+    return typeof packageInfo?.version === "string" ? packageInfo.version.trim().slice(0, 80) : "";
+  } catch {
+    return "";
+  }
+}
 
 async function atomicJson(path, value) {
   const temporary = `${path}.${process.pid}.tmp`;
@@ -33,6 +45,7 @@ async function writeState(status, detail = "", extra = {}) {
     detail,
     supervisor_pid: process.pid,
     child_pid: child?.pid || null,
+    app_version: supervisedAppVersion || null,
     restart_count: restartCount,
     started_at: startedAt,
     updated_at: Date.now(),
@@ -57,6 +70,7 @@ function scheduleRestart(reason) {
 
 function launchCore() {
   if (stopping || child) return;
+  versionRestartPending = false;
   void writeState("starting", restartCount ? "กำลังคืน Tool Service จาก journal หลัง process ขัดข้อง" : "กำลังเริ่ม Tool Service");
   try {
     const next = spawn(process.execPath, [serverPath, appDir], {
@@ -81,6 +95,26 @@ function launchCore() {
     child = null;
     scheduleRestart(`launch failed: ${String(error?.message || error).slice(0, 500)}`);
   }
+}
+
+async function restartForVersionChange() {
+  if (stopping || versionRestartPending) return;
+  const currentAppVersion = await readAppVersion();
+  if (!currentAppVersion) return;
+  if (!supervisedAppVersion) {
+    supervisedAppVersion = currentAppVersion;
+    return;
+  }
+  if (currentAppVersion === supervisedAppVersion) return;
+  const previousAppVersion = supervisedAppVersion;
+  supervisedAppVersion = currentAppVersion;
+  versionRestartPending = true;
+  await writeState("recovering", `ตรวจพบ Alpha เปลี่ยนจาก ${previousAppVersion} เป็น ${currentAppVersion} กำลังโหลด Tool Service รุ่นใหม่`, {
+    previous_app_version: previousAppVersion,
+    next_app_version: currentAppVersion,
+  });
+  if (child) child.kill("SIGTERM");
+  else scheduleRestart("กำลังเริ่ม Tool Service ให้ตรงกับเวอร์ชันแอป");
 }
 
 async function shutdown(signal) {
@@ -108,6 +142,7 @@ async function shutdown(signal) {
 }
 
 await fs.mkdir(workDir, { recursive: true });
+supervisedAppVersion = await readAppVersion();
 await fs.writeFile(pidPath, `${process.pid}\n`, "utf8");
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => { void shutdown(signal); });
 process.on("uncaughtException", (error) => {
@@ -120,6 +155,7 @@ process.on("unhandledRejection", (error) => {
 launchCore();
 heartbeatTimer = setInterval(() => {
   if (stopping) return;
+  void restartForVersionChange();
   const status = child ? "running" : (restartTimer ? "recovering" : "starting");
   void writeState(status, child ? "Tool Service heartbeat" : "กำลังรอคืน Tool Service");
 }, 5_000);

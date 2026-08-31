@@ -2888,12 +2888,19 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(port, "127.0.0.1", () => console.log(`Alpha tool service listening on 127.0.0.1:${port}`));
 
+let shutdownStarted = false;
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, async () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    const forcedExit = setTimeout(() => process.exit(0), 3_000);
     await ticketRunManager.stopAll("alpha_shutdown").catch(() => {});
     if (autoLearnJob?.status === "running") await stopAutoLearn().catch(() => {});
     await cleanupOwnedSkillLabResources().catch(() => {});
     await stopHeavyTools().catch(() => {});
-    server.close(() => process.exit(0));
+    server.close(() => {
+      clearTimeout(forcedExit);
+      process.exit(0);
+    });
   });
 }
