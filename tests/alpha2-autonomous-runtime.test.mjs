@@ -107,7 +107,7 @@ test("Alpha 2.0 generator contains official availability, navigation interruptio
   assert.match(template, /def select_verified_checkout_option\(page, selector, state_field/);
   assert.match(template, /def visible_attendee_validation\(page\):/);
   assert.match(template, /def fill_event_sensitive_input\(locator, value\):/);
-  assert.match(template, /locator\.press_sequentially\(expected, delay=18\)/);
+  assert.match(template, /locator\.press_sequentially\(expected, delay=(?:18|max\(0, speed_setting\("inputDelayMs", 0\)\))\)/);
   assert.match(template, /SUBMIT_REJECTED/);
   assert.match(template, /#btn_regnow/);
   assert.match(template, /area\[href\*='#'\], \[data-zone\], \[data-section\][\s\S]{0,180}wait_for\(state="attached", timeout=5000\)/);

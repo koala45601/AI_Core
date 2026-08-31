@@ -40,8 +40,8 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
   assert.equal(pkg.version, "2.0.0-alpha.1");
-  assert.match(template, /"runtimeRevision": "page-ready-gate-1"/);
-  assert.match(template, /"runtime_revision": "page-ready-gate-1"/);
+  assert.match(template, /"runtimeRevision": "(?:page-ready-gate-1|ticket-speed-mode-1)"/);
+  assert.match(template, /"runtime_revision": "(?:page-ready-gate-1|ticket-speed-mode-1)"/);
   assert.match(template, /zones = list\(discovered_names\)/);
   assert.match(template, /"candidate_order": zones/);
   assert.match(template, /def visible_human_challenge\(page\):/);
@@ -54,7 +54,7 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   assert.match(template, /"browser_lost": "relaunch_same_profile_and_resume"/);
   assert.match(template, /"status": "BROWSER_RELAUNCHED"/);
   assert.match(template, /last_safe_state == "queue"/);
-  assert.match(template, /def wait_for_page_ready\(page, timeout_ms=12000\):/);
+  assert.match(template, /def wait_for_page_ready\(page, timeout_ms=(?:12000|None)\):/);
   assert.match(template, /document\.readyState === 'complete'/);
   assert.match(template, /errors = click_candidate_set\(page, locators, metadata, indices\)/);
   assert.match(template, /"status": "BROWSER_LOST_DURING_ACTIVE_QUEUE"/);

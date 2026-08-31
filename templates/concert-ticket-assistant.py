@@ -111,7 +111,7 @@ if not missing:
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
         "generatorVersion": "2.0.0-alpha.1",
-        "runtimeRevision": "page-ready-gate-1",
+        "runtimeRevision": "ticket-speed-mode-1",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -173,6 +173,18 @@ if not missing:
             "enabled": seat_mode == "reserved",
             "sourcePolicy": "official_page_session",
             "minimumAvailable": quantity,
+        },
+        "ticketSpeed": {
+            "enabled": True,
+            "apiFirst": True,
+            "cacheVerifiedContractsPerRun": True,
+            "maxConcurrentStateChanges": 1,
+            "availabilityMinIntervalMs": 750,
+            "availabilityModalTimeoutMs": 3000,
+            "navigationWaitTimeoutMs": 5000,
+            "domMutationWaitMs": 300,
+            "pageReadyTimeoutMs": 12000,
+            "inputDelayMs": 0,
         },
         "manualIntervention": {
             "policy": "observe_then_resume",
@@ -485,6 +497,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -522,6 +535,150 @@ AI_LAST_SUBMITTED = {}
 AI_LAST_STATE_SUBMITTED = {}
 AI_ACTION_LAST_EXECUTED = {}
 AI_STRATEGY_PATH = Path(os.environ.get("ALPHA_TICKET_STRATEGY_PATH") or (ROOT.parent.parent / "work" / "ticket-ai-recovery-strategies.json"))
+SPEED_SETTINGS = CONFIG.get("ticketSpeed") if isinstance(CONFIG.get("ticketSpeed"), dict) else {}
+VERIFIED_API_CONTRACTS = {}
+API_CONTRACT_LOCK = threading.RLock()
+API_LAST_REPLAY = {}
+API_RETRY_AFTER_UNTIL = {}
+
+
+def speed_setting(name, default):
+    value = SPEED_SETTINGS.get(name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def retry_after_seconds(value, fallback=0):
+    text = str(value or "").strip()
+    if text.isdigit():
+        return max(0, int(text))
+    if text:
+        try:
+            return max(0, int(parsedate_to_datetime(text).timestamp() - time.time()))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    try:
+        return max(0, int(fallback))
+    except (TypeError, ValueError):
+        return 0
+
+
+def register_frontend_api_request(request):
+    """Cache an exact request already emitted by the site's frontend.
+
+    Only read-only GET/HEAD requests are eligible for replay. The full URL is
+    kept in process memory for the current run; reports contain only a
+    redacted path and never cookies, authorization headers, or request bodies.
+    """
+    if not SPEED_SETTINGS.get("enabled", True) or not SPEED_SETTINGS.get("apiFirst", True):
+        return None
+    try:
+        method = str(request.method or "GET").upper()
+        resource_type = str(request.resource_type or "")
+        url = str(request.url or "")
+    except Exception:
+        return None
+    if method not in {"GET", "HEAD"} or resource_type not in {"xhr", "fetch"}:
+        return None
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if not re.search(r"seat|zone|avail|inventory|ticket|round|performance|booking|event", parsed.path, re.I):
+        return None
+    key = f"{method} {url}"
+    with API_CONTRACT_LOCK:
+        contract = VERIFIED_API_CONTRACTS.setdefault(key, {
+            "method": method,
+            "url": url,
+            "resource_type": resource_type,
+            "first_seen_at": time.monotonic(),
+            "last_seen_at": time.monotonic(),
+            "response_status": None,
+            "verified": False,
+        })
+        contract["last_seen_at"] = time.monotonic()
+    return contract
+
+
+def register_frontend_api_response(response):
+    try:
+        key = f"{str(response.request.method or 'GET').upper()} {str(response.request.url or '')}"
+    except Exception:
+        return None
+    with API_CONTRACT_LOCK:
+        contract = VERIFIED_API_CONTRACTS.get(key)
+        if not contract:
+            return None
+        contract["response_status"] = int(response.status)
+        # A successful JSON response is evidence that the frontend contract
+        # exists; it is still replayed only as the same read-only request.
+        contract["verified"] = 200 <= int(response.status) < 300
+        contract["last_response_at"] = time.monotonic()
+        return dict(contract)
+
+
+def redacted_api_path(url):
+    parsed = urlsplit(str(url or ""))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def replay_verified_frontend_api(page, purpose="availability"):
+    """Replay one verified read-only frontend request in the current page session.
+
+    This avoids DOM rendering only after the site itself has already issued the
+    exact request. State-changing requests are intentionally never replayed by
+    this helper, preventing duplicate reservations or uncontrolled retries.
+    """
+    if not SPEED_SETTINGS.get("enabled", True) or not SPEED_SETTINGS.get("apiFirst", True):
+        return None
+    patterns = {
+        "availability": r"seat|zone|avail|inventory|ticket",
+        "event": r"event|round|performance|concert",
+    }
+    pattern = re.compile(patterns.get(purpose, patterns["availability"]), re.I)
+    min_interval = max(250, speed_setting("availabilityMinIntervalMs", 750))
+    now = time.monotonic()
+    with API_CONTRACT_LOCK:
+        candidates = [dict(item) for item in VERIFIED_API_CONTRACTS.values() if item.get("verified") and item.get("method") == "GET" and pattern.search(urlsplit(item.get("url", "")).path)]
+    candidates.sort(key=lambda item: float(item.get("last_seen_at", 0)), reverse=True)
+    for contract in candidates:
+        url = str(contract.get("url") or "")
+        if time.monotonic() < float(API_RETRY_AFTER_UNTIL.get(url, 0)):
+            continue
+        last = float(API_LAST_REPLAY.get(url, 0))
+        if now - last < min_interval / 1000:
+            continue
+        API_LAST_REPLAY[url] = now
+        try:
+            result = page.evaluate("""async ({url}) => {
+              try {
+                const response = await fetch(url, {method: 'GET', credentials: 'include', cache: 'no-store'});
+                return {status: response.status, retryAfter: response.headers.get('retry-after') || '', text: (await response.text()).slice(0, 1000000)};
+              } catch (error) {
+                return {status: 0, retryAfter: '', text: '', error: String(error && error.message || error)};
+              }
+            }""", {"url": url})
+            status = int(result.get("status") or 0)
+            text_value = str(result.get("text") or "")
+            if status == 429:
+                retry_after = str(result.get("retryAfter") or "")
+                retry_seconds = retry_after_seconds(retry_after, max(1, min_interval / 1000))
+                API_RETRY_AFTER_UNTIL[url] = time.monotonic() + retry_seconds
+                record("api", {"method": "GET", "url": redacted_api_path(url), "status": status, "replayed": True, "purpose": purpose, "retry_after": retry_after, "retry_after_seconds": retry_seconds, "state_changing": False})
+                return {"throttled": True, "status": status, "retry_after_seconds": retry_seconds, "url": url}
+            if not 200 <= status < 300 or not text_value:
+                continue
+            try:
+                parsed = json.loads(text_value)
+            except (TypeError, ValueError):
+                continue
+            record("api", {"method": "GET", "url": redacted_api_path(url), "status": status, "replayed": True, "purpose": purpose, "state_changing": False})
+            return {"payload": parsed, "status": status, "url": url}
+        except Exception as error:
+            record("api", {"method": "GET", "url": redacted_api_path(url), "status": 0, "replayed": True, "purpose": purpose, "error": str(error)[:240], "state_changing": False})
+    return None
 
 
 def record(kind, payload):
@@ -591,7 +748,7 @@ def update_runtime_heartbeat_cache(page):
         RUNTIME_HEARTBEAT_CACHE["navigation_generation"] = int(NAVIGATION_STATE.get("generation", 0))
 
 
-def wait_for_page_ready(page, timeout_ms=12000):
+def wait_for_page_ready(page, timeout_ms=None):
     """Allow interaction only after the current document has finished loading.
 
     This is an event/readiness check, not a blind delay. The marker is scoped to
@@ -604,7 +761,7 @@ def wait_for_page_ready(page, timeout_ms=12000):
     key = (marker.get("generation"), marker.get("url"))
     if PAGE_READY_MARKERS.get(id(page)) == key:
         return True
-    deadline_ms = max(1000, int(timeout_ms or 12000))
+    deadline_ms = max(1000, int(timeout_ms or speed_setting("pageReadyTimeoutMs", 12000)))
     started_at = time.monotonic()
     try:
         page.wait_for_load_state("domcontentloaded", timeout=min(deadline_ms, 5000))
@@ -670,10 +827,8 @@ def bind_navigation_observer(page):
               addEventListener(name, mark, {capture: true, passive: true});
             }
             new MutationObserver(records => {
-              if (records.some(record => record.type === 'childList' && record.target === document.documentElement)) {
-                window.__alphaDomGeneration += 1;
-              }
-            }).observe(document.documentElement, {childList: true, subtree: false});
+              if (records.length) window.__alphaDomGeneration += 1;
+            }).observe(document.documentElement, {childList: true, subtree: true, attributes: true});
           })();
         """)
     except Exception:
@@ -993,19 +1148,27 @@ def wait_for_seat_controls(page, timeout_ms=12000):
 
 def wait_for_page_change(page, previous_url, timeout_ms=5000):
     """Wait for navigation or a DOM mutation; do not insert a fixed checkout sleep."""
+    timeout_ms = max(100, int(timeout_ms or speed_setting("navigationWaitTimeoutMs", 5000)))
+    baseline = navigation_marker(page)
     try:
-        page.wait_for_function("before => location.href !== before", arg=previous_url, timeout=timeout_ms)
-        return "navigation"
+        page.wait_for_function(
+            "before => location.href !== before.url || Number(window.__alphaDomGeneration || 0) > before.dom",
+            arg={"url": previous_url, "dom": baseline.get("dom_generation", 0)},
+            timeout=timeout_ms,
+        )
+        return "navigation_or_mutation"
     except Exception:
         pass
+    # The action may have completed before the observer was installed. A
+    # bounded readiness check lets the main state machine classify immediately
+    # instead of paying the old 1.5s blind mutation timeout on every step.
     try:
-        return page.evaluate("""timeout => new Promise(resolve => {
-          const observer = new MutationObserver(() => { observer.disconnect(); resolve('mutation'); });
-          observer.observe(document.documentElement, {subtree: true, childList: true, attributes: true});
-          setTimeout(() => { observer.disconnect(); resolve('timeout'); }, timeout);
-        })""", min(1500, max(100, timeout_ms)))
+        if safe_page_url(page) != previous_url:
+            return "navigation"
+        page.wait_for_load_state("domcontentloaded", timeout=min(timeout_ms, 1000))
+        return "settled"
     except Exception:
-        return "unavailable"
+        return "timeout"
 
 
 def wait_for_inventory_change(page, timeout_ms):
@@ -1370,7 +1533,7 @@ def activate_selected_performance(page, prefer_target_navigation=False):
         reveal = page.get_by_role("link", name=re.compile(r"เลือกรอบ\s*/\s*ประเภทบัตร", re.I)).first
         if reveal.count() and reveal.is_visible(timeout=500) and reveal.is_enabled(timeout=500):
             reveal.click()
-            page.wait_for_timeout(400)
+            wait_for_page_change(page, safe_page_url(page), timeout_ms=1000)
             clicked_page = click_exact_control()
             if clicked_page:
                 return clicked_page
@@ -1715,22 +1878,12 @@ def wait_for_post_login_transition(page, previous_url, timeout_ms=12000):
     successful top-level redirect. Classifying during that short interval produced
     a false CAPTCHA handoff even though the authenticated terms page was loading.
     """
-    deadline = time.monotonic() + max(1, timeout_ms) / 1000
-    while time.monotonic() < deadline:
-        try:
-            password = page.locator("input[type='password']").first
-            password_visible = bool(password.count() and password.is_visible(timeout=150))
-        except Exception:
-            password_visible = False
-        if page.url != previous_url or not password_visible:
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=3000)
-            except Exception:
-                pass
-            page.wait_for_timeout(500)
-            return True
-        page.wait_for_timeout(250)
-    return False
+    try:
+        page.wait_for_function("before => location.href !== before || ![...document.querySelectorAll('input[type=\\\"password\\\"]')].some(element => { const style = getComputedStyle(element); return style.display !== 'none' && style.visibility !== 'hidden' && !element.disabled; })", arg=previous_url, timeout=max(1, timeout_ms))
+        page.wait_for_load_state("domcontentloaded", timeout=min(5000, max(1000, timeout_ms)))
+        return True
+    except Exception:
+        return False
 
 
 def authenticated_account_marker(page):
@@ -1830,6 +1983,35 @@ def collect_zone_availability(page, force=False):
     cached = CONFIG.get("_runtimeZoneAvailability") if isinstance(CONFIG.get("_runtimeZoneAvailability"), dict) else {}
     if cached and not force:
         return dict(cached)
+    # Reuse a read-only request that the current frontend session has already
+    # emitted. This is the fast path; no endpoint or query parameters are
+    # invented and no state-changing request is replayed.
+    api_result = replay_verified_frontend_api(page, "availability")
+    if api_result and api_result.get("throttled"):
+        record("seat_availability", {
+            "source": "verified_frontend_api",
+            "available": bool(cached),
+            "zones": cached,
+            "reason": "RETRY_AFTER_HONORED",
+            "retry_after_seconds": api_result.get("retry_after_seconds"),
+        })
+        return dict(cached)
+    if api_result:
+        api_zones = normalize_zone_availability(api_result.get("payload"))
+        if api_zones:
+            generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
+            CONFIG["_runtimeInventoryGeneration"] = generation
+            CONFIG["_runtimeZoneAvailability"] = api_zones
+            record("seat_availability", {
+                "source": "verified_frontend_api",
+                "available": True,
+                "zones": api_zones,
+                "checked_at": datetime.now().astimezone().isoformat(),
+                "inventory_generation": generation,
+                "render_wait_skipped": True,
+            })
+            record("inventory_generation", {"generation": generation, "source": "verified_frontend_api", "zones": api_zones})
+            return api_zones
     button = None
     pattern = re.compile(r"ที่นั่งว่าง|จำนวนที่นั่งว่าง|available\s+seats?|seat\s+availability", re.I)
     for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
@@ -1851,12 +2033,17 @@ def collect_zone_availability(page, force=False):
     except Exception as error:
         record("seat_availability", {"source": "official_page_session", "available": False, "reason": "CONTROL_CLICK_FAILED", "error": str(error)[:300]})
         return dict(cached)
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + max(1, speed_setting("availabilityModalTimeoutMs", 3_000)) / 1000
     zones = {}
     while time.monotonic() < deadline and not zones:
         zones = parse_zone_availability_modal(page)
         if not zones:
-            time.sleep(0.05)
+            # A short event-driven yield prevents a busy loop without adding
+            # a fixed delay to the successful API path.
+            try:
+                page.wait_for_function("() => Boolean(document.querySelector('[role=dialog] tr, .modal:visible tr, table tr'))", timeout=100)
+            except Exception:
+                pass
     response_zones = LATEST_ZONE_AVAILABILITY_RESPONSE.get("zones") if isinstance(LATEST_ZONE_AVAILABILITY_RESPONSE.get("zones"), dict) else {}
     zones = {**response_zones, **zones}
     generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
@@ -2076,7 +2263,7 @@ def fill_event_sensitive_input(locator, value):
         locator.click(force=True)
         locator.press("ControlOrMeta+A")
         locator.press("Backspace")
-        locator.press_sequentially(expected, delay=18)
+        locator.press_sequentially(expected, delay=max(0, speed_setting("inputDelayMs", 0)))
         locator.press("Tab")
         locator.dispatch_event("change")
         actual = str(locator.input_value(timeout=500) or "").strip()
@@ -3533,8 +3720,25 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         login_submitted = False
         login_verified = False
 
+        def on_request(request):
+            contract = register_frontend_api_request(request)
+            if not contract:
+                return
+            with API_CONTRACT_LOCK:
+                if contract.get("reported"):
+                    return
+                contract["reported"] = True
+            record("api_contract", {
+                "method": contract.get("method"),
+                "url": redacted_api_path(contract.get("url", "")),
+                "resource_type": contract.get("resource_type"),
+                "verified": False,
+                "state_changing": False,
+            })
+
         def on_response(response):
             global LATEST_RESERVATION_RESPONSE, LATEST_ZONE_AVAILABILITY_RESPONSE
+            contract = register_frontend_api_response(response)
             value = response.headers.get("retry-after")
             if value and str(value).isdigit():
                 observed["retry_after"] = int(value)
@@ -3569,8 +3773,9 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 key = (response.request.method, safe_url, response.status)
                 if key not in observed_api and len(observed_api) < 100:
                     observed_api.add(key)
-                    record("api", {"method": response.request.method, "url": safe_url, "status": response.status, "resource_type": response.request.resource_type, "replayed": False})
+                    record("api", {"method": response.request.method, "url": safe_url, "status": response.status, "resource_type": response.request.resource_type, "replayed": False, "verified_contract": bool(contract and contract.get("verified")), "state_changing": False})
 
+        page.on("request", on_request)
         page.on("response", on_response)
         page.goto(CONFIG["eventUrl"], wait_until="domcontentloaded", timeout=45000)
         checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
@@ -4445,7 +4650,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     project = destination_project
     result.update({
         "generator_version": "2.0.0-alpha.1",
-        "runtime_revision": "page-ready-gate-1",
+        "runtime_revision": "ticket-speed-mode-1",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

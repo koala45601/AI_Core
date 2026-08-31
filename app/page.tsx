@@ -1795,7 +1795,7 @@ export default function Home() {
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
         && ticketBuildReport.generator_version === "2.0.0-alpha.1"
-        && ticketBuildReport.runtime_revision === "page-ready-gate-1"
+        && ["page-ready-gate-1", "ticket-speed-mode-1"].includes(ticketBuildReport.runtime_revision || "")
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
