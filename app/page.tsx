@@ -1804,7 +1804,7 @@ export default function Home() {
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
         && ticketBuildReport.generator_version === "2.0.0-alpha.1"
-        && ticketBuildReport.runtime_revision === "ticket-speed-mode-1"
+        && ticketBuildReport.runtime_revision === "ticket-speed-mode-2-price-preferences"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {

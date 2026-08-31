@@ -121,7 +121,7 @@ if not missing:
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
         "generatorVersion": "2.0.0-alpha.1",
-        "runtimeRevision": "ticket-speed-mode-1",
+        "runtimeRevision": "ticket-speed-mode-2-price-preferences",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
