@@ -49,6 +49,49 @@ function safeText(value, max = 2_000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+function thaiRuntimeMessage(kind, event = {}) {
+  const status = safeText(event.status, 120);
+  const state = safeText(event.state || event.current_state || event.stage, 100);
+  const action = safeText(event.next_action || event.action, 160);
+  const statusLabels = {
+    PAYMENT_HANDOFF: "ถึงหน้าชำระเงินแล้วและหยุดรอผู้ใช้",
+    SOLD_OUT_BY_SERVER: "เว็บยืนยันว่าบัตรหรือที่นั่งหมด",
+    SALE_CLOSED_BY_SERVER: "เว็บยืนยันว่าปิดการขายแล้ว",
+    PRE_SALE_SCHEDULED: "ยังไม่ถึงเวลาเปิดขายตามข้อมูลเว็บ",
+    PRE_SALE_READY: "เตรียมรอช่วงเปิดขายแล้ว",
+    ARMED_PRE_SALE: "เตรียมรอช่วงเปิดขายแล้ว",
+    BROWSER_RELAUNCHED: "เชื่อมต่อ Browser เดิมกลับมาแล้ว",
+    TRANSIENT_RECOVERY_VERIFIED: "runtime กลับมาทำงานต่อได้หลัง recovery",
+  };
+  if (kind === "runtime_heartbeat") {
+    const browser = event.browser_connected ? "เชื่อมต่อ Browser แล้ว" : "กำลังรอ Browser เชื่อมต่อ";
+    const ai = event.ai_ready ? "AI อยู่ใน standby" : "กำลังเตรียม AI Supervisor";
+    return `ระบบยังทำงานอยู่ · ${browser} · ${ai}`;
+  }
+  if (kind === "supervisor_action") {
+    const statusText = statusLabels[status] || (status === "recovering" ? "กำลัง recovery runtime ที่แก้ได้อย่างปลอดภัย" : status === "analyzing" ? "กำลังวิเคราะห์ปัญหาจากหลักฐาน runtime" : "กำลังตรวจสุขภาพ runtime");
+    return `${statusText}${action ? ` · ขั้นถัดไป: ${action}` : ""}`;
+  }
+  if (kind === "ai_diagnosis") return `AI วิเคราะห์สาเหตุแล้ว · กำลังเลือกวิธีแก้ที่ตรงกับ failure fingerprint${action ? ` · ${action}` : ""}`;
+  if (kind === "repair_candidate") {
+    return event.confirmation_required === true
+      ? "สร้างข้อเสนอแก้ source พร้อม diff และผลทดสอบแล้ว · รอผู้ใช้อนุมัติก่อนติดตั้ง"
+      : "สร้างข้อเสนอ recovery runtime แล้ว · กำลังตรวจ heartbeat ก่อนยืนยันผล";
+  }
+  if (kind === "repair_verified") return event.confirmation_required === true ? "ตรวจ diff และ tests ใน repair sandbox ผ่านแล้ว · รออนุมัติติดตั้ง" : "ตรวจ recovery runtime ผ่านจาก state transition แล้ว";
+  if (kind === "repair_promoted") return "ติดตั้งวิธีแก้ที่ผ่านการตรวจแล้ว และบันทึกไว้ใช้ครั้งต่อไป";
+  if (kind === "repair_rolled_back") return "health check หลังแก้ไม่ผ่าน · rollback กลับแล้วและไม่แตะแอปอื่น";
+  if (kind === "repair_skill_installed") return "บันทึกวิธี recovery ที่ผ่านการยืนยันเป็น Repair Skill แล้ว";
+  if (kind === "navigation_interrupt") return `ผู้ใช้เปลี่ยนหน้า ${safeText(event.from_state || "เดิม", 80)} → ${safeText(event.to_state || "ใหม่", 80)} · ยกเลิก task เก่าและรอตรวจหน้าปัจจุบัน`;
+  if (kind === "manual_control") return event.active === true ? "ผู้ใช้กำลังควบคุม Browser · Alpha จะไม่แย่งเมาส์" : "ผู้ใช้หยุดควบคุมแล้ว · Alpha กำลังรับช่วงต่อ";
+  if (kind === "state_resumed") return `กลับมาทำงานต่อจาก ${state || "state เดิม"} โดยรักษาเงื่อนไขเดิม`;
+  if (kind === "ai_action") return event.executed === true ? `AI ทำ recovery ที่ตรวจสอบแล้วสำเร็จ · ${action || "action"}` : `AI กำลังเลือกวิธีถัดไป · ${action || "recovery"}`;
+  if (kind === "result") return statusLabels[status] || `ได้ผลลัพธ์จากเว็บแล้ว · ${status || "ยังไม่ยืนยัน"}`;
+  if (kind === "input_required") return "ต้องการให้ผู้ใช้ทำขั้นตอนยืนยันต่อบน Browser · session เดิมยังถูกเก็บไว้";
+  if (kind === "checkpoint") return `ตรวจ state ปัจจุบันแล้ว: ${state || "ยังไม่ทราบ"}${action ? ` · ขั้นถัดไป: ${action}` : ""}`;
+  return "กำลังทำงานตาม workflow ที่ตรวจสอบได้";
+}
+
 async function readMacKeychainPassword(service, account) {
   if (process.platform !== "darwin" || !service || !account) return "";
   return await new Promise((resolvePassword) => {
@@ -757,6 +800,7 @@ export function createTicketRunManager({
 
   function emitInternal(run, kind, payload = {}) {
     const event = { at: new Date().toISOString(), kind, ...payload };
+    event.message_th ||= thaiRuntimeMessage(kind, event);
     mapEvent(run, event);
     appendEvent(run, event);
   }

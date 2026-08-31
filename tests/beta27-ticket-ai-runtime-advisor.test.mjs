@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
+const CURRENT_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
@@ -23,7 +25,7 @@ test("beta27 analyzes every ticket state and learns verified recovery strategies
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
-  assert.equal(pkg.version, "2.0.0-alpha.1");
+  assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
   assert.match(template, /"analyzeEveryState": True/);
   assert.match(template, /"backgroundAdvisor": True/);
   assert.match(template, /"actionMode": "validated_autonomous"/);
@@ -46,7 +48,11 @@ test("beta27 analyzes every ticket state and learns verified recovery strategies
   assert.match(manager, /kind === "ai_analysis"/);
   assert.match(manager, /kind === "ai_action"/);
   assert.match(manager, /kind === "ai_strategy_learned"/);
+  assert.match(manager, /function thaiRuntimeMessage\(kind, event = \{\}\)/);
+  assert.match(manager, /event\.message_th \|\|= thaiRuntimeMessage/);
   assert.match(manager, /ALPHA_OLLAMA_BASE_URL:/);
+  assert.match(template, /def thai_runtime_message\(kind, payload\):/);
+  assert.match(template, /item\.setdefault\("message_th"/);
   assert.match(page, /AI Learned/);
   assert.match(page, /AI วิเคราะห์/);
 });
@@ -132,7 +138,7 @@ test("launcher rejects a stale Tool Service and synchronizes the installed ticke
     await mkdir(skillDir, { recursive: true });
     await mkdir(workDir, { recursive: true });
     await mkdir(templateDir, { recursive: true });
-    await writeFile(join(temporary, "package.json"), JSON.stringify({ version: "2.0.0-alpha.1" }), "utf8");
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ version: CURRENT_VERSION }), "utf8");
     await writeFile(join(templateDir, "concert-ticket-assistant.py"), "# beta27 runtime\n", "utf8");
     await writeFile(join(skillDir, "main.py"), "# stale beta24 runtime\n", "utf8");
     await writeFile(join(skillDir, "alpha-skill.json"), JSON.stringify({ id: "concert-ticket-purchase-assistant", version: 24, generator_version: "1.1.0-beta.24" }), "utf8");
@@ -142,10 +148,10 @@ test("launcher rejects a stale Tool Service and synchronizes the installed ticke
     assert.equal(synced.code, 0, synced.stderr || synced.stdout);
     assert.equal(await readFile(join(skillDir, "main.py"), "utf8"), "# beta27 runtime\n");
     const manifest = JSON.parse(await readFile(join(skillDir, "alpha-skill.json"), "utf8"));
-    assert.equal(manifest.generator_version, "2.0.0-alpha.1");
-    assert.equal(manifest.version, 20001);
+    assert.equal(manifest.generator_version, CURRENT_VERSION);
+    assert.equal(manifest.version, 20_000 + Number(CURRENT_VERSION.match(/alpha\.(\d+)$/)?.[1] || 0));
     const index = JSON.parse(await readFile(join(workDir, "skills-index.json"), "utf8"));
-    assert.equal(index.at(-1).generator_version, "2.0.0-alpha.1");
+    assert.equal(index.at(-1).generator_version, CURRENT_VERSION);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

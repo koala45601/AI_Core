@@ -286,26 +286,31 @@ async function inspectPageOnce(url: string, settings: AppSettings, mode: "events
   // the user a raw Access Denied page and only then retrying.
   let inspectionUrl = publicInspectionFallback(url, mode) || url;
   let usedPublicFallback = inspectionUrl !== url;
-  if (usedPublicFallback) assertInternetAndDomain(inspectionUrl, settings);
-  // Passive discovery owns one reusable background page. Opening a new page on
-  // every click caused parallel navigations and avoidable CDN Access Denied.
-  const opened = await executeTool("browser_action", { action: "open", url: inspectionUrl, fresh_page: false, public_inspection: true }, settings);
-  let result = inspectionBlocked(opened)
-    ? opened
-    : await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
-  if (inspectionBlocked(result) && !usedPublicFallback) {
-    const fallback = publicInspectionFallback(url, mode);
-    if (!fallback || fallback === url) throw new Error(`หน้า public ถูกเว็บไซต์ปฏิเสธ (${asText(result.block_reason, 500) || "Access Denied"})`);
-    assertInternetAndDomain(fallback, settings);
-    const fallbackOpened = await executeTool("browser_action", { action: "open", url: fallback, fresh_page: false, public_inspection: true }, settings);
-    result = inspectionBlocked(fallbackOpened)
-      ? fallbackOpened
+  try {
+    if (usedPublicFallback) assertInternetAndDomain(inspectionUrl, settings);
+    // Use one isolated inspection page during the request, then close the
+    // Alpha-owned context in finally. The result is cached separately, so a
+    // completed inspection must not leave a visible browser window behind.
+    const opened = await executeTool("browser_action", { action: "open", url: inspectionUrl, fresh_page: false, public_inspection: true }, settings);
+    let result = inspectionBlocked(opened)
+      ? opened
       : await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
-    inspectionUrl = fallback;
-    usedPublicFallback = true;
+    if (inspectionBlocked(result) && !usedPublicFallback) {
+      const fallback = publicInspectionFallback(url, mode);
+      if (!fallback || fallback === url) throw new Error(`หน้า public ถูกเว็บไซต์ปฏิเสธ (${asText(result.block_reason, 500) || "Access Denied"})`);
+      assertInternetAndDomain(fallback, settings);
+      const fallbackOpened = await executeTool("browser_action", { action: "open", url: fallback, fresh_page: false, public_inspection: true }, settings);
+      result = inspectionBlocked(fallbackOpened)
+        ? fallbackOpened
+        : await executeTool("browser_action", { action: inspectAction, public_inspection: true }, settings);
+      inspectionUrl = fallback;
+      usedPublicFallback = true;
+    }
+    if (inspectionBlocked(result)) throw new Error(`ตรวจหน้าสาธารณะไม่ได้: ${asText(result.block_reason, 500) || "Access Denied"}`);
+    return Object.assign({}, result, { requested_url: url, inspection_url: inspectionUrl, used_public_fallback: usedPublicFallback });
+  } finally {
+    await executeTool("browser_action", { action: "reset_public_inspection", public_inspection: true }, settings).catch(() => {});
   }
-  if (inspectionBlocked(result)) throw new Error(`ตรวจหน้าสาธารณะไม่ได้: ${asText(result.block_reason, 500) || "Access Denied"}`);
-  return Object.assign({}, result, { requested_url: url, inspection_url: inspectionUrl, used_public_fallback: usedPublicFallback });
 }
 
 async function inspectPage(url: string, settings: AppSettings, mode: "events" | "form", forceRefresh = false): Promise<TicketInspectionResult> {

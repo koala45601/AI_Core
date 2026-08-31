@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createTicketRunManager } from "../tool-service/ticket-run-manager.mjs";
 
+const CURRENT_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+
 async function waitFor(check, timeout = 5_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -23,7 +25,7 @@ async function project(root, script) {
     writeFile(join(path, "start.command"), script, "utf8"),
     writeFile(join(path, "run-full-loop.command"), "#!/bin/bash\nexit 0\n", "utf8"),
     writeFile(join(path, "bot.py"), "print('fixture')\n", "utf8"),
-    writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: "2.0.0-alpha.1" }), "utf8"),
+    writeFile(join(path, "config.json"), JSON.stringify({ generatorVersion: CURRENT_VERSION }), "utf8"),
   ]);
   return path;
 }
@@ -51,7 +53,7 @@ test("Alpha 2.0 generator contains official availability, navigation interruptio
     readFile(new URL("../package.json", import.meta.url), "utf8").then(JSON.parse),
     readFile(new URL("../models/Alpha-9B.Modelfile", import.meta.url), "utf8"),
   ]);
-  assert.equal(pkg.version, "2.0.0-alpha.1");
+  assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
   assert.match(template, /collect_zone_availability/);
   assert.match(template, /ที่นั่งว่าง\|จำนวนที่นั่งว่าง/);
   assert.match(template, /LATEST_ZONE_AVAILABILITY_RESPONSE/);
@@ -188,7 +190,7 @@ exit 0
   const manager = createTicketRunManager({
     programCreateDir: root,
     shellPath: "/bin/bash",
-    requiredGeneratorVersion: "2.0.0-alpha.1",
+    requiredGeneratorVersion: CURRENT_VERSION,
     defaultTicketUsername: "default@example.test",
     credentialResolver: async ({ account }) => account === "default@example.test" ? "fixture-secret" : "",
   });
@@ -251,7 +253,7 @@ test("Alpha 2.0 returns run id before project preparation and turns a terminal l
   const manager = createTicketRunManager({
     appDir: temporary,
     programCreateDir: programs,
-    requiredGeneratorVersion: "2.0.0-alpha.1",
+    requiredGeneratorVersion: CURRENT_VERSION,
     diagnoseRuntime: async () => ({
       root_cause: "generated project directory is missing",
       strategy: "restart the generated project after restoring the project path",
@@ -297,7 +299,7 @@ echo '{"kind":"input_required","field":"payment","stage":"payment_handoff","prom
 IFS= read -r done
 exit 0
 `);
-  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: "2.0.0-alpha.1", journalDir });
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: CURRENT_VERSION, journalDir });
   try {
     const first = await manager.start({ project_path: path, idempotency_key: "alpha2-one" });
     const second = await manager.start({ project_path: path, idempotency_key: "alpha2-one" });
@@ -346,7 +348,7 @@ exit 0
   const manager = createTicketRunManager({
     appDir: temporary,
     programCreateDir: programs,
-    requiredGeneratorVersion: "2.0.0-alpha.1",
+    requiredGeneratorVersion: CURRENT_VERSION,
     repairDir,
     repairSkillsDir,
     skillsIndexFile,

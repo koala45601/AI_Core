@@ -12,7 +12,7 @@ test("9B is the only selectable and downloadable model", async () => {
     source("start-alpha.command"),
   ]);
   assert.doesNotMatch(types, /Qwen3-14B|qwen3:4b-instruct/);
-  assert.match(types, /model: "qwen3\.5:9b"/);
+  assert.match(types, /model: "alpha:9b"/);
   assert.match(page, /Qwen3\.5 9B/);
   assert.doesNotMatch(page, /Qwen3 14B|Qwen3 4B/);
   assert.doesNotMatch(launcher, /qwen3:4b-instruct|Qwen3-14B/);

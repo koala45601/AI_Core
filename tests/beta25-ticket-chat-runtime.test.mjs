@@ -16,7 +16,7 @@ test("Ticket Browser cleanup only targets Chrome processes that own the isolated
 test("generated Ticket Bot auto-selects an available zone and always closes its owned browser", async () => {
   const template = await readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8");
   assert.match(template, /"strategy": "auto_page_order_with_fallbacks"/);
-  assert.match(template, /"reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"/);
+  assert.match(template, /"reason": "NO_ZONE_HAS_COMPLETE_SET"/);
   assert.match(template, /finally:\n\s+stop_owned_browser\(\)/);
 });
 

@@ -51,11 +51,14 @@ test("public inspection reuses a persistent normal browser and observes the exis
   const [route, service] = await Promise.all([source("app/api/ticket-bot/route.ts"), source("tool-service/server.mjs")]);
   assert.match(route, /inspectAction, public_inspection: true/);
   assert.match(route, /action: "observe_existing", url, public_inspection: true/);
-  assert.doesNotMatch(route, /action: "reset_public_inspection"/);
+  assert.match(route, /action: "reset_public_inspection"/);
+  assert.match(route, /finally[\s\S]*reset_public_inspection/);
   assert.match(service, /ensurePublicInspectionBrowser/);
   assert.match(service, /headless: false/);
   assert.match(service, /public-inspection-profile/);
   assert.match(service, /throttlePublicInspectionNavigation/);
+  assert.match(service, /closePublicInspectionBrowser/);
+  assert.match(service, /cleanupOwnedProfileProcesses/);
   assert.doesNotMatch(service, /mkdtemp\(join\(tmpdir\(\), "alpha-public-inspection-/);
 });
 

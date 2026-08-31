@@ -61,5 +61,5 @@ test("beta23 runtime patch wires Create Video into existing sidebar without repl
   assert.match(page, /LOCAL AI FILM STUDIO/);
   assert.match(css, /alpha-beta23-create-video-phase1-v1/);
   assert.match(css, /\.create-video-view/);
-  assert.equal(pkg.version, "2.0.0-alpha.1");
+  assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
 });

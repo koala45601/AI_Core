@@ -13,6 +13,32 @@ from urllib.parse import urlsplit
 payload = json.loads(sys.argv[1])
 output = pathlib.Path(os.environ["ALPHA_OUTPUT_DIR"])
 output.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_app_version():
+    """Resolve the release from Alpha's single version source.
+
+    Tool Service injects the current application version. Direct fixture runs
+    fall back to the nearest package.json, so this generator never pins a
+    release number of its own.
+    """
+    injected = str(os.environ.get("ALPHA_APP_VERSION") or payload.get("generatorVersion") or "").strip()
+    if injected:
+        return injected
+    for parent in pathlib.Path(__file__).resolve().parents:
+        package_path = parent / "package.json"
+        if not package_path.is_file():
+            continue
+        try:
+            version = str(json.loads(package_path.read_text(encoding="utf-8")).get("version") or "").strip()
+        except (OSError, ValueError, TypeError):
+            continue
+        if version:
+            return version
+    return "unversioned"
+
+
+generator_version = resolve_app_version()
 event_candidates = payload.get("event_candidates") if isinstance(payload.get("event_candidates"), list) else []
 eligible_events = [
     item for item in event_candidates
@@ -120,8 +146,8 @@ if not missing:
 
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
-        "generatorVersion": "2.0.0-alpha.1",
-        "runtimeRevision": "ticket-speed-mode-2-price-preferences",
+        "generatorVersion": generator_version,
+        "runtimeRevision": "ticket-seat-availability-modal-1",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -341,12 +367,17 @@ def classify_snapshot(snapshot, now=None, sale_open_at=""):
     # being sent into the reserved-seat canvas engine.
     elif "festival.php" in url or re.search(r"เลือกจำนวนบัตร", body):
         state, evidence = "quantity_selection", ["ticket quantity page"]
+    # Some real booking flows keep the original `zones.php` URL after the
+    # selected zone opens its seat map. In that case the URL and heading still
+    # say step 1/4, but the live seat controls are the stronger state signal.
+    # Prefer the seat-map evidence so the main loop does not click the zone
+    # control again and bounce between zone and seat pages.
+    elif seat_control_count > 0:
+        state, evidence = "ticket_selection", [f"visible selectable seat controls ({seat_control_count})"]
     elif "fixed.php" in url or re.search(r"ขั้นตอนที่\s*2/4[\s\S]{0,120}เลือกที่นั่ง", body):
         state, evidence = "ticket_selection", ["reserved seat map page"]
     elif "zones.php" in url or re.search(r"ขั้นตอนที่\s*1/4|เลือกโซน|select\s+(?:round|zone)", body):
         state, evidence = "zone_selection", ["round and zone page"]
-    elif seat_control_count > 0:
-        state, evidence = "ticket_selection", [f"visible selectable seat controls ({seat_control_count})"]
     elif visible_sale_entry:
         state, evidence = "sale_entry", ["visible sale entry on an on-sale page"]
     elif re.search(r"conditions|เงื่อนไข\s*ข้อตกลง|i accept the terms", body):
@@ -744,8 +775,96 @@ def replay_verified_frontend_api(page, purpose="availability"):
     return None
 
 
+def _thai_runtime_value(value, limit=120):
+    text = str(value or "").strip()
+    if any(marker in text.lower() for marker in ("password", "passwd", "token", "cookie", "authorization", "bearer")):
+        return "ข้อมูลถูกซ่อนเพื่อความปลอดภัย"
+    return text[:limit]
+
+
+def thai_runtime_message(kind, payload):
+    status = _thai_runtime_value(payload.get("status"))
+    state = _thai_runtime_value(payload.get("state") or payload.get("current_state") or payload.get("stage"))
+    action = _thai_runtime_value(payload.get("next_action") or payload.get("action"))
+    status_labels = {
+        "PAYMENT_HANDOFF": "ถึงหน้าชำระเงินแล้วและหยุดรอผู้ใช้",
+        "SOLD_OUT_BY_SERVER": "เว็บยืนยันว่าบัตรหรือที่นั่งหมด",
+        "SALE_CLOSED_BY_SERVER": "เว็บยืนยันว่าปิดการขายแล้ว",
+        "PRE_SALE_SCHEDULED": "ยังไม่ถึงเวลาเปิดขายตามข้อมูลเว็บ",
+        "PRE_SALE_READY": "เตรียมรอช่วงเปิดขายแล้ว",
+        "ARMED_PRE_SALE": "เตรียมรอช่วงเปิดขายแล้ว",
+        "LOGIN_VERIFIED": "ยืนยัน Login แล้ว",
+        "EXISTING_SESSION_VERIFIED": "ยืนยัน session เดิมแล้ว",
+        "BROWSER_RELAUNCHED": "เชื่อมต่อ Browser เดิมกลับมาแล้ว",
+        "BROWSER_RELAUNCH_STARTED": "กำลังเปิด Browser เดิมเพื่อทำงานต่อ",
+        "BROWSER_RELAUNCH_FAILED": "เปิด Browser เดิมไม่สำเร็จ กำลังวิเคราะห์วิธีถัดไป",
+        "NO_COMPLETE_SET_FOR_SELECTED_PRICE": "ยังไม่พบชุดที่นั่งครบตามราคา/จำนวนที่เลือก กำลังสแกนต่อ",
+        "WAITING_FOR_COMPLETE_SET": "กำลังรอชุดที่นั่งครบและตรวจ inventory ใหม่",
+        "SEAT_HOLD_EXPIRED": "ที่นั่งหลุดก่อนยืนยันคำสั่งซื้อ กำลังกลับผังเดิม",
+        "ACCESS_DENIED_RETRY_SCHEDULED": "เว็บปฏิเสธชั่วคราว กำลังรอตามเงื่อนไขเว็บแล้วลอง session เดิม",
+        "WAITING_ROOM_JOINED": "เข้าคิวด้วย session ปัจจุบันแล้ว กำลังรักษาคิวเดิม",
+        "AI_RECOVERY_DECISION": "AI วิเคราะห์หลักฐานแล้ว กำลังทำ recovery ที่อนุญาต",
+        "TRANSIENT_RECOVERY_VERIFIED": "ตรวจสอบแล้ว runtime กลับมาทำงานต่อได้",
+    }
+    if kind == "runtime":
+        return "เปิด Ticket Runtime และ Browser แยกของ Alpha แล้ว · ไม่ควบคุมเมาส์ระบบ"
+    if kind == "runtime_heartbeat":
+        browser = "เชื่อมต่อ Browser แล้ว" if payload.get("browser_connected") else "กำลังรอ Browser เชื่อมต่อ"
+        ai = "AI อยู่ใน standby พร้อมวิเคราะห์เมื่อผิดปกติ" if payload.get("ai_ready") else "กำลังเตรียม AI Supervisor"
+        return f"ระบบยังทำงานอยู่ · {browser} · {ai}"
+    if kind in {"page_ready", "seat_map_ready"}:
+        return f"หน้าเว็บพร้อมใช้งาน{f' · state {state}' if state else ''} · กำลังตรวจขั้นถัดไป"
+    if kind in {"page_not_ready", "seat_map_loading"}:
+        return f"หน้าเว็บยังโหลดไม่สมบูรณ์{f' · state {state}' if state else ''} · กำลังรอแล้วตรวจซ้ำ"
+    if kind in {"api", "api_contract"}:
+        method = _thai_runtime_value(payload.get("method") or "GET", 12)
+        code = _thai_runtime_value(payload.get("status") or "ยังไม่ทราบ", 30)
+        return f"ตรวจคำขอของเว็บ {method} แล้ว · ผลตอบกลับ {code} · ใช้ session เดิม"
+    if kind in {"seat_availability", "seat_scan"}:
+        available = payload.get("available")
+        zones = payload.get("zones")
+        if isinstance(zones, dict):
+            summary = ", ".join(f"{_thai_runtime_value(zone, 30)}={count}" for zone, count in list(zones.items())[:8])
+            return f"ตรวจที่นั่งว่างจากหน้าเว็บจริงแล้ว · {summary or 'ยังไม่มีโซนที่ยืนยันได้'} · วางแผนชุดให้ครบก่อนกด"
+        return f"สแกนที่นั่งโซน {_thai_runtime_value(payload.get('zone') or 'ปัจจุบัน', 40)} · ว่าง {available if available is not None else 'ยังไม่ทราบ'} · ต้องการ {payload.get('wanted', 'ยังไม่ทราบ')}"
+    if kind == "seat_set_planned":
+        return f"วางชุดที่นั่งครบ {_thai_runtime_value(payload.get('wanted') or len(payload.get('seats') or []), 20)} ใบแล้ว · เตรียมยืนยันต่อเนื่อง"
+    if kind == "seat_attempt":
+        return f"กำลังยืนยันชุดที่นั่งครั้งที่ {_thai_runtime_value(payload.get('attempt') or 1, 20)} · ตรวจคำตอบจากเว็บหลังคลิก"
+    if kind == "seat_conflict":
+        return f"พบที่นั่งถูกจองแทรกหรือชุดไม่ครบ ({payload.get('selected', 0)}/{payload.get('wanted', 0)}) · ปล่อยชุดค้างและวางชุดใหม่"
+    if kind == "partial_released":
+        return f"ปล่อยการเลือกค้าง {payload.get('released', 0)} ใบแล้ว · กลับไปตรวจ inventory ล่าสุด"
+    if kind == "zone_switch":
+        return f"เปลี่ยนไปโซนถัดไปที่ผู้ใช้อนุญาต · {_thai_runtime_value(payload.get('from_zone') or 'เดิม', 40)} → {_thai_runtime_value(payload.get('to_zone') or payload.get('zone') or 'ถัดไป', 40)}"
+    if kind == "reservation_verified":
+        return f"เว็บยืนยันการถือที่นั่งแล้ว {payload.get('selected', payload.get('wanted', 0))}/{payload.get('wanted', 0)} · ไปเตรียม Checkout ต่อทันที"
+    if kind in {"queue", "queue_analysis"}:
+        position = payload.get("queue_position")
+        return f"กำลังรักษาคิวเดิม{f' · หลักฐานลำดับ {position}' if position is not None else ''} · ไม่ refresh และรอ response จากเว็บ"
+    if kind in {"recovery", "supervisor_action", "ai_action"}:
+        text = status_labels.get(status) or ("AI กำลังวิเคราะห์ปัญหาและเลือกวิธี recovery" if kind == "supervisor_action" else "กำลัง recovery runtime ตามหลักฐานเดิม")
+        return f"{text}{f' · ขั้นถัดไป: {action}' if action else ''}"
+    if kind == "ai_analysis":
+        return f"AI กำลังวิเคราะห์ state {state or 'ปัจจุบัน'} จากหลักฐานที่ตัดข้อมูลลับแล้ว · ยังไม่ขวางเส้นทางเลือกที่นั่ง"
+    if kind == "ai_strategy_learned":
+        return f"AI บันทึกวิธี recovery ที่ผ่านการยืนยันแล้วสำหรับใช้ครั้งต่อไป · {action or 'strategy'}"
+    if kind == "authentication":
+        return status_labels.get(status) or "กำลังตรวจสอบ Login และ session โดยไม่เก็บรหัสผ่าน"
+    if kind == "input_required":
+        return "ต้องการให้ผู้ใช้ทำขั้นตอนยืนยันบน Browser ต่อ · session เดิมยังถูกเก็บไว้"
+    if kind == "wait":
+        return f"กำลังรอเงื่อนไขจากเว็บ{f' · {state}' if state else ''} แล้วจะตรวจต่ออัตโนมัติ"
+    if kind == "checkpoint":
+        return f"ตรวจ state ปัจจุบันแล้ว: {state or 'ยังไม่ทราบ'}{f' · ขั้นถัดไป: {action}' if action else ''}"
+    if kind == "result":
+        return status_labels.get(status) or f"ได้ผลลัพธ์จากเว็บแล้ว: {status or 'ยังไม่ยืนยัน'}"
+    return "กำลังทำงานตาม workflow ที่ตรวจสอบได้"
+
+
 def record(kind, payload):
     item = {"at": datetime.now().astimezone().isoformat(), "kind": kind, **payload}
+    item.setdefault("message_th", thai_runtime_message(kind, payload))
     with REPORT_LOCK:
         with REPORT.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -1999,6 +2118,55 @@ def accept_event_terms(page):
     return clicked
 
 
+AVAILABILITY_STATUS_RE = re.compile(
+    r"^(?:available|available\s+seats?|in\s+stock|ว่าง|มีที่นั่ง|พร้อมขาย)$",
+    re.I,
+)
+
+
+def availability_meets_requirement(value, minimum):
+    """Treat textual availability as a candidate, never as a fabricated count.
+
+    A few official booking pages report a zone as ``Available`` because they
+    sell general-admission tickets. That is enough to enter the quantity flow,
+    but it is deliberately not converted to a numeric inventory count.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value >= minimum
+    return bool(AVAILABILITY_STATUS_RE.fullmatch(str(value or "").strip())) or value is None
+
+
+def align_zone_availability(availability, discovered_zones):
+    """Align official display names with the page's own image-map zone codes.
+
+    ThaiTicketMajor can expose ``DE``/``FR`` in area href fragments while its
+    availability modal displays ``DEAR.``/``FROM.``. A mapping is accepted only
+    when the normalized page code is an exact or unique prefix of a modal label.
+    """
+    if not isinstance(availability, dict) or not availability:
+        return {}
+    discovered = [str(item or "").strip().upper() for item in discovered_zones or [] if str(item or "").strip()]
+    normalized_discovered = {item: re.sub(r"[^A-Z0-9]", "", item) for item in discovered}
+    aligned = {}
+    aliases = {}
+    for source_zone, value in availability.items():
+        source = str(source_zone or "").strip().upper()
+        source_key = re.sub(r"[^A-Z0-9]", "", source)
+        exact = [zone for zone, key in normalized_discovered.items() if key and key == source_key]
+        prefixes = [zone for zone, key in normalized_discovered.items() if len(key) >= 2 and source_key.startswith(key)]
+        matches = exact or prefixes
+        target = matches[0] if len(matches) == 1 else source
+        aligned[target] = value
+        if target != source:
+            aliases[target] = source
+    if aliases:
+        CONFIG["_runtimeZoneAvailabilityAliases"] = aliases
+        record("seat_availability", {"source": "official_page_session", "zone_aliases": aliases, "reason": "OFFICIAL_LABELS_ALIGNED_TO_PAGE_ZONE_CODES"})
+    return aligned
+
+
 def normalize_zone_availability(value):
     """Extract zone/count pairs from the official page response without replaying it."""
     result = {}
@@ -2009,6 +2177,11 @@ def normalize_zone_availability(value):
             digits = re.sub(r"[^0-9]", "", str(count_value))
             if digits:
                 result[zone] = int(digits)
+            elif AVAILABILITY_STATUS_RE.fullmatch(str(count_value).strip()):
+                # ``Available`` is an official status, not a seat count. Keep
+                # it as None so the quantity/seat flow performs final
+                # verification instead of inventing capacity.
+                result[zone] = None
         for child in value.values():
             result.update(normalize_zone_availability(child))
     elif isinstance(value, list):
@@ -2017,10 +2190,40 @@ def normalize_zone_availability(value):
     return result
 
 
+def visible_zone_availability_modal(page):
+    """Return whether the already-open official availability modal is visible."""
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        for selector in (
+            "[role='dialog']:visible",
+            ".fancybox-wrap:visible",
+            ".modal-dialog:visible",
+            ".modal:visible",
+            "[id^='popup-']:visible",
+        ):
+            try:
+                dialogs = scope.locator(selector)
+                for index in range(min(dialogs.count(), 20)):
+                    dialog = dialogs.nth(index)
+                    if not dialog.is_visible(timeout=100):
+                        continue
+                    text = " ".join(dialog.inner_text(timeout=200).split())
+                    if re.search(r"โซนที่นั่ง|ที่นั่งว่าง|seat\s+availability|available", text, re.I):
+                        return True
+            except Exception:
+                continue
+    return False
+
+
 def parse_zone_availability_modal(page):
     zones = {}
     for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
-        for selector in ("[role='dialog'] tr", ".modal:visible tr", ".modal-dialog tr", "table tr"):
+        for selector in (
+            "[role='dialog']:visible tr",
+            ".fancybox-wrap:visible tr",
+            ".modal:visible tr",
+            ".modal-dialog:visible tr",
+            "[id^='popup-']:visible tr",
+        ):
             try:
                 rows = scope.locator(selector)
                 for index in range(min(rows.count(), 200)):
@@ -2032,16 +2235,83 @@ def parse_zone_availability_modal(page):
                         continue
                     zone = cells[0].strip().upper()
                     count_text = re.sub(r"[^0-9]", "", cells[-1])
-                    if re.fullmatch(r"[A-Z][A-Z0-9._/-]{0,29}", zone) and count_text:
+                    if not re.fullmatch(r"[A-Z][A-Z0-9._/-]{0,29}", zone):
+                        continue
+                    if count_text:
                         zones[zone] = int(count_text)
+                    elif AVAILABILITY_STATUS_RE.fullmatch(cells[-1].strip()):
+                        zones[zone] = None
+            except Exception:
+                continue
+        # Some pages render the same table as text rows without semantic
+        # ``tr`` elements. Parse only a visible availability dialog so normal
+        # page text cannot be mistaken for inventory.
+        for selector in (
+            "[role='dialog']:visible",
+            ".fancybox-wrap:visible",
+            ".modal-dialog:visible",
+            ".modal:visible",
+            "[id^='popup-']:visible",
+        ):
+            try:
+                dialogs = scope.locator(selector)
+                for index in range(min(dialogs.count(), 20)):
+                    dialog = dialogs.nth(index)
+                    if not dialog.is_visible(timeout=100):
+                        continue
+                    for line in dialog.inner_text(timeout=200).splitlines():
+                        line = re.sub(r"\s+", " ", line).strip()
+                        match = re.fullmatch(
+                            r"([A-Z][A-Z0-9._/-]{0,29})\s+(\d[\d,]*|available(?:\s+seats?)?|in\s+stock|ว่าง|มีที่นั่ง|พร้อมขาย)",
+                            line,
+                            re.I,
+                        )
+                        if not match:
+                            continue
+                        zone = match.group(1).upper()
+                        status = match.group(2).strip()
+                        digits = re.sub(r"[^0-9]", "", status)
+                        zones[zone] = int(digits) if digits else None
             except Exception:
                 continue
     return zones
 
 
+def close_zone_availability_modal(page):
+    """Close only the Alpha-owned availability dialog before selecting a zone."""
+    selectors = (
+        ".fancybox-close",
+        "[aria-label*='close' i]",
+        "[title*='close' i]",
+        "[aria-label='×']",
+        "[data-dismiss='modal']",
+        "button:has-text('Close')",
+        "button:has-text('ปิด')",
+        "button:has-text('×')",
+    )
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        for selector in selectors:
+            try:
+                control = scope.locator(selector).first
+                if control.count() and control.is_visible(timeout=100) and control.is_enabled(timeout=100):
+                    control.click(force=True, no_wait_after=True)
+                    if not visible_zone_availability_modal(page):
+                        return True
+            except Exception:
+                continue
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return not visible_zone_availability_modal(page)
+
+
 def collect_zone_availability(page, force=False):
     settings = CONFIG.get("seatAvailability") if isinstance(CONFIG.get("seatAvailability"), dict) else {}
-    if settings.get("enabled", CONFIG.get("seatMode") == "reserved") is False or CONFIG.get("seatMode") != "reserved":
+    seat_mode = str(CONFIG.get("seatMode") or "").casefold()
+    if seat_mode not in {"reserved", "standing", "general_admission"}:
+        return {}
+    if seat_mode == "reserved" and settings.get("enabled", True) is False:
         return {}
     cached = CONFIG.get("_runtimeZoneAvailability") if isinstance(CONFIG.get("_runtimeZoneAvailability"), dict) else {}
     if cached and not force:
@@ -2075,6 +2345,26 @@ def collect_zone_availability(page, force=False):
             })
             record("inventory_generation", {"generation": generation, "source": "verified_frontend_api", "zones": api_zones})
             return api_zones
+    # The user may have left the modal open from the previous attempt. It is
+    # already the authoritative page response; clicking its covered trigger
+    # again causes the 30-second timeout seen in the LUCY run.
+    visible_zones = parse_zone_availability_modal(page)
+    if visible_zones or visible_zone_availability_modal(page):
+        generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
+        CONFIG["_runtimeInventoryGeneration"] = generation
+        CONFIG["_runtimeZoneAvailability"] = visible_zones
+        record("seat_availability", {
+            "source": "official_page_session",
+            "available": bool(visible_zones),
+            "zones": visible_zones,
+            "reason": "MODAL_ALREADY_VISIBLE_REUSED",
+            "checked_at": datetime.now().astimezone().isoformat(),
+            "inventory_generation": generation,
+            "render_wait_skipped": True,
+        })
+        record("inventory_generation", {"generation": generation, "source": "seat_availability_modal_reused", "zones": visible_zones})
+        close_zone_availability_modal(page)
+        return visible_zones
     button = None
     pattern = re.compile(r"ที่นั่งว่าง|จำนวนที่นั่งว่าง|available\s+seats?|seat\s+availability", re.I)
     for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
@@ -2092,7 +2382,7 @@ def collect_zone_availability(page, force=False):
         record("seat_availability", {"source": "official_page_session", "available": False, "reason": "CONTROL_NOT_PRESENT", "standing_flow": False})
         return dict(cached)
     try:
-        button.click(no_wait_after=True)
+        button.click(timeout=1500, no_wait_after=True)
     except Exception as error:
         record("seat_availability", {"source": "official_page_session", "available": False, "reason": "CONTROL_CLICK_FAILED", "error": str(error)[:300]})
         return dict(cached)
@@ -2120,20 +2410,37 @@ def collect_zone_availability(page, force=False):
         "inventory_generation": generation,
     })
     record("inventory_generation", {"generation": generation, "source": "seat_availability_modal", "zones": zones})
-    try:
-        close = page.locator("[role='dialog'] button, .modal-dialog button, .modal button").filter(has_text=re.compile(r"ปิด|close|×", re.I)).first
-        if close.count() and close.is_visible(timeout=150):
-            close.click(no_wait_after=True)
-        else:
-            page.keyboard.press("Escape")
-    except Exception:
-        pass
+    close_zone_availability_modal(page)
     return zones
 
 
 def select_preferred_zone(page):
     if not wait_for_page_ready(page):
         record("selection", {"mode": "zone", "complete": False, "reason": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
+        return False
+    configured_no_seat_mode = str(CONFIG.get("seatMode") or "").casefold() in {"standing", "general_admission"}
+    if CONFIG.get("_runtimeGeneralAdmissionZoneSelected"):
+        # A general-admission zone is selected once. If its next page is still
+        # settling, wait in place; never click the zone again and bounce back
+        # to the map/modal indefinitely.
+        if visible_general_admission_quantity_control(page):
+            CONFIG["seatMode"] = "general_admission"
+            CONFIG["_runtimeLastZoneSelectionReason"] = "GENERAL_ADMISSION_QUANTITY_READY"
+            record("selection", {
+                "mode": "general_admission",
+                "zone": CONFIG.get("_runtimeGeneralAdmissionZoneSelected"),
+                "complete": False,
+                "reason": "QUANTITY_CONTROL_READY_AFTER_ZONE",
+                "next_action": "apply_locked_quantity",
+            })
+            return False
+        CONFIG["_runtimeLastZoneSelectionReason"] = "GENERAL_ADMISSION_TRANSITION_PENDING"
+        record("recovery", {
+            "status": "WAITING_FOR_GENERAL_ADMISSION_QUANTITY_PAGE",
+            "zone": CONFIG.get("_runtimeGeneralAdmissionZoneSelected"),
+            "same_session": True,
+            "next_action": "wait_for_quantity_page",
+        })
         return False
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
     zones = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
@@ -2159,26 +2466,27 @@ def select_preferred_zone(page):
             if zone and len(zone) <= 30 and all(item[0] != zone for item in discovered):
                 discovered.append((zone, node))
     discovered_names = list(dict.fromkeys(zone for zone, _ in discovered))
-    auto_discovered_zones = bool(CONFIG.get("_runtimeAutoDiscoveredZones")) or (not zones and bool(discovered_names))
+    availability = align_zone_availability(collect_zone_availability(page, force=True), discovered_names)
+    auto_discovered_zones = bool(CONFIG.get("_runtimeAutoDiscoveredZones")) or (not zones and bool(discovered_names or availability))
     if not zones:
-        print("โซนที่พบจากหน้าจริง: " + (", ".join(discovered_names) if discovered_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
-        if discovered_names:
+        page_zone_names = discovered_names or list(availability.keys())
+        print("โซนที่พบจากหน้าจริง: " + (", ".join(page_zone_names) if page_zone_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
+        if page_zone_names:
             # Keep the complete page order as the fallback, but do not select a
             # zone until the official availability modal has answered. A page
             # order is not an availability signal (the first map item is often
             # a sold-out standing/side zone).
-            zones = list(discovered_names)
+            zones = list(page_zone_names)
             CONFIG["_runtimeAutoDiscoveredZones"] = True
             CONFIG["preferredZones"] = list(zones)
             recovery["zoneOrder"] = list(zones)
             CONFIG["seatRecovery"] = recovery
-            record("selection", {"mode": "zone", "strategy": "auto_page_order_with_fallbacks", "candidate_order": zones, "discovered": discovered_names, "complete": False, "reason": "DISCOVERED_PAGE_ORDER_WAITING_AVAILABILITY_FILTER"})
+            record("selection", {"mode": "zone", "strategy": "auto_page_order_with_fallbacks", "candidate_order": zones, "discovered": discovered_names, "availability_zones": list(availability.keys()), "complete": False, "reason": "DISCOVERED_PAGE_ORDER_WAITING_AVAILABILITY_FILTER"})
         else:
             record("selection", {"mode": "zone", "preferred": [], "discovered": discovered_names, "complete": False, "reason": "USER_ZONE_REQUIRED"})
             return False
-    availability = collect_zone_availability(page, force=True)
     minimum = max(1, int(CONFIG.get("quantity", 1)))
-    if not availability and auto_discovered_zones:
+    if not availability and auto_discovered_zones and not configured_no_seat_mode:
         # Empty means the modal/API was not ready or was transiently rejected;
         # it must not be interpreted as "the first zone is okay". Let the main
         # state machine retry in the same session and keep the user out of a
@@ -2186,13 +2494,43 @@ def select_preferred_zone(page):
         CONFIG["_runtimeLastZoneSelectionReason"] = "AVAILABILITY_UNAVAILABLE"
         record("selection", {"mode": "zone", "preferred": zones, "discovered": discovered_names, "availability": {}, "complete": False, "reason": "AVAILABILITY_UNAVAILABLE_WAIT_AND_RESCAN", "wanted": minimum})
         return False
-    ordered = [zone for zone in zones if zone not in availability or int(availability.get(zone, 0)) >= minimum]
+    textual_availability = configured_no_seat_mode or any(value is None or isinstance(value, str) for value in availability.values())
+    if textual_availability:
+        # Official ``Available`` rows are the signal for a general-admission
+        # zone. They must go to quantity selection after the zone is chosen;
+        # never send this page into the reserved-seat engine.
+        detected_mode = str(CONFIG.get("seatMode") or "general_admission").casefold()
+        if detected_mode not in {"standing", "general_admission"}:
+            detected_mode = "general_admission"
+        CONFIG["_runtimeSeatModeDetected"] = detected_mode
+        CONFIG["seatMode"] = detected_mode
+        record("selection", {
+            "mode": detected_mode,
+            "reason": "OFFICIAL_AVAILABILITY_HAS_TEXT_STATUS_NO_SEAT_MAP",
+            "zones": availability,
+            "next_action": "select_zone_then_quantity",
+        })
+        if visible_general_admission_quantity_control(page):
+            CONFIG["_runtimeGeneralAdmissionZoneSelected"] = zones[0] if len(zones) == 1 else "quantity_ready"
+            CONFIG["_runtimeLastZoneSelectionReason"] = "GENERAL_ADMISSION_QUANTITY_READY"
+            record("selection", {"mode": detected_mode, "complete": False, "reason": "QUANTITY_CONTROL_READY_WITHOUT_SEAT_MAP", "next_action": "apply_locked_quantity"})
+            return False
+    if auto_discovered_zones and availability:
+        mapped = [zone for zone in zones if zone in availability and availability_meets_requirement(availability.get(zone), minimum)]
+        ordered = mapped or [zone for zone, value in availability.items() if availability_meets_requirement(value, minimum)]
+    else:
+        ordered = [zone for zone in zones if zone not in availability or availability_meets_requirement(availability.get(zone), minimum)]
     if auto_discovered_zones and availability:
         # With no user zone preference, choose the official zone with the
         # largest live inventory first. The previous page-order fallback chose
         # S=33 ahead of B=183 and caused avoidable seat conflicts.
         page_order = {zone: index for index, zone in enumerate(zones)}
-        ordered.sort(key=lambda zone: (-int(availability.get(zone, 0)), page_order.get(zone, len(page_order))))
+        def availability_sort_key(zone):
+            value = availability.get(zone)
+            if isinstance(value, (int, float)):
+                return (0, -int(value), page_order.get(zone, len(page_order)))
+            return (1, 0, page_order.get(zone, len(page_order)))
+        ordered.sort(key=availability_sort_key)
         record("selection", {"mode": "zone", "strategy": "official_availability_descending", "candidate_order": ordered, "availability": availability, "wanted": minimum})
     CONFIG["_runtimeAllowedZones"] = list(zones)
     CONFIG["_runtimeAvailableZones"] = list(ordered)
@@ -2205,20 +2543,57 @@ def select_preferred_zone(page):
                 continue
             locator.evaluate("element => element.click()")
             CONFIG["_runtimeCurrentZone"] = zone
+            if textual_availability:
+                CONFIG["_runtimeGeneralAdmissionZoneSelected"] = zone
             record("action", {"action": "select_image_map_zone", "zone": zone, "selector": f"area[href$='#{zone}']"})
-            wait_for_seat_controls(page)
+            if not textual_availability:
+                wait_for_seat_controls(page)
             return True
         locator = page.get_by_text(zone, exact=True).first
         try:
             if locator.count() and locator.is_visible(timeout=500) and locator.is_enabled():
                 locator.click()
                 CONFIG["_runtimeCurrentZone"] = zone
+                if textual_availability:
+                    CONFIG["_runtimeGeneralAdmissionZoneSelected"] = zone
                 record("action", {"action": "select_zone", "zone": zone})
-                wait_for_seat_controls(page)
+                if not textual_availability:
+                    wait_for_seat_controls(page)
                 return True
         except Exception:
             pass
     record("selection", {"mode": "zone", "preferred": zones, "discovered": discovered_names, "complete": False})
+    return False
+
+
+def visible_general_admission_quantity_control(page):
+    """Detect a real quantity control without treating the round selector as qty."""
+    selectors = (
+        "select[name*='qty' i]",
+        "select[name*='quantity' i]",
+        "select[id*='qty' i]",
+        "select[id*='quantity' i]",
+        "input[name*='qty' i]",
+        "input[name*='quantity' i]",
+        "input[id*='qty' i]",
+        "input[id*='quantity' i]",
+        "[aria-label*='จำนวน' i]",
+        "[aria-label*='quantity' i]",
+    )
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        for selector in selectors:
+            try:
+                control = scope.locator(selector).first
+                if control.count() and control.is_visible(timeout=100) and control.is_enabled(timeout=100):
+                    return True
+            except Exception:
+                continue
+        try:
+            body = scope.locator("body").inner_text(timeout=150)
+            if re.search(r"เลือกจำนวนบัตร|จำนวนบัตร|ticket\s+quantity|general\s+admission", body, re.I):
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -2233,6 +2608,17 @@ def select_ticket_quantity(page):
         locator = selects.nth(index)
         try:
             if not locator.is_visible(timeout=200) or not locator.is_enabled(timeout=200):
+                continue
+            identity = " ".join(filter(None, [locator.get_attribute("name"), locator.get_attribute("id"), locator.get_attribute("aria-label")])).casefold()
+            options = [str(item).strip() for item in locator.locator("option").all_text_contents()]
+            # Prefer a control explicitly identified as quantity. If the site
+            # omits the attribute, accept a compact 1..N option list but never
+            # use the performance/date selector as a quantity control.
+            quantity_hint = bool(re.search(r"qty|quantity|จำนวน", identity, re.I))
+            numeric_options = [item for item in options if re.fullmatch(r"\d+", item)]
+            if not quantity_hint and not numeric_options and not (str(wanted) in options):
+                continue
+            if not quantity_hint and len(numeric_options) < 2:
                 continue
         except Exception:
             continue
@@ -3622,8 +4008,12 @@ def execute_validated_ai_action(page, checkpoint, decision, confirm_order=False)
         elif action == "activate_locked_performance" and state in {"sale_entry", "zone_selection", "unknown"}:
             if state == "zone_selection":
                 performance_state = ensure_locked_performance_on_booking_page(page)
-                success = performance_state in {"matched", "changed", "absent"}
-                detail = performance_state
+                # ``absent`` means this event has no repeat performance
+                # selector on the booking page. It is a harmless no-op, but it
+                # must not count as an executed action and steal the loop from
+                # deterministic zone/quantity handling.
+                success = performance_state in {"matched", "changed"}
+                detail = "not_needed" if performance_state == "absent" else performance_state
             else:
                 success = bool(activate_selected_performance(page, prefer_target_navigation=True))
         elif action == "return_seat_map" and state == "reservation_expired":
@@ -3901,6 +4291,22 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
             state = checkpoint["state"]
+            # A zone page can be the first step of a no-seat/general-admission
+            # flow. Once the official modal reported a textual Available
+            # status and the selected zone is transitioning, recognize a real
+            # quantity control even when the URL has not changed yet.
+            no_seat_runtime = str(CONFIG.get("_runtimeSeatModeDetected") or CONFIG.get("seatMode") or "").casefold() in {"standing", "general_admission"}
+            if state == "zone_selection" and no_seat_runtime and visible_general_admission_quantity_control(page):
+                state = "quantity_selection"
+                checkpoint = {**checkpoint, "state": state, "evidence": ["general-admission quantity control after selected zone"]}
+                record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True, "state_override": "general_admission_quantity_control"})
+            if state == "quantity_selection" and str(CONFIG.get("seatMode") or "").casefold() == "reserved":
+                # festival.php/quantity controls are authoritative evidence
+                # that this performance has no numbered seats, regardless of
+                # the initial UI guess used when the bot was generated.
+                CONFIG["_runtimeSeatModeDetected"] = "general_admission"
+                CONFIG["seatMode"] = "general_admission"
+                record("selection", {"mode": "general_admission", "reason": "LIVE_QUANTITY_FLOW_CONFIRMED", "grouping_ignored": True})
             if state == "browser_lost":
                 if last_safe_state == "queue":
                     record("result", {
@@ -4188,6 +4594,11 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     if zone_failure_reason == "AVAILABILITY_UNAVAILABLE":
                         record("recovery", {"status": "WAITING_FOR_ZONE_AVAILABILITY", "same_session": True, "retry_without_user": True, "delay_ms": 750})
                         page.wait_for_timeout(750)
+                        continue
+                    if zone_failure_reason in {"GENERAL_ADMISSION_TRANSITION_PENDING", "GENERAL_ADMISSION_QUANTITY_READY"}:
+                        # The zone was already chosen. Let the page finish its
+                        # normal transition and avoid selecting it repeatedly.
+                        page.wait_for_timeout(200)
                         continue
                     recovery_failures[state] = recovery_failures.get(state, 0) + 1
                     recovery = autonomous_ai_recovery(page, checkpoint, ["select_allowed_zone", "rescan", "wait", "request_user"], context={"failure": "allowed_zone_control_missing", "attempt": recovery_failures[state], "allowed_zones": CONFIG.get("preferredZones", [])})
@@ -4722,8 +5133,8 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     shutil.rmtree(verification_root, ignore_errors=True)
     project = destination_project
     result.update({
-        "generator_version": "2.0.0-alpha.1",
-        "runtime_revision": "ticket-speed-mode-1",
+        "generator_version": generator_version,
+        "runtime_revision": "ticket-seat-availability-modal-1",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),

@@ -105,15 +105,15 @@ test("generated reserved-seat bot can defer zone choice and requires verified lo
     assert.deepEqual(config.preferredSeatNumbers, ["10"]);
     assert.equal(config.seatFallbackMode, "exact");
     assert.match(bot, /"strategy": "auto_page_order_with_fallbacks"/);
-    assert.match(bot, /"fallbacks": zones\[1:\]/);
-    assert.match(bot, /"reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"/);
+    assert.match(bot, /"strategy": "official_availability_descending"/);
+    assert.match(bot, /"reason": "DISCOVERED_PAGE_ORDER_WAITING_AVAILABILITY_FILTER"/);
     assert.match(bot, /LOGIN_REQUIRED_BEFORE_CHECKOUT/);
     assert.match(bot, /successful_form_transition/);
     assert.match(bot, /credentials_persisted.*False/);
     assert.match(bot, /def wait_for_seat_controls/);
     assert.match(bot, /frame for frame in page\.frames if frame != page\.main_frame/);
     assert.match(bot, /def fast_reserved_seat_recovery\(page\):/);
-    assert.match(bot, /def click_candidate_set\(locators, metadata, indices\):/);
+    assert.match(bot, /def click_candidate_set\(page, locators, metadata, indices\):/);
     assert.match(bot, /candidate_count/);
   } finally {
     await rm(temporary, { recursive: true, force: true });

@@ -66,7 +66,7 @@ const ticketRunManager = createTicketRunManager({
   appDir,
   programCreateDir,
   ticketBrowserProfileDir,
-  requiredGeneratorVersion: "2.0.0-alpha.1",
+  requiredGeneratorVersion: appVersion,
   ollamaBaseUrl,
   journalDir: ticketRunsJournalDir,
   repairDir: ticketRepairDir,
@@ -92,6 +92,14 @@ await fs.mkdir(autoLearnOutputDir, { recursive: true });
 await fs.mkdir(autoLearnRunsDir, { recursive: true });
 await fs.mkdir(ticketRunsJournalDir, { recursive: true });
 await fs.mkdir(ticketRepairDir, { recursive: true });
+// Reclaim only browser processes started with Alpha's isolated profiles. This
+// clears stale inspection/runtime windows after a service restart without
+// touching the user's normal Chrome profile or its tabs.
+await Promise.all([
+  cleanupOwnedProfileProcesses(browserProfileDir),
+  cleanupOwnedProfileProcesses(publicInspectionProfileDir),
+  cleanupOwnedProfileProcesses(ticketBrowserProfileDir),
+]);
 await ticketRunManager.ready();
 
 const mimeByExtension = {
@@ -227,6 +235,35 @@ function run(command, args, options = {}) {
       else reject(new Error(result.stderr.trim() || result.stdout.trim() || `${basename(command)} ล้มเหลว`));
     });
   });
+}
+
+function profileProcessPids(psOutput, profileDir) {
+  const marker = resolve(String(profileDir || ""));
+  if (!profileDir || !marker) return [];
+  return String(psOutput || "").split(/\r?\n/).flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!match) return [];
+    const pid = Number(match[1]);
+    const command = match[2];
+    const ownsProfile = command.includes(`--user-data-dir=${marker}`)
+      || command.includes(`--user-data-dir="${marker}"`)
+      || command.includes(`--user-data-dir '${marker}'`);
+    return Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid && ownsProfile ? [pid] : [];
+  });
+}
+
+async function cleanupOwnedProfileProcesses(profileDir) {
+  if (!profileDir) return [];
+  const table = await run("/bin/ps", ["-axo", "pid=,command="], { timeout: 5_000, allowFailure: true }).catch(() => ({ stdout: "" }));
+  const pids = profileProcessPids(table.stdout, profileDir);
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+  }
+  if (pids.length) await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  for (const pid of pids) {
+    try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch { /* exited after SIGTERM */ }
+  }
+  return pids;
 }
 
 function sanitizeName(value, fallback = "alpha-project") {
@@ -516,8 +553,7 @@ async function refreshStorageState() {
   }
   if (alphaContext) await alphaContext.close().catch(() => {});
   alphaContext = null;
-  if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
-  publicInspectionContext = null;
+  await closePublicInspectionBrowser().catch(() => {});
   return false;
 }
 
@@ -697,6 +733,7 @@ async function readWebPage(rawUrl) {
 async function ensureAlphaBrowser() {
   lastHeavyUse = Date.now();
   if (alphaContext) return alphaContext;
+  await cleanupOwnedProfileProcesses(browserProfileDir);
   await fs.mkdir(browserProfileDir, { recursive: true });
   alphaContext = await chromium.launchPersistentContext(browserProfileDir, {
     channel: "chrome",
@@ -716,6 +753,7 @@ async function ensureAlphaBrowser() {
 async function ensurePublicInspectionBrowser() {
   lastHeavyUse = Date.now();
   if (publicInspectionContext) return publicInspectionContext;
+  await cleanupOwnedProfileProcesses(publicInspectionProfileDir);
   await fs.mkdir(publicInspectionProfileDir, { recursive: true });
   publicInspectionContext = await chromium.launchPersistentContext(publicInspectionProfileDir, {
     channel: "chrome",
@@ -731,6 +769,13 @@ async function ensurePublicInspectionBrowser() {
     publicInspectionContext = null;
   });
   return publicInspectionContext;
+}
+
+async function closePublicInspectionBrowser() {
+  const context = publicInspectionContext;
+  publicInspectionContext = null;
+  if (context) await context.close().catch(() => {});
+  return cleanupOwnedProfileProcesses(publicInspectionProfileDir);
 }
 
 async function throttlePublicInspectionNavigation(rawUrl) {
@@ -1155,9 +1200,8 @@ async function inspectBrowserEvents(page) {
 
 async function alphaBrowserAction(action, args) {
   if (action === "reset_public_inspection") {
-    if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
-    publicInspectionContext = null;
-    return { ok: true, action, reset: true };
+    const closed = await closePublicInspectionBrowser();
+    return { ok: true, action, reset: true, closed_processes: closed.length };
   }
   const context = args.public_inspection === true ? await ensurePublicInspectionBrowser() : await ensureAlphaBrowser();
   let pages = context.pages();
@@ -1639,6 +1683,7 @@ async function runSkillSandbox(skill, directory, input, outputDirectory, timeout
       ALPHA_LAB_ROOT: skillLabDir,
       ALPHA_LAB_RUN_ID: skillId(runId),
       ALPHA_EXECUTION_TARGET: "macos_lab",
+      ALPHA_APP_VERSION: appVersion,
     },
     timeout,
     allowFailure: true,
@@ -1660,7 +1705,7 @@ async function runSkillHost(skill, directory, input, outputDirectory, timeout = 
   await fs.mkdir(outputDirectory, { recursive: true });
   const result = await run(runtime, [skill.entrypoint, JSON.stringify(input)], {
     cwd: directory,
-    env: { ALPHA_OUTPUT_DIR: outputDirectory, ALPHA_PROGRAM_CREATE_DIR: programCreateDir, ALPHA_EXECUTION_TARGET: "macos_host" },
+    env: { ALPHA_OUTPUT_DIR: outputDirectory, ALPHA_PROGRAM_CREATE_DIR: programCreateDir, ALPHA_EXECUTION_TARGET: "macos_host", ALPHA_APP_VERSION: appVersion },
     timeout,
     allowFailure: true,
     signal,
@@ -2686,8 +2731,7 @@ async function toolHealth() {
 async function stopHeavyTools() {
   if (alphaContext) await alphaContext.close().catch(() => {});
   alphaContext = null;
-  if (publicInspectionContext) await publicInspectionContext.close().catch(() => {});
-  publicInspectionContext = null;
+  await closePublicInspectionBrowser().catch(() => {});
 }
 
 setInterval(async () => {

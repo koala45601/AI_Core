@@ -20,9 +20,15 @@ test("Ticket Bot Studio is a fixed workspace with all user preference fields", a
   assert.match(page, /type="password"/);
   assert.match(page, /password ใช้เฉพาะตอน run และไม่บันทึก/);
   assert.match(page, /setTicketPassword\(""\)/);
+  assert.match(page, /ไม่จำกัด \/ ไม่ระบุราคา/);
+  assert.match(page, /ticketDetectedPrices\.map/);
+  assert.match(page, /setTicketPreferredPrices\(event\.target\.value \? \[Number\(event\.target\.value\)\] : \[\]\)/);
+  assert.doesNotMatch(page, /<select[^>]+multiple[^>]+ticketPreferredPrices/);
   assert.match(css, /\.ticket-workspace \{[^}]*overflow: hidden/);
   assert.match(css, /\.ticket-event-list \{[^}]*overflow-y: auto/);
   assert.match(css, /\.ticket-config-scroll \{[^}]*overflow-y: auto/);
+  assert.match(css, /\.ticket-source-form button, \.ticket-discovery-actions button \{[^}]*height: 36px/);
+  assert.match(css, /\.ticket-build-actions button \{[^}]*height: 40px/);
 });
 
 test("Ticket Bot API uses deterministic tools and never attempts a live purchase", async () => {

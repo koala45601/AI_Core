@@ -175,7 +175,7 @@ test("Beta14 launcher applies every runtime patch and installs missing core skil
     text("start-alpha-v11.command"),
     text("CHANGELOG.md"),
   ]);
-  assert.equal(JSON.parse(pkg).version, "2.0.0-alpha.1");
+  assert.match(JSON.parse(pkg).version, /^2\.0\.0-alpha\.\d+$/);
   const beta13 = launcher.indexOf("apply-beta13-nonblocking-post-response.mjs");
   const beta14 = launcher.indexOf("apply-beta14-auto-learn-recovery.mjs");
   const ticket = launcher.indexOf('"$ALPHA_NODE_BIN" "$ALPHA_DIR/scripts/apply-beta14-ticket-workflow.mjs" "$ALPHA_DIR"');

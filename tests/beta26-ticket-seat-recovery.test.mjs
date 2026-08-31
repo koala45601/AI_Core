@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
+const CURRENT_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
@@ -23,7 +25,7 @@ test("beta26 source has a complete-set recovery loop and evidence-gated Full Loo
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
-  assert.equal(pkg.version, "2.0.0-alpha.1");
+  assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
   assert.match(template, /"mode": "until_terminal"/);
   assert.match(template, /"maxAttempts": 0/);
   assert.match(template, /len\(indices\) != wanted/);
@@ -67,7 +69,7 @@ test("generated beta26 bot expands zone ranges and requires a complete candidate
     assert.equal(generated.code, 0, generated.stderr || generated.stdout);
     const result = JSON.parse(generated.stdout.trim().split("\n").at(-1));
     const config = JSON.parse(await readFile(join(result.created_project_path, "config.json"), "utf8"));
-    assert.equal(config.generatorVersion, "2.0.0-alpha.1");
+    assert.equal(config.generatorVersion, CURRENT_VERSION);
     assert.equal(config.seatRecovery.mode, "until_terminal");
     assert.equal(config.seatRecovery.maxAttempts, 0);
     const compiled = await run("python3", ["-m", "py_compile", join(result.created_project_path, "bot.py"), join(result.created_project_path, "state_machine.py")], { cwd: result.created_project_path });

@@ -213,5 +213,5 @@ test("ticket runtime wires compatibility endpoints, SSE with polling fallback, h
   assert.match(template, /bot_source = r'''[\s\S]*from urllib\.parse import[^\n]*urlsplit[\s\S]*def on_response\(response\):[\s\S]*urlsplit\(response\.url\)/);
   assert.match(template, /activate_selected_performance\(page, prefer_target_navigation=True\)/);
   assert.match(template, /verified_target_avoids_javascript_popup/);
-  assert.equal(pkg.version, "2.0.0-alpha.1");
+  assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
 });

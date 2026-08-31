@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { AppSettings, ArtifactRecord, DEFAULT_SETTINGS, HealthStatus, SearchResult, SkillSummary } from "@/lib/types";
-import { ALPHA_DISPLAY_VERSION } from "@/lib/version";
+import { ALPHA_DISPLAY_VERSION, ALPHA_VERSION } from "@/lib/version";
 import CreateVideoStudio from "@/components/create-video-studio"; // alpha-beta23-create-video-phase1-v1
 
 type View = "chat" | "video" | "memory" | "skills" | "tickets" | "settings";
@@ -418,6 +418,7 @@ function ticketRunLogLabel(text: string) {
   try {
     const item = JSON.parse(text) as Record<string, unknown>;
     const kind = String(item.kind || "");
+    if (item.message_th) return String(item.message_th);
     if (kind === "action") return `ทำงาน: ${String(item.action || "action")}${item.label ? ` — ${String(item.label)}` : ""}`;
     if (kind === "checkpoint") return `ตรวจหน้า: ${String(item.state || "unknown")} · ${String(item.url || "")}`;
     if (kind === "api") return `API: ${String(item.method || "GET")} ${String(item.url || "")} → ${String(item.status || "")}`;
@@ -1601,6 +1602,7 @@ export default function Home() {
     setTicketStage("form_inspecting");
     setTicketStatus(`กำลังอ่านรอบ ฟอร์ม และ API แบบ passive ของ ${selected.name}…`);
     setTicketInspection(null);
+    setTicketPreferredPrices([]);
     setTicketBuildReport(null);
     try {
       const response = await fetch("/api/ticket-bot", {
@@ -1803,8 +1805,8 @@ export default function Home() {
     setTicketStage("building");
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
-        && ticketBuildReport.generator_version === "2.0.0-alpha.1"
-        && ticketBuildReport.runtime_revision === "ticket-speed-mode-2-price-preferences"
+        && ticketBuildReport.generator_version === ALPHA_VERSION
+        && ticketBuildReport.runtime_revision === "ticket-seat-availability-modal-1"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -2357,7 +2359,7 @@ export default function Home() {
                           <label className="field"><span>ถ้าที่นั่งเป้าหมายไม่ว่าง</span><select value={ticketSeatFallback} onChange={(event) => setTicketSeatFallback(event.target.value as typeof ticketSeatFallback)}><option value="exact">เอาตรงตามที่ระบุเท่านั้น</option><option value="nearest">เลือกเลขใกล้ที่สุดในโซนเดิม</option><option value="zone_any">ใบไหนก็ได้ แต่ต้องอยู่โซนเดิม</option></select></label>
                         </>}
                         <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
-                        {ticketSeatMode === "reserved" && ticketDetectedPrices.length ? <label className="field ticket-field-wide"><span>ราคาต่อใบที่ต้องการ (ไม่บังคับ)</span><select multiple size={Math.min(6, Math.max(2, ticketDetectedPrices.length))} value={ticketPreferredPrices.map(String)} onChange={(event) => setTicketPreferredPrices(Array.from(event.target.selectedOptions).map((option) => Number(option.value)).filter((price) => Number.isFinite(price)))}><option value="" disabled>เลือกได้มากกว่าหนึ่งราคา</option>{ticketDetectedPrices.map((price) => <option key={price} value={price}>{price.toLocaleString()} บาท</option>)}</select><small>ไม่เลือก = ใช้พฤติกรรมเดิมและสุ่ม/เลือกตามโซนที่ว่าง หากเลือก ระบบจะยืนยันราคาจากข้อมูล seat map ที่เว็บเปิดเผยจริงก่อนกด ถ้าราคาต่อที่นั่งยังไม่ถูกเปิดเผยจะไม่เดาและจะแจ้งใน runtime</small></label> : null}
+                        {ticketSeatMode === "reserved" && ticketInspection ? <label className="field ticket-field-wide"><span>ราคาต่อใบที่ต้องการ (ไม่บังคับ)</span><select value={ticketPreferredPrices[0] ? String(ticketPreferredPrices[0]) : ""} disabled={!ticketDetectedPrices.length} onChange={(event) => setTicketPreferredPrices(event.target.value ? [Number(event.target.value)] : [])}><option value="">ไม่จำกัด / ไม่ระบุราคา</option>{ticketDetectedPrices.map((price) => <option key={price} value={price}>{price.toLocaleString()} บาท</option>)}</select><small>{ticketDetectedPrices.length ? "รายการนี้มาจากราคาที่คอนเสิร์ตเปิดเผยจริง เปลี่ยนคอนแล้วระบบจะโหลดรายการใหม่อัตโนมัติ" : "ยังไม่พบราคาจริงจากหน้าเว็บ ระบบจะไม่เดาราคาและจะใช้ที่นั่งตามโซนที่ว่าง"} หากเลือก ระบบจะยืนยันราคาจาก seat map/API ก่อนกดทุกครั้ง</small></label> : null}
                         <label className="field"><span>งบสูงสุดรวม (ไม่บังคับ)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่จำกัดงบ" /><small>ปล่อยเป็น 0 ได้ บอทจะไม่ใช้ราคาเป็นเงื่อนไขตัดออก</small></label>
                         <div className="ticket-project-destination ticket-field-wide">
                           <span>ตำแหน่งไฟล์โปรแกรม</span>

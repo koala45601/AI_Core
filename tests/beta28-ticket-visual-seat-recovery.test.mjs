@@ -39,10 +39,13 @@ test("beta28 keeps all discovered zones, escalates unknown seat layouts to visio
   const template = await readFile(new URL("../templates/concert-ticket-assistant.py", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
-  assert.equal(pkg.version, "2.0.0-alpha.1");
-  assert.match(template, /"runtimeRevision": "ticket-speed-mode-1"/);
-  assert.match(template, /"runtime_revision": "ticket-speed-mode-1"/);
-  assert.match(template, /zones = list\(discovered_names\)/);
+  assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
+  assert.match(template, /"runtimeRevision": "ticket-seat-availability-modal-1"/);
+  assert.match(template, /"runtime_revision": "ticket-seat-availability-modal-1"/);
+  assert.match(template, /MODAL_ALREADY_VISIBLE_REUSED/);
+  assert.match(template, /GENERAL_ADMISSION_TRANSITION_PENDING/);
+  assert.match(template, /LIVE_QUANTITY_FLOW_CONFIRMED/);
+  assert.match(template, /zones = list\(page_zone_names\)/);
   assert.match(template, /"candidate_order": zones/);
   assert.match(template, /def visible_human_challenge\(page\):/);
   assert.match(template, /directText/);
@@ -92,6 +95,23 @@ class OpenPage:
     def is_closed(self): return False
 
 assert bot.safe_page_url(OpenPage()) == "https://tickets.test/seat-map"
+
+# Some booking pages keep zones.php after opening the seat map. The live seat
+# controls must win over the stale zone URL, otherwise the runner clicks the
+# same zone again and loops between zone and seat pages.
+zones_seat_map = {
+    "url": "https://tickets.test/booking/3m/zones.php?query=524",
+    "body": "ขั้นตอนที่ 1/4 เลือกโซนและรอบการแสดง",
+    "seat_control_count": 3,
+}
+assert bot.classify_snapshot(zones_seat_map)["state"] == "ticket_selection"
+
+# Textual availability is valid evidence for a no-numbered-seat zone, but it
+# must never be fabricated into a numeric inventory count.
+textual_availability = bot.normalize_zone_availability({"zone":"DEAR.", "available":"Available"})
+assert textual_availability == {"DEAR.": None}
+assert bot.availability_meets_requirement(textual_availability["DEAR."], 4) is True
+assert bot.align_zone_availability({"DEAR.": None, "FROM.": None}, ["DE", "FR"]) == {"DE": None, "FR": None}
 
 class ReadyPage:
     url = "https://tickets.test/seat-map"
