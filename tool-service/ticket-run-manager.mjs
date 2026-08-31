@@ -49,6 +49,32 @@ function safeText(value, max = 2_000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+async function readMacKeychainPassword(service, account) {
+  if (process.platform !== "darwin" || !service || !account) return "";
+  return await new Promise((resolvePassword) => {
+    const child = spawn("/usr/bin/security", ["find-generic-password", "-s", service, "-a", account, "-w"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+      resolvePassword("");
+    }, 5_000);
+    timer.unref?.();
+    child.stdout.on("data", (chunk) => {
+      if (stdout.length < 8_000) stdout += chunk.toString("utf8");
+    });
+    child.once("error", () => {
+      clearTimeout(timer);
+      resolvePassword("");
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      resolvePassword(code === 0 ? stdout.replace(/[\r\n]+$/, "") : "");
+    });
+  });
+}
+
 function wilsonLowerBound(successes, total, z = 1.96) {
   if (!total) return 0;
   const p = successes / total;
@@ -98,6 +124,7 @@ function publicRun(run) {
     evidence_paths: [...(run.evidence_paths || [])],
     browser_pid: run.browser_pid || null,
     browser_cleanup: run.browser_cleanup || "pending",
+    credential_source: run.credential_source || "prompt",
     event_cursor: Number(run.event_cursor || 0),
     heartbeat: { ...(run.heartbeat || {}) },
     supervisor: { ...(run.supervisor || {}) },
@@ -357,6 +384,9 @@ export function createTicketRunManager({
   repairDir = "",
   repairSkillsDir = "",
   skillsIndexFile = "",
+  defaultTicketUsername = "",
+  ticketKeychainService = "com.alpha.ticket.thaiticketmajor",
+  credentialResolver = null,
   diagnoseRuntime = null,
   validateRepair = null,
 } = {}) {
@@ -458,7 +488,7 @@ export function createTicketRunManager({
       success_count: Number(previous?.success_count || 0) + 1,
       last_run_at: updatedAt,
       last_error: "",
-      execution_targets: ["sandbox", "macos_host"],
+      execution_targets: ["macos_lab", "macos_host"],
       repair_trigger: {
         failure_fingerprint: candidate.fingerprint,
         stage: run.stage,
@@ -916,6 +946,10 @@ export function createTicketRunManager({
         detached: true,
         env: {
           ...process.env,
+          // The Python bot writes JSONL heartbeats to stdout. A pipe is block
+          // buffered by default, which previously let the supervisor time out
+          // and kill a browser that had already connected successfully.
+          PYTHONUNBUFFERED: "1",
           ...(username ? { TICKET_USERNAME: username } : {}),
           ...(password ? { TICKET_PASSWORD: password } : {}),
           ...(ticketBrowserProfileDir ? { ALPHA_TICKET_BROWSER_PROFILE: resolve(ticketBrowserProfileDir) } : {}),
@@ -1014,8 +1048,16 @@ export function createTicketRunManager({
     if (activeRun && [activeRun.project_path, activeRun.requested_project_path].includes(requestedProjectPath)) return { ok: true, reused: true, run: publicRun(activeRun) };
     if (activeRun) throw new Error("มี Ticket Bot อีกงานกำลังใช้ browser session อยู่ กรุณาหยุดหรือทำงานเดิมให้จบก่อนเริ่มโปรเจกต์ใหม่");
 
-    const username = safeText(input.username, 500);
-    const password = typeof input.password === "string" ? input.password : "";
+    let username = safeText(input.username, 500);
+    let password = typeof input.password === "string" ? input.password : "";
+    let credentialSource = username || password ? "provided" : "prompt";
+    if (!username) username = safeText(defaultTicketUsername, 500);
+    if (!password && username) {
+      password = typeof credentialResolver === "function"
+        ? String(await credentialResolver({ service: ticketKeychainService, account: username }) || "")
+        : await readMacKeychainPassword(ticketKeychainService, username);
+      if (password) credentialSource = "keychain";
+    }
     const inspectOnly = input.inspect_only === true;
     const secrets = [username, password].filter(Boolean);
     const id = randomUUID();
@@ -1065,6 +1107,7 @@ export function createTicketRunManager({
       manual_control: { active: false, policy: "observe_then_resume", last_interrupt_at: null, from_state: "", to_state: "", updated_at: started },
       repair: null,
       stop_requested: false,
+      credential_source: credentialSource,
       idempotency_key: idempotencyKey,
       child: null,
     };
@@ -1145,12 +1188,12 @@ export function createTicketRunManager({
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          model: "qwen3.5:9b",
+          model: "alpha:9b",
           stream: false,
           format: "json",
           think: false,
-          // Ollama accepts a numeric sentinel for an indefinitely resident
-          // model. The string "-1" is parsed as a duration and returns HTTP 400.
+          // Keep the supervisor responsive during an incident without pinning
+          // the 9B model in unified memory for the whole Alpha session.
           keep_alive: -1,
           messages: [{ role: "system", content: "You diagnose Alpha ticket runtime failures. Return strict JSON with root_cause, strategy, action, patch_diff, test_plan. test_plan must be an array of short strings. action must be resume_run, restart_owned_browser, rerun_project, or source_patch_required. Never include credentials and never claim tests ran." }, { role: "user", content: JSON.stringify({
             stage: run.stage,
@@ -1448,11 +1491,11 @@ export function createTicketRunManager({
         fingerprint = "process_spawn_timeout";
         action = "inspect_process_spawn";
         rootCause = "Run ได้รับแล้วแต่ยังไม่มี process heartbeat ภายใน 5 วินาที";
-      } else if (!run.heartbeat.browser_connected_at && spawnWait > 20_000) {
+      } else if (!run.heartbeat.browser_connected_at && spawnWait > 45_000) {
         fingerprint = "browser_connect_timeout";
         action = "reconnect_owned_browser";
-        rootCause = "process เริ่มแล้วแต่ Browser ของ Alpha ยังไม่เชื่อมต่อ";
-      } else if (run.status !== "waiting_handoff" && silentFor > 15_000) {
+        rootCause = "process เริ่มแล้วแต่ Browser ของ Alpha ยังไม่มีหลักฐานเชื่อมต่อภายใน 45 วินาที";
+      } else if (run.heartbeat.browser_connected_at && run.status !== "waiting_handoff" && silentFor > 15_000) {
         fingerprint = `runtime_silent:${run.stage}`;
         action = "probe_runtime";
         rootCause = `ไม่มี runtime event ${Math.round(silentFor / 1000)} วินาทีที่ state ${run.stage}`;

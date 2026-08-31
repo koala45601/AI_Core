@@ -163,6 +163,7 @@ if not missing:
             "zoneOrder": zones,
             "clickVerificationTimeoutMs": 2500,
             "inventoryRescanIntervalMs": 750,
+            "seatMapReadyTimeoutMs": 12000,
             "conflictBlacklistTtlMs": 5000,
             "releasePartialBeforeRetry": True,
             "preserveGroupingRule": True,
@@ -188,9 +189,9 @@ if not missing:
             "actionMode": "validated_autonomous",
             "strategyMemory": True,
             "maxStrategyEntries": 200,
-            "timeoutSeconds": 60,
+            "timeoutSeconds": 25,
             "keepAlive": "-1",
-            "model": "qwen3.5:9b",
+            "model": "alpha:9b",
         },
         "credentialEnvironment": {"username": "TICKET_USERNAME", "password": "TICKET_PASSWORD"},
         "handoffPoints": ["captcha", "otp", "payment"],
@@ -495,15 +496,19 @@ ACTIONABLE_SELECTOR = "button, a[href], area[href], input[type=button], input[ty
 SEAT_SELECTOR = ".seatuncheck, .seatcheck, [data-seat][data-seatk], [data-seat][data-available='true'], [data-seat][data-status='available'], [data-seat-number], [role='button'][aria-label*='seat' i]"
 SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
-LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "at": 0.0}
+LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "body": "", "at": 0.0}
+RESERVATION_RESPONSE_HISTORY = []
 LATEST_ZONE_AVAILABILITY_RESPONSE = {"zones": {}, "url": "", "at": 0.0}
 SEAT_CONFLICT_BLACKLIST = {}
+SEAT_CONFLICT_GENERATION = {}
 NAVIGATION_STATE = {"generation": 0, "last_url": "", "last_event_at": 0.0, "closed": False}
 NAVIGATION_LOCK = threading.RLock()
 OBSERVED_PAGE_IDS = set()
 ACTIVE_RUNTIME_PAGE = {"page": None}
 RUNTIME_HEARTBEAT_STARTED = False
+RUNTIME_HEARTBEAT_CACHE = {"browser_connected": False, "url": "", "navigation_generation": 0}
 AI_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alpha-ticket-ai")
+AI_INCIDENT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alpha-ticket-incident-ai")
 AI_FUTURES = {}
 AI_LOCK = threading.RLock()
 REPORT_LOCK = threading.RLock()
@@ -513,6 +518,7 @@ AI_LAST_DECISIONS_BY_STATE = {}
 AI_LAST_STATE = ""
 AI_LAST_SUBMITTED = {}
 AI_LAST_STATE_SUBMITTED = {}
+AI_ACTION_LAST_EXECUTED = {}
 AI_STRATEGY_PATH = Path(os.environ.get("ALPHA_TICKET_STRATEGY_PATH") or (ROOT.parent.parent / "work" / "ticket-ai-recovery-strategies.json"))
 
 
@@ -527,6 +533,7 @@ def record(kind, payload):
 def start_runtime_heartbeat(page):
     global RUNTIME_HEARTBEAT_STARTED
     ACTIVE_RUNTIME_PAGE["page"] = page
+    update_runtime_heartbeat_cache(page)
     with NAVIGATION_LOCK:
         if RUNTIME_HEARTBEAT_STARTED:
             return None
@@ -535,15 +542,18 @@ def start_runtime_heartbeat(page):
     def heartbeat_loop():
         sequence = 0
         while True:
-            current_page = ACTIVE_RUNTIME_PAGE.get("page")
             sequence += 1
-            marker = navigation_marker(current_page)
+            # Playwright's sync API is thread-bound. The heartbeat thread must
+            # only publish values copied by the main browser thread; touching a
+            # Page here raises greenlet.error and can deadlock the whole run.
+            with NAVIGATION_LOCK:
+                cached = dict(RUNTIME_HEARTBEAT_CACHE)
             record("runtime_heartbeat", {
                 "sequence": sequence,
                 "process_alive": True,
-                "browser_connected": page_is_alive(current_page),
-                "url": marker.get("url", ""),
-                "navigation_generation": marker.get("generation", 0),
+                "browser_connected": cached.get("browser_connected", False),
+                "url": cached.get("url", ""),
+                "navigation_generation": cached.get("navigation_generation", 0),
                 "ai_ready": bool((CONFIG.get("aiRuntime") or {}).get("enabled", True)),
                 "ai_mode": "standby",
             })
@@ -569,6 +579,16 @@ def safe_page_url(page, fallback=""):
         return str(fallback or "")
 
 
+def update_runtime_heartbeat_cache(page):
+    """Copy browser state on the Playwright/main thread for heartbeat readers."""
+    connected = page_is_alive(page)
+    url = safe_page_url(page) if connected else ""
+    with NAVIGATION_LOCK:
+        RUNTIME_HEARTBEAT_CACHE["browser_connected"] = connected
+        RUNTIME_HEARTBEAT_CACHE["url"] = url
+        RUNTIME_HEARTBEAT_CACHE["navigation_generation"] = int(NAVIGATION_STATE.get("generation", 0))
+
+
 def bind_navigation_observer(page):
     """Track page/frame changes without taking over the user's mouse."""
     ACTIVE_RUNTIME_PAGE["page"] = page
@@ -584,6 +604,7 @@ def bind_navigation_observer(page):
             NAVIGATION_STATE["last_url"] = safe_page_url(page, NAVIGATION_STATE.get("last_url", ""))
             NAVIGATION_STATE["last_event_at"] = time.monotonic()
             NAVIGATION_STATE["closed"] = not page_is_alive(page)
+        update_runtime_heartbeat_cache(page)
 
     try:
         page.on("framenavigated", changed)
@@ -672,8 +693,14 @@ def wait_for_manual_idle(page, previous_state, current_state):
 def console_input(prompt=""):
     """Keep operator prompts off stdout so JSON runtime events stay parseable."""
     if prompt:
-        print(prompt, file=sys.stderr, flush=True)
-    return input()
+        try:
+            print(prompt, file=sys.stderr, flush=True)
+        except (BlockingIOError, OSError):
+            # The manager already received an input_required event. A saturated
+            # stderr pipe must never terminate the ticket process.
+            pass
+    value = sys.stdin.readline()
+    return value.rstrip("\r\n") if value else ""
 
 
 def capture_status_evidence(page, status):
@@ -885,11 +912,15 @@ def visible_seat_control_count(page):
     total = 0
     for scope in [page, *page.frames]:
         try:
-            seats = scope.locator(SEAT_SELECTOR)
-            for index in range(min(seats.count(), 1000)):
-                seat = seats.nth(index)
-                if seat.is_visible(timeout=100) and seat.is_enabled(timeout=100):
-                    total += 1
+            total += int(scope.locator(SEAT_SELECTOR).evaluate_all("""elements => elements.slice(0, 1000).filter(element => {
+              const style = getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0
+                && style.display !== 'none' && style.visibility !== 'hidden'
+                && Number(style.opacity || 1) > 0
+                && !element.disabled
+                && (element.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+            }).length"""))
         except Exception:
             continue
     return total
@@ -919,7 +950,7 @@ def wait_for_seat_controls(page, timeout_ms=12000):
 def wait_for_page_change(page, previous_url, timeout_ms=5000):
     """Wait for navigation or a DOM mutation; do not insert a fixed checkout sleep."""
     try:
-        page.wait_for_function("before => location.href !== before", previous_url, timeout=timeout_ms)
+        page.wait_for_function("before => location.href !== before", arg=previous_url, timeout=timeout_ms)
         return "navigation"
     except Exception:
         pass
@@ -936,7 +967,11 @@ def wait_for_page_change(page, previous_url, timeout_ms=5000):
 def wait_for_inventory_change(page, timeout_ms):
     """Use DOM mutation notifications between rescans instead of sleeping blindly."""
     observed = False
+    deadline = time.monotonic() + max(100, int(timeout_ms)) / 1000
     for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        if remaining_ms <= 0:
+            break
         try:
             result = scope.evaluate("""timeout => new Promise(resolve => {
               const root = document.querySelector('[data-seat], .seatuncheck, .seatcheck, area') || document.body;
@@ -944,13 +979,138 @@ def wait_for_inventory_change(page, timeout_ms):
               const observer = new MutationObserver(() => { observer.disconnect(); resolve(true); });
               observer.observe(root, {subtree: true, childList: true, attributes: true});
               setTimeout(() => { observer.disconnect(); resolve(false); }, timeout);
-            })""", max(100, int(timeout_ms)))
+            })""", remaining_ms)
             observed = observed or bool(result)
             if observed:
                 break
         except Exception:
             continue
     return observed
+
+
+def wait_for_seat_dom_quiet(page, quiet_ms=250, timeout_ms=2500):
+    """Wait until the live seat DOM has had a mutation-free quiet window.
+
+    This is driven by MutationObserver and only uses the timer as a bounded
+    quiet-window/deadline. It does not add a blind fixed sleep to the critical
+    path.
+    """
+    deadline = time.monotonic() + max(100, int(timeout_ms)) / 1000
+    scopes = [page, *[frame for frame in page.frames if frame != page.main_frame]]
+    relevant_scopes = []
+    for scope in scopes:
+        try:
+            if scope.locator(SEAT_SELECTOR).count():
+                relevant_scopes.append(scope)
+        except Exception:
+            continue
+    for scope in relevant_scopes or scopes[:1]:
+        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        if remaining_ms <= 1:
+            return False
+        try:
+            stable = scope.evaluate("""args => new Promise(resolve => {
+              const root = document.querySelector('[data-seat], .seatuncheck, .seatcheck, area')?.parentElement || document.body;
+              if (!root) { resolve(false); return; }
+              let quietTimer;
+              const finish = value => {
+                clearTimeout(quietTimer);
+                clearTimeout(deadlineTimer);
+                observer.disconnect();
+                resolve(value);
+              };
+              const armQuietWindow = () => {
+                clearTimeout(quietTimer);
+                quietTimer = setTimeout(() => finish(true), args.quietMs);
+              };
+              const observer = new MutationObserver(armQuietWindow);
+              observer.observe(root, {subtree: true, childList: true, attributes: true});
+              const deadlineTimer = setTimeout(() => finish(false), args.timeoutMs);
+              armQuietWindow();
+            })""", {"quietMs": max(100, int(quiet_ms)), "timeoutMs": remaining_ms})
+            if not stable:
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def seat_inventory_fingerprint(metadata):
+    normalized = sorted(
+        (
+            str(item.get("label") or ""),
+            bool(item.get("available")),
+            bool(item.get("selected")),
+        )
+        for item in metadata
+        if item.get("visible", True)
+    )
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False).encode("utf-8")).hexdigest()[:20]
+
+
+def wait_for_stable_seat_inventory(page, fallback_zone="", timeout_ms=12000):
+    """Prove the seat page is usable before allowing the first seat click."""
+    started_at = time.monotonic()
+    deadline = started_at + max(500, int(timeout_ms)) / 1000
+    last_fingerprint = ""
+    stable_rounds = 0
+    record("seat_map_loading", {
+        "status": "WAITING_FOR_STABLE_INVENTORY",
+        "url": safe_page_url(page),
+        "navigation_generation": navigation_marker(page).get("generation"),
+        "terminal": False,
+    })
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=min(max(1, int(timeout_ms)), 5000))
+    except Exception:
+        pass
+    while time.monotonic() < deadline:
+        if not page_is_alive(page):
+            return {"ready": False, "state": "browser_lost", "reason": "page_closed"}
+        current_url = safe_page_url(page)
+        if "fixed.php" not in current_url.casefold():
+            changed = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+            if changed.get("state") != "ticket_selection":
+                return {"ready": False, "state": changed.get("state", "unknown"), "reason": "state_changed"}
+        metadata, locators, scopes = collect_seat_inventory(page, fallback_zone)
+        visible_count = sum(1 for item in metadata if item.get("visible", True))
+        if visible_count and locators:
+            fingerprint = seat_inventory_fingerprint(metadata)
+            if fingerprint == last_fingerprint:
+                stable_rounds += 1
+            else:
+                last_fingerprint = fingerprint
+                stable_rounds = 1
+            if stable_rounds >= 2:
+                marker = navigation_marker(page)
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                record("seat_map_ready", {
+                    "status": "STABLE_INVENTORY_READY",
+                    "visible_seat_control_count": visible_count,
+                    "candidate_count": len(metadata),
+                    "available_count": sum(1 for item in metadata if item.get("available")),
+                    "inventory_fingerprint": fingerprint,
+                    "navigation_generation": marker.get("generation"),
+                    "dom_generation": marker.get("dom_generation"),
+                    "load_elapsed_ms": elapsed_ms,
+                    "url": current_url,
+                })
+                return {"ready": True, "state": "ticket_selection", "metadata": metadata, "marker": marker, "fingerprint": fingerprint}
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            wait_for_seat_dom_quiet(page, quiet_ms=250, timeout_ms=min(2000, remaining_ms))
+            continue
+        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        wait_for_inventory_change(page, min(1000, remaining_ms))
+    marker = navigation_marker(page)
+    record("seat_map_loading", {
+        "status": "STABLE_INVENTORY_TIMEOUT",
+        "url": safe_page_url(page),
+        "navigation_generation": marker.get("generation"),
+        "dom_generation": marker.get("dom_generation"),
+        "terminal": False,
+        "next_action": "preserve_page_and_rescan",
+    })
+    return {"ready": False, "state": "ticket_selection", "reason": "stable_inventory_timeout", "marker": marker}
 
 
 def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None):
@@ -1000,6 +1160,7 @@ def snapshot(page, retry_after_seconds=None, http_status=None, server_date=None)
         "server_date": server_date,
         "actionable_controls": visible_actionable_controls(page),
         "seat_control_count": visible_seat_control_count(page),
+        "visible_dialogs": visible_runtime_dialogs(page),
         "browser_closed": not page_is_alive(page),
     }
 
@@ -1167,6 +1328,104 @@ def activate_selected_performance(page, prefer_target_navigation=False):
     return None
 
 
+def ensure_locked_performance_on_booking_page(page):
+    """Re-apply the locked show when a booking page asks for it again.
+
+    Some events expose a second date/time selector after login or terms. The
+    public event selector cannot be reused there, so match the locked schedule
+    against the visible native select without changing event/date/time.
+    """
+    selected = CONFIG.get("selectedPerformance") if isinstance(CONFIG.get("selectedPerformance"), dict) else {}
+    source = " ".join(str(selected.get(key, "")) for key in ("schedule", "label", "contextText"))
+    source = f"{source} {CONFIG.get('schedule', '')}".strip()
+    wanted_time_match = re.search(r"T(\d{1,2}:\d{2})(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?", source) or re.search(r"\b(\d{1,2}:\d{2})\b", source)
+    wanted_time = wanted_time_match.group(1) if wanted_time_match else ""
+    iso_date = re.search(r"\b(\d{4})-(\d{2})-(\d{2})(?=T|$)", source)
+    date_tokens = set()
+    if iso_date:
+        year, month, day = (int(iso_date.group(1)), int(iso_date.group(2)), int(iso_date.group(3)))
+        english_months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        date_tokens.update({
+            f"{year:04d}-{month:02d}-{day:02d}",
+            f"{day:02d}/{month:02d}/{year:04d}",
+            f"{day}/{month}/{year}",
+            f"{day:02d}/{month:02d}/{year + 543:04d}",
+            f"{day}/{month}/{year + 543}",
+            f"{day:02d} {english_months[month - 1]} {year:04d}",
+            f"{english_months[month - 1]} {day:02d} {year:04d}",
+        })
+    thai_date = re.search(r"\d{1,2}\s+(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{4}", source)
+    if thai_date:
+        date_tokens.add(_performance_match_text(thai_date.group(0)).casefold())
+    english_date = re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b", source, re.I)
+    if english_date:
+        english_months = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+        day, month_name, year = int(english_date.group(1)), english_date.group(2)[:3].casefold(), int(english_date.group(3))
+        month = english_months.get(month_name)
+        if month:
+            date_tokens.update({
+                f"{year:04d}-{month:02d}-{day:02d}",
+                f"{day:02d} {month_name.title()} {year:04d}",
+                f"{month_name.title()} {day:02d} {year:04d}",
+            })
+    if not wanted_time and not date_tokens:
+        return "absent"
+
+    repeat_selector_seen = False
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        selects = scope.locator("select")
+        try:
+            select_count = min(selects.count(), 40)
+        except Exception:
+            continue
+        for select_index in range(select_count):
+            control = selects.nth(select_index)
+            try:
+                if not control.is_visible(timeout=200) or not control.is_enabled(timeout=200):
+                    continue
+                descriptor = field_descriptor(control).casefold()
+                options = control.locator("option")
+                option_count = min(options.count(), 100)
+                option_rows = []
+                for option_index in range(option_count):
+                    option = options.nth(option_index)
+                    option_rows.append({
+                        "index": option_index,
+                        "text": _performance_match_text(option.inner_text(timeout=150)),
+                    })
+                option_text = " ".join(item["text"] for item in option_rows).casefold()
+                looks_like_performance = bool(re.search(r"รอบ|วัน(?:ที่)?|เวลา|performance|show|date|time", f"{descriptor} {option_text}"))
+                has_time_options = bool(re.search(r"\b\d{1,2}:\d{2}\b", option_text))
+                if not looks_like_performance or (wanted_time and not has_time_options):
+                    continue
+                repeat_selector_seen = True
+                matches = []
+                for item in option_rows:
+                    normalized = item["text"].casefold()
+                    if wanted_time and wanted_time not in normalized:
+                        continue
+                    option_has_date = bool(re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม", normalized, re.I))
+                    if option_has_date and date_tokens and not any(token.casefold() in normalized for token in date_tokens):
+                        continue
+                    matches.append(item)
+                if len(matches) != 1:
+                    record("performance_selection", {"status": "LOCKED_PERFORMANCE_MATCH_DEBUG", "descriptor": descriptor[:200], "wanted_time": wanted_time, "date_tokens": sorted(date_tokens), "options": [item["text"][:160] for item in option_rows], "match_count": len(matches)})
+                    continue
+                matched = matches[0]
+                current_index = int(control.evaluate("element => element.selectedIndex"))
+                if current_index == matched["index"]:
+                    record("performance_selection", {"status": "LOCKED_PERFORMANCE_ALREADY_SELECTED", "label": matched["text"][:200], "schedule": CONFIG.get("schedule")})
+                    return "matched"
+                previous_url = safe_page_url(page)
+                control.select_option(index=matched["index"])
+                record("performance_selection", {"status": "LOCKED_PERFORMANCE_RESELECTED", "label": matched["text"][:200], "schedule": CONFIG.get("schedule"), "same_session": True})
+                wait_for_page_change(page, previous_url, timeout_ms=3000)
+                return "changed"
+            except Exception:
+                continue
+    return "missing" if repeat_selector_seen else "absent"
+
+
 def semantic_select_if_present(page, wanted_labels, family_labels, field_name):
     """Select an option only when that option family exists on the current page.
 
@@ -1216,6 +1475,94 @@ def semantic_select_if_present(page, wanted_labels, family_labels, field_name):
     return "failed"
 
 
+def checkout_hidden_value(page, field_id):
+    """Read a checkout state value without trusting visual active classes."""
+    try:
+        locator = page.locator(f"#{field_id}").first
+        if locator.count():
+            return str(locator.input_value(timeout=300) or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def visible_checkout_validation(page):
+    """Return a visible checkout validation message, if the site opened one."""
+    validation_pattern = re.compile(
+        r"กรุณาเลือกวิธีการรับบัตร|กรุณาเลือกวิธีการชำระเงิน|"
+        r"ยอมรับข้อตกลง|please select the ticket delivery|"
+        r"please select payment|please agree",
+        re.I,
+    )
+    for scope in [page, *page.frames]:
+        for selector in (".fancybox-wrap", "[role='dialog']", "#pnlMessage", "#popup-message"):
+            dialogs = scope.locator(selector)
+            try:
+                count = min(dialogs.count(), 20)
+            except Exception:
+                continue
+            for index in range(count):
+                dialog = dialogs.nth(index)
+                try:
+                    if not dialog.is_visible(timeout=100):
+                        continue
+                    message = " ".join(dialog.inner_text(timeout=200).split())
+                    if validation_pattern.search(message):
+                        return message[:500]
+                except Exception:
+                    continue
+    return ""
+
+
+def dismiss_checkout_validation(page):
+    """Dismiss only a known checkout validation modal so locked choices can retry."""
+    message = visible_checkout_validation(page)
+    if not message:
+        return ""
+    close_pattern = re.compile(r"^\s*(?:Close|ปิด|ตกลง|OK)\s*$", re.I)
+    for scope in [page, *page.frames]:
+        for role in ("button", "link"):
+            locator = scope.get_by_role(role, name=close_pattern).first
+            try:
+                if locator.count() and locator.is_visible(timeout=200) and locator.is_enabled(timeout=200):
+                    locator.click()
+                    record("checkout_validation", {"status": "DISMISSED_FOR_LOCKED_RETRY", "message": message})
+                    return message
+            except Exception:
+                continue
+    return message
+
+
+def select_verified_checkout_option(page, selector, state_field, wanted_labels, family_labels, field_name):
+    """Select a checkout option and verify the site's hidden form state changed."""
+    state_locator = page.locator(f"#{state_field}").first
+    known_state_field = False
+    try:
+        known_state_field = bool(state_locator.count())
+    except Exception:
+        pass
+    if selector:
+        locator = page.locator(selector).first
+        try:
+            if locator.count() and locator.is_visible(timeout=300) and locator.is_enabled(timeout=300):
+                locator.click()
+                if known_state_field:
+                    page.wait_for_function(
+                        "fieldId => Boolean((document.getElementById(fieldId)?.value || '').trim())",
+                        arg=state_field,
+                        timeout=2000,
+                    )
+                record("action", {"action": "select_verified_option", "field": field_name, "selector": selector, "state_field": state_field})
+                return "selected"
+        except Exception as exc:
+            record("checkout_validation", {"status": "OPTION_STATE_NOT_VERIFIED", "field": field_name, "selector": selector, "detail": str(exc)[:300]})
+    result = semantic_select_if_present(page, wanted_labels, family_labels, field_name)
+    if result == "selected" and known_state_field and not checkout_hidden_value(page, state_field):
+        record("checkout_validation", {"status": "OPTION_STATE_EMPTY", "field": field_name, "state_field": state_field})
+        return "failed"
+    return result
+
+
 def field_descriptor(locator):
     try:
         return str(locator.evaluate("""element => {
@@ -1245,18 +1592,56 @@ def sale_entry_labels():
 
 
 def fill_login(page):
+    def session_already_authenticated():
+        try:
+            current = classify_snapshot(snapshot(page), sale_open_at=CONFIG.get("saleOpenAt", ""))
+            if authenticated_account_marker(page) or authenticated_booking_session(page, current.get("state", "unknown")):
+                record("authentication", {
+                    "status": "SESSION_BECAME_AUTHENTICATED_DURING_INPUT",
+                    "state": current.get("state", "unknown"),
+                    "credentials_persisted": False,
+                    "same_session": True,
+                })
+                return True
+        except Exception:
+            pass
+        return False
+
+    if session_already_authenticated():
+        return True
     username = os.environ.get("TICKET_USERNAME", "").strip()
     password = os.environ.get("TICKET_PASSWORD", "")
     if not username:
         record("input_required", {"field": "username", "stage": "waiting_username", "prompt": "กรอกอีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตร", "secret": False})
         username = console_input("อีเมล/ชื่อผู้ใช้สำหรับเว็บขายบัตรนี้: ").strip()
+        if session_already_authenticated():
+            return True
     if not password:
         record("input_required", {"field": "password", "stage": "waiting_password", "prompt": "กรอกรหัสผ่านสำหรับเว็บขายบัตร", "secret": True})
-        password = getpass.getpass("รหัสผ่าน (ไม่แสดงและไม่บันทึก): ")
-    username_box = page.get_by_role("textbox", name=re.compile(r"ชื่อผู้ใช้|อีเมล|email|username", re.I)).first
-    password_box = page.locator("input[type='password']").first
-    if not username or not password or username_box.count() == 0 or password_box.count() == 0:
+        password = getpass.getpass("รหัสผ่าน (ไม่แสดงและไม่บันทึก): ") if sys.stdin.isatty() else console_input("รหัสผ่าน (รับผ่าน stdin และไม่บันทึก): ")
+        if session_already_authenticated():
+            return True
+    # The member page renders its shell before attaching the real sign-in form.
+    # Stay in automatic recovery while that transient render is incomplete.
+    form_deadline = time.monotonic() + 30
+    username_box = page.locator("input[name='username']:visible, input[type='email']:visible").first
+    password_box = page.locator("input[name='password']:visible, input[type='password']:visible").first
+    while time.monotonic() < form_deadline:
+        if session_already_authenticated():
+            return True
+        try:
+            if username_box.count() and password_box.count() and username_box.is_visible(timeout=250) and password_box.is_visible(timeout=250):
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(250)
+    if not username or not password:
+        if session_already_authenticated():
+            return True
         return False
+    if username_box.count() == 0 or password_box.count() == 0:
+        record("recovery", {"status": "LOGIN_FORM_NOT_READY", "next_action": "rescan_same_page", "same_session": True})
+        return None
     username_box.fill(username)
     password_box.fill(password)
     if not semantic_click(page, ["เข้าสู่ระบบ", "login", "sign in"]):
@@ -1441,6 +1826,13 @@ def collect_zone_availability(page, force=False):
 def select_preferred_zone(page):
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
     zones = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
+    # The booking page can classify as zone_selection before its image-map is
+    # attached. Scanning immediately produced USER_ZONE_REQUIRED even though
+    # the official zone controls appeared a fraction of a second later.
+    try:
+        page.locator("area[href*='#'], [data-zone], [data-section]").first.wait_for(state="attached", timeout=5000)
+    except Exception:
+        pass
     area_nodes = page.locator("area[href*='#']")
     discovered = []
     for index in range(area_nodes.count()):
@@ -1456,23 +1848,41 @@ def select_preferred_zone(page):
             if zone and len(zone) <= 30 and all(item[0] != zone for item in discovered):
                 discovered.append((zone, node))
     discovered_names = list(dict.fromkeys(zone for zone, _ in discovered))
+    auto_discovered_zones = bool(CONFIG.get("_runtimeAutoDiscoveredZones")) or (not zones and bool(discovered_names))
     if not zones:
         print("โซนที่พบจากหน้าจริง: " + (", ".join(discovered_names) if discovered_names else "ยังอ่านชื่อโซนไม่ได้"), flush=True)
         if discovered_names:
-            # Select the first page-ordered zone now, but retain every discovered
-            # zone as a fallback. The old code persisted only the first zone and
-            # could rescan an empty PL1 forever even while PL2/PL3/VIP were valid.
+            # Keep the complete page order as the fallback, but do not select a
+            # zone until the official availability modal has answered. A page
+            # order is not an availability signal (the first map item is often
+            # a sold-out standing/side zone).
             zones = list(discovered_names)
+            CONFIG["_runtimeAutoDiscoveredZones"] = True
             CONFIG["preferredZones"] = list(zones)
             recovery["zoneOrder"] = list(zones)
             CONFIG["seatRecovery"] = recovery
-            record("selection", {"mode": "zone", "strategy": "auto_page_order_with_fallbacks", "selected": zones[0], "fallbacks": zones[1:], "discovered": discovered_names, "complete": True, "reason": "NO_ZONE_PREFERENCE_USE_PAGE_ORDER"})
+            record("selection", {"mode": "zone", "strategy": "auto_page_order_with_fallbacks", "candidate_order": zones, "discovered": discovered_names, "complete": False, "reason": "DISCOVERED_PAGE_ORDER_WAITING_AVAILABILITY_FILTER"})
         else:
             record("selection", {"mode": "zone", "preferred": [], "discovered": discovered_names, "complete": False, "reason": "USER_ZONE_REQUIRED"})
             return False
     availability = collect_zone_availability(page, force=True)
     minimum = max(1, int(CONFIG.get("quantity", 1)))
+    if not availability and auto_discovered_zones:
+        # Empty means the modal/API was not ready or was transiently rejected;
+        # it must not be interpreted as "the first zone is okay". Let the main
+        # state machine retry in the same session and keep the user out of a
+        # wrong seat map.
+        CONFIG["_runtimeLastZoneSelectionReason"] = "AVAILABILITY_UNAVAILABLE"
+        record("selection", {"mode": "zone", "preferred": zones, "discovered": discovered_names, "availability": {}, "complete": False, "reason": "AVAILABILITY_UNAVAILABLE_WAIT_AND_RESCAN", "wanted": minimum})
+        return False
     ordered = [zone for zone in zones if zone not in availability or int(availability.get(zone, 0)) >= minimum]
+    if auto_discovered_zones and availability:
+        # With no user zone preference, choose the official zone with the
+        # largest live inventory first. The previous page-order fallback chose
+        # S=33 ahead of B=183 and caused avoidable seat conflicts.
+        page_order = {zone: index for index, zone in enumerate(zones)}
+        ordered.sort(key=lambda zone: (-int(availability.get(zone, 0)), page_order.get(zone, len(page_order))))
+        record("selection", {"mode": "zone", "strategy": "official_availability_descending", "candidate_order": ordered, "availability": availability, "wanted": minimum})
     CONFIG["_runtimeAllowedZones"] = list(zones)
     CONFIG["_runtimeAvailableZones"] = list(ordered)
     if availability and not ordered:
@@ -1537,7 +1947,91 @@ def select_ticket_quantity(page):
     return True
 
 
+def visible_attendee_validation(page):
+    """Return only validation messages that belong to the attendee form."""
+    pattern = re.compile(
+        r"กรุณากรอกชื่อ|กรุณาระบุชื่อ|กรุณากรอกนามสกุล|"
+        r"please enter (?:full name|first name|last name)|"
+        r"please enter name|name not duplicate",
+        re.I,
+    )
+    for scope in [page, *page.frames]:
+        for selector in (".fancybox-wrap", "[role='dialog']", "#pnlMessage", "#popup-message", ".modal"):
+            dialogs = scope.locator(selector)
+            try:
+                count = min(dialogs.count(), 20)
+            except Exception:
+                continue
+            for index in range(count):
+                dialog = dialogs.nth(index)
+                try:
+                    if not dialog.is_visible(timeout=100):
+                        continue
+                    message = " ".join(dialog.inner_text(timeout=200).split())
+                    if pattern.search(message):
+                        return message[:500]
+                except Exception:
+                    continue
+    return ""
+
+
+def dismiss_attendee_validation(page):
+    """Close a known attendee validation modal before an event-faithful retry."""
+    message = visible_attendee_validation(page)
+    if not message:
+        return ""
+    for selector in ("#btn_alert_ok", "#btn_message_ok", "[data-dismiss='modal']"):
+        locator = page.locator(selector).first
+        try:
+            if locator.count() and locator.is_visible(timeout=200) and locator.is_enabled(timeout=200):
+                locator.click(force=True)
+                record("attendee_validation", {"status": "DISMISSED_FOR_LOCKED_RETRY", "message": message})
+                return message
+        except Exception:
+            continue
+    close_pattern = re.compile(r"^\s*(?:Close|ปิด|ตกลง|OK)\s*$", re.I)
+    for scope in [page, *page.frames]:
+        for role in ("button", "link"):
+            locator = scope.get_by_role(role, name=close_pattern).first
+            try:
+                if locator.count() and locator.is_visible(timeout=200) and locator.is_enabled(timeout=200):
+                    locator.click()
+                    record("attendee_validation", {"status": "DISMISSED_FOR_LOCKED_RETRY", "message": message})
+                    return message
+            except Exception:
+                continue
+    return message
+
+
+def fill_event_sensitive_input(locator, value):
+    """Type through keyboard events for fields whose site logic rejects DOM-only fill."""
+    expected = str(value).strip()
+    if not expected:
+        return False
+    try:
+        locator.click(force=True)
+        locator.press("ControlOrMeta+A")
+        locator.press("Backspace")
+        locator.press_sequentially(expected, delay=18)
+        locator.press("Tab")
+        locator.dispatch_event("change")
+        actual = str(locator.input_value(timeout=500) or "").strip()
+        return actual == expected
+    except Exception:
+        try:
+            locator.fill(expected)
+            locator.dispatch_event("input")
+            locator.dispatch_event("change")
+            locator.dispatch_event("blur")
+            actual = str(locator.input_value(timeout=500) or "").strip()
+            return actual == expected
+        except Exception:
+            return False
+
+
 def fill_attendee_details(page):
+    dismiss_attendee_validation(page)
+    previous_url = safe_page_url(page)
     boxes = page.locator("input[type='text'], input:not([type])")
     names = [str(item).strip() for item in CONFIG.get("attendeeNames", []) if str(item).strip()]
     fallback = str(CONFIG.get("customerName", "")).strip()
@@ -1566,21 +2060,45 @@ def fill_attendee_details(page):
             value = console_input(f"หน้าเว็บคอนนี้ต้องการข้อมูล '{prompt_label}': ").strip()
         if not value:
             return False
-        locator.fill(value)
+        if not fill_event_sensitive_input(locator, value):
+            record("attendee_validation", {"status": "FIELD_VALUE_NOT_ACCEPTED", "field": descriptor[:200], "values_logged": False})
+            return False
     if count == 0:
         record("action", {"action": "event_specific_attendee_fields_absent", "skipped": True})
         return semantic_click(page, ["บันทึก", "save", "ดำเนินการต่อ", "continue"])
-    if not semantic_click(page, ["บันทึก", "save", "ดำเนินการต่อ", "continue"]):
+    submit = page.locator("#btn_regnow").first
+    submitted = False
+    try:
+        if submit.count() and submit.is_visible(timeout=300) and submit.is_enabled(timeout=300):
+            submit.click()
+            submitted = True
+    except Exception:
+        submitted = False
+    if not submitted:
+        submitted = semantic_click(page, ["บันทึก", "save", "ดำเนินการต่อ", "continue"])
+    if not submitted:
+        return False
+    wait_for_page_change(page, previous_url, timeout_ms=3500)
+    message = visible_attendee_validation(page)
+    if message:
+        record("attendee_validation", {"status": "SUBMIT_REJECTED", "message": message, "values_logged": False})
+        dismiss_attendee_validation(page)
         return False
     record("action", {"action": "fill_attendee_details", "count": count, "values_logged": False})
     return True
 
 
 def select_checkout_options(page, confirm_order=False):
+    # A failed submit leaves a modal over the form. Close only known validation
+    # messages before retrying; otherwise the site can show a visual choice while
+    # its hidden delivery/payment state is still empty.
+    dismiss_checkout_validation(page)
     delivery = str(CONFIG.get("deliveryMethod", "pickup"))
     delivery_labels = ["รับบัตรด้วยตนเอง", "self pickup", "pick up"] if delivery == "pickup" else ["จัดส่งทางไปรษณีย์", "postal", "delivery"]
-    delivery_result = semantic_select_if_present(
+    delivery_result = select_verified_checkout_option(
         page,
+        "#btn_pickup" if delivery == "pickup" else "#btn_thaipost",
+        "deliver",
         delivery_labels,
         ["รับบัตรด้วยตนเอง", "self pickup", "pick up", "จัดส่งทางไปรษณีย์", "postal", "delivery"],
         "delivery_method",
@@ -1589,8 +2107,10 @@ def select_checkout_options(page, confirm_order=False):
         return False
     payment = str(CONFIG.get("paymentMethod", "qr"))
     payment_labels = ["QR", "PromptPay", "พร้อมเพย์"] if payment in {"qr", "promptpay"} else [payment]
-    payment_result = semantic_select_if_present(
+    payment_result = select_verified_checkout_option(
         page,
+        "#btn_kbankqr" if payment in {"qr", "promptpay"} else "",
+        "paytype",
         payment_labels,
         ["QR", "PromptPay", "พร้อมเพย์", "credit card", "บัตรเครดิต", "debit", "ชำระเงิน"],
         "payment_method",
@@ -1612,9 +2132,29 @@ def select_checkout_options(page, confirm_order=False):
     if not confirm_order:
         record("handoff", {"status": "ORDER_CONFIRMATION_REQUIRED", "same_session": True, "next_action": "rerun_with_--confirm-order"})
         return None
+    if page.locator("#deliver").count() and not checkout_hidden_value(page, "deliver"):
+        record("checkout_validation", {"status": "DELIVERY_STATE_EMPTY_BEFORE_CONFIRM"})
+        return False
+    if page.locator("#paytype").count() and not checkout_hidden_value(page, "paytype"):
+        record("checkout_validation", {"status": "PAYMENT_STATE_EMPTY_BEFORE_CONFIRM"})
+        return False
+    previous_url = safe_page_url(page)
     clicked = semantic_click(page, ["ยืนยันการสั่งซื้อ", "confirm order"])
     if clicked:
         record("action", {"action": "confirm_unpaid_order", "payment_submitted": False})
+        try:
+            page.wait_for_function(
+                "previous => location.href !== previous || [...document.querySelectorAll('.fancybox-wrap,[role=dialog],#pnlMessage,#popup-message')].some(el => (el.offsetWidth || el.offsetHeight) && /กรุณาเลือกวิธีการรับบัตร|กรุณาเลือกวิธีการชำระเงิน|ยอมรับข้อตกลง|please select|please agree/i.test(el.innerText || el.textContent || ''))",
+                arg=previous_url,
+                timeout=5000,
+            )
+        except Exception:
+            pass
+        validation = visible_checkout_validation(page)
+        if validation:
+            record("checkout_validation", {"status": "CONFIRM_REJECTED", "message": validation, "delivery": checkout_hidden_value(page, "deliver"), "paytype": checkout_hidden_value(page, "paytype")})
+            dismiss_checkout_validation(page)
+            return False
     return clicked
 
 
@@ -1657,21 +2197,27 @@ def purge_conflict_blacklist():
     expired = [key for key, expires_at in SEAT_CONFLICT_BLACKLIST.items() if float(expires_at or 0) <= now_value]
     for key in expired:
         SEAT_CONFLICT_BLACKLIST.pop(key, None)
+    generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0)
+    stale_generation_keys = [key for key, attempted_generation in SEAT_CONFLICT_GENERATION.items() if int(attempted_generation or 0) != generation]
+    for key in stale_generation_keys:
+        SEAT_CONFLICT_GENERATION.pop(key, None)
 
 
 def blacklist_conflicted_seats(seats):
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
     ttl_ms = max(250, int(recovery.get("conflictBlacklistTtlMs", 5000) or 5000))
     expires_at = time.monotonic() + ttl_ms / 1000
+    generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0)
     labels = []
     for seat in seats:
         key = seat_conflict_key(seat)
         if key.strip("|"):
             SEAT_CONFLICT_BLACKLIST[key] = expires_at
+            SEAT_CONFLICT_GENERATION[key] = generation
             labels.append(str(seat.get("label") or seat.get("number") or key)[:120])
     purge_conflict_blacklist()
     if labels:
-        record("seat_blacklisted", {"seats": labels, "ttl_ms": ttl_ms, "blacklist_size": len(SEAT_CONFLICT_BLACKLIST)})
+        record("seat_blacklisted", {"seats": labels, "ttl_ms": ttl_ms, "inventory_generation": generation, "blacklist_size": len(SEAT_CONFLICT_GENERATION)})
 
 
 def collect_seat_inventory(page, fallback_zone=""):
@@ -1683,40 +2229,45 @@ def collect_seat_inventory(page, fallback_zone=""):
     for scope_index, scope in enumerate(scopes):
         seats = scope.locator(SEAT_SELECTOR)
         try:
-            count = min(seats.count(), 1000 - len(locators))
+            remaining = max(0, 1000 - len(locators))
+            raw_items = seats.evaluate_all("""(elements, limit) => elements.slice(0, limit).map(element => {
+              const style = getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              const className = typeof element.className === 'string' ? element.className : (element.getAttribute('class') || '');
+              const classes = className.toLowerCase().split(/\\s+/).filter(Boolean);
+              const selected = classes.some(name => ['seatcheck','seat-selected','selected-seat','selected','active'].includes(name))
+                || (element.getAttribute('aria-pressed') || '').toLowerCase() === 'true'
+                || (element.getAttribute('data-selected') || '').toLowerCase() === 'true'
+                || (element.getAttribute('data-status') || '').toLowerCase() === 'selected'
+                || Boolean(element.checked);
+              return {
+                raw_seat: element.getAttribute('data-seat') || element.getAttribute('data-seat-number') || element.getAttribute('data-seatk') || element.getAttribute('aria-label') || element.getAttribute('title') || element.id || '',
+                zone: element.getAttribute('data-zone') || element.getAttribute('data-section') || '',
+                row: element.getAttribute('data-row') || '',
+                number: element.getAttribute('data-seat-number') || '',
+                class_name: className,
+                selected,
+                visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
+                enabled: !element.disabled && (element.getAttribute('aria-disabled') || '').toLowerCase() !== 'true'
+              };
+            })""", remaining)
         except Exception:
             continue
-        for control_index in range(count):
-            seat = seats.nth(control_index)
-            locators.append(seat)
+        for control_index, raw in enumerate(raw_items):
+            locators.append(seats.nth(control_index))
             try:
-                raw_seat = (
-                    seat.get_attribute("data-seat")
-                    or seat.get_attribute("data-seat-number")
-                    or seat.get_attribute("data-seatk")
-                    or seat.get_attribute("aria-label")
-                    or seat.get_attribute("title")
-                    or seat.get_attribute("id")
-                    or ""
-                )
+                raw_seat = str(raw.get("raw_seat") or "")
                 parsed = re.search(r"(?:^|\b)([A-Za-z]+)[-_ ]?(\d+)(?:\b|$)", raw_seat)
-                class_tokens = set((seat.get_attribute("class") or "").casefold().split())
-                selected = seat_is_selected(seat)
-                zone = str(seat.get_attribute("data-zone") or seat.get_attribute("data-section") or fallback_zone).strip().upper()
-                row = str(seat.get_attribute("data-row") or (parsed.group(1) if parsed else "")).strip().upper()
-                number = str(seat.get_attribute("data-seat-number") or (parsed.group(2) if parsed else raw_seat)).strip()
-                available = bool(seat.is_visible(timeout=100) and seat.is_enabled(timeout=100) and not selected and class_tokens.isdisjoint(blocked_tokens))
-                item = {
-                    "zone": zone,
-                    "row": row,
-                    "number": number,
-                    "label": "-".join(item for item in (zone, row, number) if item)[:120],
-                    "available": available,
-                    "selected": selected,
-                    "scope_index": scope_index,
-                    "control_index": control_index,
-                }
-                if seat_conflict_key(item) in SEAT_CONFLICT_BLACKLIST:
+                class_tokens = set(str(raw.get("class_name") or "").casefold().split())
+                selected = bool(raw.get("selected"))
+                zone = str(raw.get("zone") or fallback_zone).strip().upper()
+                row = str(raw.get("row") or (parsed.group(1) if parsed else "")).strip().upper()
+                number = str(raw.get("number") or (parsed.group(2) if parsed else raw_seat)).strip()
+                available = bool(raw.get("visible") and raw.get("enabled") and not selected and class_tokens.isdisjoint(blocked_tokens))
+                item = {"zone": zone, "row": row, "number": number, "label": "-".join(value for value in (zone, row, number) if value)[:120], "available": available, "selected": selected, "visible": bool(raw.get("visible")), "scope_index": scope_index, "control_index": control_index}
+                conflict_key = seat_conflict_key(item)
+                current_generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0)
+                if conflict_key in SEAT_CONFLICT_BLACKLIST or SEAT_CONFLICT_GENERATION.get(conflict_key) == current_generation:
                     item["available"] = False
                     item["blacklisted"] = True
                 metadata.append(item)
@@ -1732,7 +2283,27 @@ def reservation_token_fingerprint(page):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
 
 
-def wait_for_selected_count(page, wanted, timeout_ms):
+def accepted_reservation_responses_since(started_at):
+    accepted = []
+    for response in RESERVATION_RESPONSE_HISTORY:
+        if float(response.get("at") or 0) < float(started_at or 0):
+            continue
+        try:
+            payload = json.loads(str(response.get("body") or "{}"))
+        except Exception:
+            continue
+        try:
+            http_ok = 200 <= int(response.get("status") or 0) < 300
+            status_ok = int(payload.get("status")) == 0
+        except (TypeError, ValueError):
+            http_ok = False
+            status_ok = False
+        if http_ok and payload.get("result") is True and status_ok and not str(payload.get("message") or "").strip():
+            accepted.append(response)
+    return accepted
+
+
+def wait_for_selected_count(page, wanted, timeout_ms, attempt_started_at=0):
     if selected_seat_count(page) >= wanted:
         return True
     deadline = time.monotonic() + max(1, timeout_ms) / 1000
@@ -1743,15 +2314,20 @@ def wait_for_selected_count(page, wanted, timeout_ms):
         try:
             scope.wait_for_function(
                 "args => document.querySelectorAll(args.selector).length >= args.wanted",
-                {"selector": SELECTED_SEAT_SELECTOR, "wanted": wanted},
+                arg={"selector": SELECTED_SEAT_SELECTOR, "wanted": wanted},
                 timeout=remaining,
             )
             if selected_seat_count(page) >= wanted:
                 return True
         except Exception:
             continue
-    response_status = int(LATEST_RESERVATION_RESPONSE.get("status") or 0)
-    return 200 <= response_status < 300 and selected_seat_count(page) >= wanted
+    if selected_seat_count(page) >= wanted:
+        return True
+    # ThaiTicketMajor's fixed-seat page can keep the selected state outside the
+    # DOM selectors while validateseat.php confirms each hold with
+    # {result:true,status:0,message:""}. Count only fresh responses from this
+    # exact click batch, never a stale response from a previous seat.
+    return len(accepted_reservation_responses_since(attempt_started_at)) >= wanted
 
 
 def release_partial_selection(page, timeout_ms=1500):
@@ -1764,7 +2340,7 @@ def release_partial_selection(page, timeout_ms=1500):
         except Exception:
             continue
     try:
-        page.wait_for_function("selector => document.querySelectorAll(selector).length === 0", SELECTED_SEAT_SELECTOR, timeout=max(1, timeout_ms))
+        page.wait_for_function("selector => document.querySelectorAll(selector).length === 0", arg=SELECTED_SEAT_SELECTOR, timeout=max(1, timeout_ms))
     except Exception:
         pass
     remaining = selected_seat_count(page)
@@ -1896,7 +2472,7 @@ def fast_reserved_seat_recovery(page):
     grouping = str(CONFIG.get("seatGrouping", "adjacent"))
     fallback_mode = str(CONFIG.get("seatFallbackMode", "nearest"))
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
-    zones = expand_zone_preferences(recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
+    zones = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
     max_attempts = max(0, int(recovery.get("maxAttempts", 0) or 0))
     verify_timeout = max(250, int(recovery.get("clickVerificationTimeoutMs", 2500) or 2500))
     rescan_interval = max(100, int(recovery.get("inventoryRescanIntervalMs", 750) or 750))
@@ -1905,10 +2481,30 @@ def fast_reserved_seat_recovery(page):
     zone_cursor = 0
     exhausted_rounds = 0
     unknown_layout_rounds = 0
-    wait_for_seat_controls(page, timeout_ms=3000)
+    failure_fingerprints = {}
+    ready_marker_key = None
+    readiness_failures = 0
     current_zone = current_zone_from_page(page)
     if not zones and current_zone:
         zones = [current_zone]
+
+    pending_acceptance = CONFIG.get("_runtimePendingServerSeatAcceptance")
+    if isinstance(pending_acceptance, dict) and pending_acceptance.get("wanted") == wanted:
+        record("seat_set_server_accepted", {
+            **pending_acceptance,
+            "status": "AWAITING_CHECKOUT_TRANSITION",
+            "duplicate_click_prevented": True,
+            "next_action": "continue_to_checkout",
+        })
+        return {
+            "ok": True,
+            "terminal": None,
+            "attempts": int(pending_acceptance.get("attempt") or 0),
+            "zone": pending_acceptance.get("zone", ""),
+            "seats": pending_acceptance.get("seats", []),
+            "selected": int(pending_acceptance.get("selected") or 0),
+            "verification_pending": True,
+        }
 
     while max_attempts == 0 or attempt < max_attempts:
         loop_marker = navigation_marker(page)
@@ -1919,14 +2515,75 @@ def fast_reserved_seat_recovery(page):
         if checkpoint["state"] != "ticket_selection":
             wait_for_manual_idle(page, "ticket_selection", checkpoint["state"])
             return {"ok": False, "terminal": "state_changed", "state": checkpoint["state"], "attempts": attempt}
-        schedule_ai_runtime_analysis(page, checkpoint, {
-            "phase": "fast_seat_recovery",
-            "attempt": attempt,
-            "wanted": wanted,
-            "grouping": grouping,
-            "allowed_zones": zones,
-            "critical_path": True,
-        })
+        marker_key = (loop_marker.get("generation"), loop_marker.get("dom_generation"), loop_marker.get("url"))
+        if ready_marker_key != marker_key:
+            readiness = wait_for_stable_seat_inventory(
+                page,
+                current_zone_from_page(page),
+                timeout_ms=max(3000, int(recovery.get("seatMapReadyTimeoutMs", 12000) or 12000)),
+            )
+            if not readiness.get("ready"):
+                readiness_failures += 1
+                readiness_state = str(readiness.get("state") or "ticket_selection")
+                if readiness_state == "browser_lost":
+                    record("recovery", {"status": "BROWSER_LOST_WHILE_LOADING_SEAT_MAP", "terminal": False, "attempt": attempt})
+                    return {"ok": False, "terminal": "browser_lost", "attempts": attempt}
+                if readiness_state != "ticket_selection":
+                    wait_for_manual_idle(page, "ticket_selection", readiness_state)
+                    return {"ok": False, "terminal": "state_changed", "state": readiness_state, "attempts": attempt}
+                record("recovery", {
+                    "status": "SEAT_MAP_NOT_READY_RESCAN",
+                    "reason": readiness.get("reason", "unknown"),
+                    "failure_count": readiness_failures,
+                    "terminal": False,
+                    "same_session": True,
+                    "next_action": "wait_for_stable_inventory",
+                })
+                if readiness_failures >= 2:
+                    schedule_ai_runtime_analysis(page, checkpoint, context={
+                        "phase": "seat_map_loading",
+                        "seat_incident": True,
+                        "failure": "seat_map_did_not_reach_stable_inventory",
+                        "same_failure_count": readiness_failures,
+                        "candidate_count": 0,
+                        "visual_required": False,
+                    })
+                wait_for_inventory_change(page, rescan_interval)
+                continue
+            readiness_failures = 0
+            ready_marker = readiness.get("marker") or navigation_marker(page)
+            ready_marker_key = (ready_marker.get("generation"), ready_marker.get("dom_generation"), ready_marker.get("url"))
+            loop_marker = ready_marker
+        ready_decision = collect_ai_runtime_analysis()
+        if (
+            ready_decision
+            and ready_decision.get("state") == "ticket_selection"
+            and not ready_decision.get("stale")
+            and not ready_decision.get("unavailable")
+            and ready_decision.get("action") in {"dismiss_runtime_dialog", "rescan_inventory", "release_partial", "switch_allowed_zone", "request_user"}
+        ):
+            ready_action = str(ready_decision.get("action") or "")
+            execution_key = f"ticket_selection:{ready_decision.get('strategy_key', '')}:{ready_action}"
+            if time.monotonic() - float(AI_ACTION_LAST_EXECUTED.get(execution_key, 0)) >= 5:
+                AI_ACTION_LAST_EXECUTED[execution_key] = time.monotonic()
+                if ready_action == "request_user":
+                    record("handoff", {"status": "AI_REQUESTED_USER_RECOVERY", "same_session": True, "reason": ready_decision.get("reason", ""), "payment_submitted": False})
+                    return {"ok": False, "terminal": "ai_handoff", "attempts": attempt, "ai_decision": ready_decision}
+                executed = execute_validated_ai_action(page, checkpoint, ready_decision)
+                record("supervisor_action", {
+                    "status": "AI_ACTION_EXECUTED" if executed else "AI_ACTION_FAILED",
+                    "state": "ticket_selection",
+                    "action": ready_action,
+                    "strategy_key": ready_decision.get("strategy_key", ""),
+                    "model_controlled": True,
+                    "live_visual_used": bool(ready_decision.get("screenshot_included")),
+                    "payment_submitted": False,
+                })
+                if executed:
+                    continue
+        # Normal seat selection stays deterministic and fast. A fresh live
+        # visual/DOM model call is reserved for an observed failure fingerprint
+        # or blocking dialog, where continuing blind clicks would be slower.
         if checkpoint["state"] in {"sold_out", "sale_closed"}:
             return {"ok": False, "terminal": checkpoint["state"], "attempts": attempt}
         active_zone = zones[zone_cursor] if zones else current_zone_from_page(page)
@@ -2003,23 +2660,57 @@ def fast_reserved_seat_recovery(page):
             continue
         if release_partial and selected_seat_count(page):
             release_partial_selection(page, verify_timeout)
-        LATEST_RESERVATION_RESPONSE.update({"status": None, "url": "", "at": time.monotonic()})
+        attempt_started_at = time.monotonic()
+        LATEST_RESERVATION_RESPONSE.update({"status": None, "url": "", "body": "", "at": attempt_started_at})
         errors = click_candidate_set(locators, metadata, indices)
         record("seat_attempt", {"zone": current_zone, "seats": planned, "wanted": wanted, "attempt": attempt, "click_errors": errors})
-        complete = not errors and wait_for_selected_count(page, wanted, verify_timeout)
+        complete = not errors and wait_for_selected_count(page, wanted, verify_timeout, attempt_started_at=attempt_started_at)
         selected = selected_seat_count(page)
         if complete:
-            record("reservation_verified", {
-                "status": "SEAT_HOLD_VERIFIED",
+            accepted_count = len(accepted_reservation_responses_since(attempt_started_at))
+            if selected >= wanted:
+                record("reservation_verified", {
+                    "status": "SEAT_HOLD_VERIFIED",
+                    "zone": current_zone,
+                    "seats": planned,
+                    "selected": selected,
+                    "wanted": wanted,
+                    "attempt": attempt,
+                    "reservation_token_fingerprint": reservation_token_fingerprint(page),
+                    "verification": "selected seat DOM reached the locked quantity",
+                })
+                return {"ok": True, "terminal": None, "attempts": attempt, "zone": current_zone, "seats": planned, "selected": selected, "verification_pending": False}
+            pending = {
                 "zone": current_zone,
                 "seats": planned,
                 "selected": selected,
                 "wanted": wanted,
                 "attempt": attempt,
+                "accepted_response_count": accepted_count,
                 "reservation_token_fingerprint": reservation_token_fingerprint(page),
-                "verification": "selected DOM controls or successful reservation response",
+                "verification": "fresh validateseat.php responses accepted the exact locked quantity; awaiting checkout transition",
+            }
+            CONFIG["_runtimePendingServerSeatAcceptance"] = pending
+            record("seat_set_server_accepted", {
+                **pending,
+                "status": "SERVER_ACCEPTED_EXACT_SET",
+                "duplicate_click_prevented": True,
+                "next_action": "continue_to_checkout",
             })
-            return {"ok": True, "terminal": None, "attempts": attempt, "zone": current_zone, "seats": planned, "selected": selected}
+            return {"ok": True, "terminal": None, "attempts": attempt, "zone": current_zone, "seats": planned, "selected": selected, "verification_pending": True}
+        dialogs = visible_runtime_dialogs(page)
+        response_summary = str(LATEST_RESERVATION_RESPONSE.get("body") or "")[:600]
+        failure_source = "|".join([
+            checkpoint.get("state", ""),
+            urlsplit(safe_page_url(page)).path,
+            current_zone,
+            str(selected),
+            str(LATEST_RESERVATION_RESPONSE.get("status") or ""),
+            str((dialogs[0] if dialogs else {}).get("fingerprint") or "no-dialog"),
+            response_summary,
+        ])
+        failure_fingerprint = hashlib.sha256(failure_source.encode("utf-8", errors="ignore")).hexdigest()[:20]
+        failure_fingerprints[failure_fingerprint] = failure_fingerprints.get(failure_fingerprint, 0) + 1
         record("seat_conflict", {
             "status": "SET_REJECTED_OR_INCOMPLETE",
             "zone": current_zone,
@@ -2028,17 +2719,50 @@ def fast_reserved_seat_recovery(page):
             "wanted": wanted,
             "attempt": attempt,
             "http_status": LATEST_RESERVATION_RESPONSE.get("status"),
+            "response_summary": response_summary,
+            "visible_dialogs": dialogs,
+            "failure_fingerprint": failure_fingerprint,
+            "same_failure_count": failure_fingerprints[failure_fingerprint],
             "next_action": "release_partial_and_rescan_same_zone",
         })
+        # A modal can block the whole seat map while element.click() keeps
+        # dispatching events behind it. Escalate the *current live state* to
+        # Alpha instead of burning through every seat with a stale advisor.
+        if dialogs or failure_fingerprints[failure_fingerprint] >= 2:
+            record("ai_supervisor_trigger", {
+                "status": "LIVE_SEAT_FAILURE_ESCALATION",
+                "state": "ticket_selection",
+                "failure_fingerprint": failure_fingerprint,
+                "same_failure_count": failure_fingerprints[failure_fingerprint],
+                "dialog_count": len(dialogs),
+                "live_visual_required": True,
+            })
+            # Never block the seat critical path on a 9B inference. Queue the
+            # fresh live DOM/network analysis and consume its validated action
+            # on the next scan while deterministic recovery keeps moving.
+            schedule_ai_runtime_analysis(page, checkpoint, context={
+                "phase": "seat_validation_failure",
+                "seat_incident": True,
+                "failure": "seat_click_did_not_create_a_verified_hold",
+                "failure_fingerprint": failure_fingerprint,
+                "same_failure_count": failure_fingerprints[failure_fingerprint],
+                "planned_seats": planned,
+                "visible_dialogs": dialogs,
+                "reservation_response": response_summary,
+                "visual_required": bool(dialogs),
+            })
+            record("supervisor_action", {
+                "status": "AI_ANALYSIS_QUEUED_NON_BLOCKING",
+                "state": "ticket_selection",
+                "action": "analyze_live_seat_failure",
+                "failure_fingerprint": failure_fingerprint,
+                "model_controlled": True,
+                "live_visual_used": bool(dialogs),
+                "payment_submitted": False,
+            })
+            if dialogs and dismiss_runtime_dialog(page):
+                continue
         blacklist_conflicted_seats([metadata[index] for index in indices])
-        schedule_ai_runtime_analysis(page, checkpoint, {
-            "phase": "seat_conflict",
-            "attempt": attempt,
-            "selected": selected,
-            "wanted": wanted,
-            "http_status": LATEST_RESERVATION_RESPONSE.get("status"),
-            "critical_path": True,
-        })
         if release_partial:
             release_partial_selection(page, verify_timeout)
         wait_for_inventory_change(page, rescan_interval)
@@ -2071,14 +2795,116 @@ def redact_ai_text(value):
     text = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[EMAIL]", text, flags=re.I)
     text = re.sub(r"\b(?:\d[ -]*?){8,19}\b", "[NUMBER]", text)
     text = re.sub(r"(?i)(password|รหัสผ่าน|otp|token)\s*[:=]?\s*\S+", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)([?&](?:k|token|session|reservation|order)=)[^&\s]+", r"\1[REDACTED]", text)
+    text = re.sub(r"\b[A-Fa-f0-9]{24,}\b", "[TOKEN]", text)
     return text
 
 
-def capture_ai_visual_snapshot(page, status="ai-visual-analysis"):
-    """Capture a redacted-stage screenshot for the local vision model.
+def safe_response_excerpt(value):
+    """Keep only a short redacted network result for live failure diagnosis."""
+    text = redact_ai_text(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:600]
 
-    This is called only after deterministic DOM/API recovery is exhausted. Login
-    and credential fields are never captured by the seat-layout escalation path.
+
+RUNTIME_DIALOG_SELECTORS = (
+    ".fancybox-wrap", "[role='dialog']", "#pnlMessage", "#popup-message",
+    ".modal", ".modal-dialog", ".swal2-popup", ".sweet-alert", ".bootbox",
+    ".ui-dialog", "#message", "#msgbox",
+)
+
+
+def visible_runtime_dialogs(page):
+    """Return the current visible dialog state for the supervisor.
+
+    This is a live DOM read from Alpha's own browser session. It does not rely
+    on a user-provided screenshot and never returns credentials or raw tokens.
+    """
+    dialogs = []
+    seen = set()
+    for frame_index, scope in enumerate([page, *[frame for frame in page.frames if frame != page.main_frame]]):
+        for selector in RUNTIME_DIALOG_SELECTORS:
+            try:
+                candidates = scope.locator(selector)
+                count = min(candidates.count(), 20)
+            except Exception:
+                continue
+            for index in range(count):
+                dialog = candidates.nth(index)
+                try:
+                    if not dialog.is_visible(timeout=100):
+                        continue
+                    text = redact_ai_text(" ".join(dialog.inner_text(timeout=250).split()))[:900]
+                    buttons = []
+                    actions = dialog.locator(ACTIONABLE_SELECTOR)
+                    for action_index in range(min(actions.count(), 20)):
+                        action = actions.nth(action_index)
+                        if not action.is_visible(timeout=80) or not action.is_enabled(timeout=80):
+                            continue
+                        label = redact_ai_text(" ".join(filter(None, [
+                            action.inner_text(timeout=100),
+                            action.get_attribute("aria-label") or "",
+                            action.get_attribute("value") or "",
+                            action.get_attribute("title") or "",
+                        ])).strip())[:160]
+                        if label:
+                            buttons.append(label)
+                    source = f"{urlsplit(str(getattr(scope, 'url', ''))).path}|{text}|{'|'.join(buttons)}"
+                    fingerprint = hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()[:20]
+                    if fingerprint in seen or not (text or buttons):
+                        continue
+                    seen.add(fingerprint)
+                    dialogs.append({
+                        "fingerprint": fingerprint,
+                        "text": text,
+                        "buttons": buttons,
+                        "frame_index": frame_index,
+                        "selector": selector,
+                    })
+                except Exception:
+                    continue
+    return dialogs[:8]
+
+
+def dismiss_runtime_dialog(page):
+    """Dismiss one non-sensitive runtime dialog using a validated close action."""
+    dialogs = visible_runtime_dialogs(page)
+    if not dialogs:
+        return False
+    combined = " ".join(item.get("text", "") for item in dialogs)
+    if re.search(r"captcha|recaptcha|hcaptcha|otp|one[- ]time|รหัสยืนยัน|ชำระเงินจริง|payment|qr\s*code", combined, re.I):
+        record("dialog_detected", {"status": "HUMAN_HANDOFF_DIALOG", "dialogs": dialogs, "dismissed": False})
+        return False
+    exact_close = re.compile(r"^\s*(?:OK|ตกลง|Close|ปิด|×)\s*$", re.I)
+    for selector in ("#btn_alert_ok", "#btn_message_ok", "[data-dismiss='modal']", ".fancybox-close", ".swal2-confirm"):
+        for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+            try:
+                control = scope.locator(selector).first
+                if control.count() and control.is_visible(timeout=150) and control.is_enabled(timeout=150):
+                    control.click(force=True)
+                    record("dialog_detected", {"status": "DISMISSED_BY_AI_RUNTIME", "dialogs": dialogs, "selector": selector, "dismissed": True})
+                    return True
+            except Exception:
+                continue
+    for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+        for role in ("button", "link"):
+            try:
+                control = scope.get_by_role(role, name=exact_close).first
+                if control.count() and control.is_visible(timeout=150) and control.is_enabled(timeout=150):
+                    control.click(force=True)
+                    record("dialog_detected", {"status": "DISMISSED_BY_AI_RUNTIME", "dialogs": dialogs, "role": role, "dismissed": True})
+                    return True
+            except Exception:
+                continue
+    record("dialog_detected", {"status": "NO_VALIDATED_DISMISS_CONTROL", "dialogs": dialogs, "dismissed": False})
+    return False
+
+
+def capture_ai_visual_snapshot(page, status="ai-visual-analysis"):
+    """Capture the current browser frame for Alpha's local vision model.
+
+    The frame comes directly from Alpha's live Playwright page; the user never
+    has to attach images. Login and credential states are excluded.
     """
     if not page_is_alive(page):
         return {"image_base64": "", "evidence_path": ""}
@@ -2095,9 +2921,9 @@ def capture_ai_visual_snapshot(page, status="ai-visual-analysis"):
 
 def sanitized_recovery_snapshot(page, checkpoint, include_visual=False):
     page_snapshot = snapshot(page)
-    body = redact_ai_text(page_snapshot.get("body", ""))[:6000]
+    body = redact_ai_text(page_snapshot.get("body", ""))[:1600]
     controls = []
-    for index, item in enumerate(page_snapshot.get("actionable_controls", [])[:80]):
+    for index, item in enumerate(page_snapshot.get("actionable_controls", [])[:32]):
         controls.append({
             "control_id": f"control-{index}",
             "label": redact_ai_text(item.get("label", ""))[:200],
@@ -2108,13 +2934,19 @@ def sanitized_recovery_snapshot(page, checkpoint, include_visual=False):
         "url": urlunsplit((*urlsplit(safe_page_url(page))[:3], "", "")),
         "body": body,
         "controls": controls,
+        "visible_dialogs": page_snapshot.get("visible_dialogs", []),
         "seat_control_count": page_snapshot.get("seat_control_count", 0),
         "selected_count": selected_seat_count(page),
         "wanted_count": max(1, int(CONFIG.get("quantity", 1))),
         "current_zone": current_zone_from_page(page),
-        "allowed_zones": expand_zone_preferences((CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", [])),
+        "allowed_zones": expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or (CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", [])),
         "locked_event": str(CONFIG.get("eventName", ""))[:200],
         "locked_schedule": str(CONFIG.get("schedule", ""))[:120],
+        "last_reservation_response": {
+            "status": LATEST_RESERVATION_RESPONSE.get("status"),
+            "url": urlunsplit((*urlsplit(str(LATEST_RESERVATION_RESPONSE.get("url") or ""))[:3], "", "")),
+            "body": redact_ai_text(LATEST_RESERVATION_RESPONSE.get("body", ""))[:600],
+        },
     }
     if include_visual and checkpoint.get("state") not in {"login", "captcha_handoff", "otp_handoff", "payment_handoff"}:
         visual = capture_ai_visual_snapshot(page)
@@ -2138,9 +2970,9 @@ def ai_actions_for_state(state):
         "captcha_handoff": ["request_user"],
         "otp_handoff": ["request_user"],
         "terms_conditions": ["accept_terms", "rescan", "wait", "request_user"],
-        "zone_selection": ["select_allowed_zone", "rescan", "wait", "request_user"],
+        "zone_selection": ["activate_locked_performance", "select_allowed_zone", "rescan", "wait", "request_user"],
         "quantity_selection": ["apply_locked_quantity", "rescan", "wait", "request_user"],
-        "ticket_selection": ["fast_seat_engine", "rescan_inventory", "release_partial", "switch_allowed_zone", "rescan", "wait", "request_user"],
+        "ticket_selection": ["fast_seat_engine", "dismiss_runtime_dialog", "rescan_inventory", "release_partial", "switch_allowed_zone", "rescan", "wait", "request_user"],
         "attendee_details": ["fill_locked_attendees", "rescan", "wait", "request_user"],
         "checkout_options": ["apply_locked_checkout", "rescan", "wait", "request_user"],
         "payment_handoff": ["notify_user"],
@@ -2158,6 +2990,8 @@ def ai_strategy_key(snapshot_data):
         str(urlsplit(str(snapshot_data.get("url", ""))).path),
         str(snapshot_data.get("current_zone", "")),
         " ".join(item.get("label", "") for item in snapshot_data.get("controls", [])[:12]),
+        " ".join(item.get("fingerprint", "") for item in snapshot_data.get("visible_dialogs", [])[:4]),
+        str((snapshot_data.get("last_reservation_response") or {}).get("body", "")),
     ])
     return hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()[:20]
 
@@ -2213,7 +3047,7 @@ def remember_ai_strategy(decision, from_state, to_state):
 
 def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds=60):
     runtime = CONFIG.get("aiRuntime") if isinstance(CONFIG.get("aiRuntime"), dict) else {}
-    model = os.environ.get("ALPHA_RECOVERY_MODEL", str(runtime.get("model") or "qwen3.5:9b")).strip() or "qwen3.5:9b"
+    model = os.environ.get("ALPHA_RECOVERY_MODEL", str(runtime.get("model") or "alpha:9b")).strip() or "alpha:9b"
     ollama_base_url = (
         os.environ.get("ALPHA_OLLAMA_BASE_URL")
         or os.environ.get("OLLAMA_BASE_URL")
@@ -2227,29 +3061,41 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
     image_evidence_path = str(model_snapshot.pop("_image_evidence_path", "") or "")
     strategy_key = ai_strategy_key(model_snapshot)
     prompt = {
-        "role": "ticket_runtime_advisor",
+        "role": "ticket_runtime_supervisor",
         "snapshot": model_snapshot,
         "runtime_context": context or {},
         "allowed_actions": list(allowed_actions),
         "learned_strategies": matching_ai_strategies(strategy_key, snapshot_data.get("state")),
-        "instruction": "Analyze the current state and return JSON only with action, diagnosis, reason, confidence, and next_expected_state. Choose exactly one allowed action. Never change the locked event, performance, quantity, payment method, or allowed zones. Never solve CAPTCHA/OTP or submit payment.",
+        "instruction": "You control this runtime; do not merely advise. Live DOM, visible_dialogs, network result, and the attached current browser frame are authoritative and require no image from the user. Return JSON only with action, diagnosis, reason, confidence, and next_expected_state. Choose one executable allowed action that advances the locked goal. Never request fields already present in locked_event, locked_schedule, wanted_count, allowed_zones, or runtime_context. Prefer a progress action over wait unless the snapshot proves waiting is required. If a prior action did not change the state or failure fingerprint, choose a different valid strategy instead of repeating it. Never change the locked event, performance, quantity, payment method, or allowed zones. Never solve CAPTCHA/OTP or submit payment.",
     }
     message = {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}
     if image_base64:
         message["images"] = [image_base64]
-    keep_alive = runtime.get("keepAlive", -1)
+    keep_alive = runtime.get("keepAlive", "-1")
     if isinstance(keep_alive, str) and keep_alive.strip() == "-1":
         keep_alive = -1
+    response_schema = {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": list(allowed_actions)},
+            "diagnosis": {"type": "string"},
+            "reason": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "next_expected_state": {"type": "string"},
+        },
+        "required": ["action", "diagnosis", "reason", "confidence", "next_expected_state"],
+        "additionalProperties": False,
+    }
     request = urllib.request.Request(
         f"{ollama_base_url}/api/chat",
         data=json.dumps({
             "model": model,
             "stream": False,
-            "format": "json",
+            "format": response_schema,
             "think": False,
             "keep_alive": keep_alive,
             "messages": [message],
-            "options": {"temperature": 0, "num_predict": 384},
+            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 256},
         }).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -2257,7 +3103,14 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
     try:
         with urllib.request.urlopen(request, timeout=max(1, int(timeout_seconds))) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        content = json.loads(str((payload.get("message") or {}).get("content") or "{}"))
+        raw_content = str((payload.get("message") or {}).get("content") or "{}")
+        try:
+            content = json.loads(raw_content)
+        except json.JSONDecodeError:
+            action_match = re.search(r'"action"\s*:\s*"([^"]+)"', raw_content)
+            if not action_match:
+                raise
+            content = {"action": action_match.group(1), "diagnosis": "model selected a validated action before its explanation was truncated", "reason": "execute the selected action and verify the observed state transition", "confidence": 0.5, "next_expected_state": "state_changed"}
         action = str(content.get("action", ""))
         if action not in allowed_actions:
             raise ValueError("model returned an action outside the allowlist")
@@ -2274,7 +3127,8 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
             "image_evidence_path": image_evidence_path,
         }
     except Exception as error:
-        fallback = "wait" if "wait" in allowed_actions else "rescan" if "rescan" in allowed_actions else "request_user" if "request_user" in allowed_actions else allowed_actions[0]
+        progressive_actions = [action for action in allowed_actions if action not in {"wait", "request_user", "notify_user", "stop"}]
+        fallback = progressive_actions[0] if progressive_actions else allowed_actions[0]
         result = {"action": fallback, "diagnosis": "local AI unavailable", "reason": str(error)[:300], "confidence": 0.0, "next_expected_state": "", "model": model, "state": model_snapshot.get("state"), "strategy_key": strategy_key, "unavailable": True, "screenshot_included": bool(image_base64), "image_evidence_path": image_evidence_path}
     return result
 
@@ -2294,9 +3148,12 @@ def finalize_ai_runtime_analysis(strategy_key, future):
         current = AI_FUTURES.get(strategy_key)
         if current and current.get("future") is future:
             AI_FUTURES.pop(strategy_key, None)
-        AI_LAST_DECISION = result
-        AI_LAST_DECISIONS[strategy_key] = result
         state = str(result.get("state") or meta.get("state") or "")
+        stale = bool(AI_LAST_STATE and state and state != AI_LAST_STATE)
+        result["stale"] = stale
+        if not stale:
+            AI_LAST_DECISION = result
+        AI_LAST_DECISIONS[strategy_key] = result
         if state:
             AI_LAST_DECISIONS_BY_STATE[state] = result
     record("ai_analysis", {**result, "background": True, "credentials_included": False, "screenshot_included": bool(result.get("screenshot_included"))})
@@ -2339,19 +3196,46 @@ def schedule_ai_runtime_analysis(page, checkpoint, context=None):
     if runtime.get("enabled", True) is False or runtime.get("analyzeEveryState", True) is False:
         return
     include_visual = bool((context or {}).get("visual_required"))
-    snapshot_data = sanitized_recovery_snapshot(page, checkpoint, include_visual=include_visual)
+    if checkpoint.get("state") == "ticket_selection" and not bool((context or {}).get("seat_incident")):
+        # The Fast Seat Engine owns the normal critical path. Alpha 9B is
+        # scheduled only after live evidence identifies an incident.
+        return
+    incident = bool((context or {}).get("seat_incident"))
+    if incident and not include_visual:
+        snapshot_data = {
+            "state": checkpoint.get("state"),
+            "url": urlunsplit((*urlsplit(safe_page_url(page))[:3], "", "")),
+            "body": "",
+            "controls": [],
+            "visible_dialogs": list((context or {}).get("visible_dialogs") or []),
+            "seat_control_count": int((context or {}).get("candidate_count") or 0),
+            "selected_count": int((context or {}).get("selected_count") or 0),
+            "wanted_count": max(1, int(CONFIG.get("quantity", 1))),
+            "current_zone": current_zone_from_page(page),
+            "allowed_zones": expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or (CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", [])),
+            "locked_event": str(CONFIG.get("eventName", ""))[:200],
+            "locked_schedule": str(CONFIG.get("schedule", ""))[:120],
+            "last_reservation_response": {"status": LATEST_RESERVATION_RESPONSE.get("status"), "url": urlunsplit((*urlsplit(str(LATEST_RESERVATION_RESPONSE.get("url") or ""))[:3], "", "")), "body": redact_ai_text(LATEST_RESERVATION_RESPONSE.get("body", ""))[:600]},
+        }
+    else:
+        snapshot_data = sanitized_recovery_snapshot(page, checkpoint, include_visual=include_visual)
     strategy_key = ai_strategy_key(snapshot_data)
     now = time.monotonic()
     state = str(checkpoint.get("state") or "unknown")
     allowed_actions = ai_actions_for_state(checkpoint.get("state"))
     meta = {"state": checkpoint.get("state"), "strategy_key": strategy_key}
     with AI_LOCK:
-        if strategy_key in AI_FUTURES or any(str((task.get("meta") or {}).get("state")) == state for task in AI_FUTURES.values()) or now - float(AI_LAST_SUBMITTED.get(strategy_key, 0)) < 10 or now - float(AI_LAST_STATE_SUBMITTED.get(state, 0)) < 20:
+        for pending_key, pending in list(AI_FUTURES.items()):
+            pending_state = str((pending.get("meta") or {}).get("state") or "")
+            if pending_state != state and pending.get("future") and pending["future"].cancel():
+                AI_FUTURES.pop(pending_key, None)
+        if strategy_key in AI_FUTURES or any(str((task.get("meta") or {}).get("state")) == state for task in AI_FUTURES.values()) or now - float(AI_LAST_SUBMITTED.get(strategy_key, 0)) < 5 or now - float(AI_LAST_STATE_SUBMITTED.get(state, 0)) < 8:
             return
         AI_LAST_SUBMITTED[strategy_key] = now
         AI_LAST_STATE_SUBMITTED[state] = now
-        timeout_seconds = max(30, int(runtime.get("timeoutSeconds", 60) or 60))
-        future = AI_EXECUTOR.submit(query_local_ai, snapshot_data, allowed_actions, context or {}, timeout_seconds)
+        timeout_seconds = max(20, int(runtime.get("timeoutSeconds", 60) or 60)) if incident else min(15, max(8, int(runtime.get("timeoutSeconds", 60) or 60)))
+        executor = AI_INCIDENT_EXECUTOR if incident else AI_EXECUTOR
+        future = executor.submit(query_local_ai, snapshot_data, allowed_actions, context or {}, timeout_seconds)
         AI_FUTURES[strategy_key] = {"future": future, "meta": meta}
     future.add_done_callback(lambda completed, key=strategy_key: finalize_ai_runtime_analysis(key, completed))
     record("ai_analysis", {"status": "QUEUED", "state": checkpoint.get("state"), "allowed_actions": allowed_actions, "background": True, "critical_path_blocked": False, "screenshot_included": bool(snapshot_data.get("_image_base64"))})
@@ -2399,8 +3283,13 @@ def execute_validated_ai_action(page, checkpoint, decision, confirm_order=False)
             success = True
         elif action == "activate_verified_control" and state == "waiting_room_entry":
             success = semantic_click(page, ["Join waiting room", "Join the queue", "Join queue", "เข้าห้องรอ", "กดรับคิว", "รับคิว"])
-        elif action == "activate_locked_performance" and state in {"sale_entry", "unknown"}:
-            success = bool(activate_selected_performance(page, prefer_target_navigation=True))
+        elif action == "activate_locked_performance" and state in {"sale_entry", "zone_selection", "unknown"}:
+            if state == "zone_selection":
+                performance_state = ensure_locked_performance_on_booking_page(page)
+                success = performance_state in {"matched", "changed", "absent"}
+                detail = performance_state
+            else:
+                success = bool(activate_selected_performance(page, prefer_target_navigation=True))
         elif action == "return_seat_map" and state == "reservation_expired":
             success = return_to_same_seat_map(page)
         elif action == "fill_login" and state == "login":
@@ -2413,10 +3302,12 @@ def execute_validated_ai_action(page, checkpoint, decision, confirm_order=False)
             success = select_ticket_quantity(page)
         elif action == "fast_seat_engine" and state == "ticket_selection":
             success = bool(fast_reserved_seat_recovery(page).get("ok"))
+        elif action == "dismiss_runtime_dialog" and state == "ticket_selection":
+            success = dismiss_runtime_dialog(page)
         elif action == "release_partial" and state == "ticket_selection":
             success = release_partial_selection(page) == 0
         elif action == "switch_allowed_zone" and state == "ticket_selection":
-            allowed = expand_zone_preferences((CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", []))
+            allowed = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or (CONFIG.get("seatRecovery") or {}).get("zoneOrder") or CONFIG.get("preferredZones", []))
             current = current_zone_from_page(page)
             candidates = allowed[allowed.index(current) + 1:] if current in allowed else allowed
             success = bool(candidates and switch_to_allowed_zone(page, candidates[0]))
@@ -2445,6 +3336,33 @@ def execute_validated_ai_action(page, checkpoint, decision, confirm_order=False)
         "payment_submitted": False,
     })
     return success
+
+
+def execute_ready_ai_supervisor_action(page, checkpoint, confirm_order=False):
+    """Execute a completed model decision instead of leaving it as UI advice.
+
+    The seat and payment critical paths remain deterministic. For recoverable
+    runtime states, a validated model action is applied in the live session and
+    rate-limited so a stale decision cannot spam the page.
+    """
+    state = str(checkpoint.get("state", "unknown"))
+    if state in {"ticket_selection", "payment_handoff", "queue", "captcha_handoff", "otp_handoff"}:
+        return False
+    decision = collect_ai_runtime_analysis()
+    if not decision or str(decision.get("state", "")) != state:
+        return False
+    action = str(decision.get("action", ""))
+    if action in {"", "wait", "request_user", "notify_user", "stop"}:
+        return False
+    strategy_key = str(decision.get("strategy_key", ""))
+    execution_key = f"{state}:{strategy_key}:{action}"
+    now = time.monotonic()
+    if now - float(AI_ACTION_LAST_EXECUTED.get(execution_key, 0)) < 5:
+        return False
+    AI_ACTION_LAST_EXECUTED[execution_key] = now
+    executed = execute_validated_ai_action(page, checkpoint, decision, confirm_order=confirm_order)
+    record("supervisor_action", {"status": "AI_ACTION_EXECUTED" if executed else "AI_ACTION_FAILED", "state": state, "action": action, "strategy_key": strategy_key, "model_controlled": True, "payment_submitted": False})
+    return executed
 
 
 def autonomous_ai_recovery(page, checkpoint, allowed_actions, confirm_order=False, context=None):
@@ -2534,7 +3452,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         bind_navigation_observer(page)
         start_runtime_heartbeat(page)
         surface_browser_window(page, browser_profile, "runtime_started")
-        observed = {"retry_after": None, "http_status": None, "server_date": None}
+        observed = {"retry_after": None, "http_status": None, "server_date": None, "login_status": None}
         observed_api = set()
         login_submitted = False
         login_verified = False
@@ -2550,10 +3468,24 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             elif response.request.resource_type in {"xhr", "fetch"}:
                 parsed = urlsplit(response.url)
                 safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if re.search(r"check_user_signin|signin|login", parsed.path, re.I):
+                    observed["login_status"] = response.status
                 if re.search(r"seat|reserve|reservation|booking|ticket", parsed.path, re.I):
-                    LATEST_RESERVATION_RESPONSE = {"status": response.status, "url": safe_url, "at": time.monotonic()}
                     try:
-                        zone_counts = normalize_zone_availability(response.json())
+                        response_text = response.text()
+                    except Exception:
+                        response_text = ""
+                    LATEST_RESERVATION_RESPONSE = {
+                        "status": response.status,
+                        "url": safe_url,
+                        "body": safe_response_excerpt(response_text),
+                        "at": time.monotonic(),
+                    }
+                    RESERVATION_RESPONSE_HISTORY.append(dict(LATEST_RESERVATION_RESPONSE))
+                    if len(RESERVATION_RESPONSE_HISTORY) > 100:
+                        del RESERVATION_RESPONSE_HISTORY[:-100]
+                    try:
+                        zone_counts = normalize_zone_availability(json.loads(response_text)) if response_text else {}
                     except Exception:
                         zone_counts = {}
                     if zone_counts:
@@ -2607,9 +3539,11 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         unknown_recovery_rounds = 0
         recovery_failures = {}
         browser_recovery_rounds = 0
+        login_retry_rounds = 0
         last_safe_url = safe_page_url(page, CONFIG["eventUrl"])
         last_safe_state = checkpoint.get("state", "unknown")
         while True:
+            update_runtime_heartbeat_cache(page)
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
             state = checkpoint["state"]
@@ -2663,6 +3597,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 "login_verified": login_verified,
                 "confirm_unpaid_order_authorized": confirm_order,
             })
+            if execute_ready_ai_supervisor_action(page, checkpoint, confirm_order=confirm_order):
+                continue
             if not login_verified and (authenticated_account_marker(page) or authenticated_booking_session(page, state)):
                 login_verified = True
                 record("authentication", {"status": "EXISTING_SESSION_VERIFIED", "method": "account_marker_or_private_booking_step", "credentials_persisted": False})
@@ -2815,7 +3751,12 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             if state == "login":
                 login_url = page.url
                 observed["http_status"] = None
-                if not fill_login(page):
+                observed["login_status"] = None
+                login_ready = fill_login(page)
+                if login_ready is None:
+                    record("recovery", {"status": "LOGIN_FORM_RESCAN", "same_session": True, "user_input_required": False})
+                    continue
+                if not login_ready:
                     surface_browser_window(page, browser_profile, "waiting_login_form")
                     record("input_required", {"field": "login", "stage": "waiting_login_form", "prompt": "ฟอร์ม Login เปลี่ยนหรือข้อมูลยังไม่ครบ กรุณาตรวจหน้าเดิมแล้วส่งข้อมูลใหม่", "secret": False})
                     console_input("ตรวจ/กรอก Login ใน Chrome เดิมแล้วกด Enter เพื่อ rescan: ")
@@ -2825,12 +3766,21 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 after_login = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
                 record("authentication", {"status": "POST_LOGIN_SETTLED" if transitioned else "POST_LOGIN_TIMEOUT", "from_url": login_url, "to_url": page.url, "state": after_login["state"], "credentials_persisted": False})
                 if after_login["state"] == "login":
+                    login_status = observed.get("login_status")
+                    if login_status in {403, 408, 409, 425, 428, 429, 503} or login_status is None:
+                        login_retry_rounds += 1
+                        wait_seconds = min(5, 1 + login_retry_rounds)
+                        record("recovery", {"status": "LOGIN_SECURITY_CHALLENGE_RETRY", "http_status": login_status, "attempt": login_retry_rounds, "seconds": wait_seconds, "same_session": True, "credentials_retained": True, "user_input_required": False})
+                        page.wait_for_timeout(wait_seconds * 1000)
+                        login_submitted = False
+                        continue
                     os.environ.pop("TICKET_USERNAME", None)
                     os.environ.pop("TICKET_PASSWORD", None)
                     record("input_required", {"field": "login", "stage": "waiting_login_retry", "prompt": "Login ยังไม่สำเร็จ ระบบรักษา session ไว้และรอข้อมูลใหม่", "secret": False})
                     console_input("Login ยังไม่สำเร็จ ตรวจข้อความใน Chrome แล้วกด Enter เพื่อกรอกใหม่: ")
                     login_submitted = False
                     continue
+                login_retry_rounds = 0
                 continue
             if state in {"captcha_handoff", "otp_handoff"}:
                 if state == "captcha_handoff" and login_submitted:
@@ -2862,8 +3812,29 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "zone_selection":
+                performance_state = ensure_locked_performance_on_booking_page(page)
+                if performance_state == "changed":
+                    continue
+                if performance_state == "missing":
+                    recovery_failures["repeat_performance"] = recovery_failures.get("repeat_performance", 0) + 1
+                    recovery = autonomous_ai_recovery(page, checkpoint, ["activate_locked_performance", "rescan", "wait", "request_user"], context={
+                        "failure": "repeat_performance_selector_does_not_match_locked_schedule",
+                        "attempt": recovery_failures["repeat_performance"],
+                        "locked_schedule": CONFIG.get("schedule"),
+                    })
+                    if recovery["executed"]:
+                        continue
+                    surface_browser_window(page, browser_profile, "waiting_repeat_performance")
+                    record("input_required", {"field": "performance", "stage": "waiting_repeat_performance", "prompt": "หน้า Booking ให้เลือกรอบอีกครั้ง แต่ยังจับคู่รอบที่ล็อกไว้ไม่ได้ ระบบไม่เลือกรอบอื่นแทน", "secret": False})
+                    console_input("ตรวจตัวเลือกรอบใน Chrome เดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
+                    continue
                 previous_url = page.url
                 if not select_preferred_zone(page):
+                    zone_failure_reason = CONFIG.pop("_runtimeLastZoneSelectionReason", "")
+                    if zone_failure_reason == "AVAILABILITY_UNAVAILABLE":
+                        record("recovery", {"status": "WAITING_FOR_ZONE_AVAILABILITY", "same_session": True, "retry_without_user": True, "delay_ms": 750})
+                        page.wait_for_timeout(750)
+                        continue
                     recovery_failures[state] = recovery_failures.get(state, 0) + 1
                     recovery = autonomous_ai_recovery(page, checkpoint, ["select_allowed_zone", "rescan", "wait", "request_user"], context={"failure": "allowed_zone_control_missing", "attempt": recovery_failures[state], "allowed_zones": CONFIG.get("preferredZones", [])})
                     if recovery["executed"]:
@@ -2931,7 +3902,8 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     record("input_required", {"field": "seat_recovery", "stage": "waiting_seat_recovery", "prompt": "AI ยังแก้ผังที่นั่งรูปแบบนี้ไม่ได้ ระบบรักษา session และชุดเงื่อนไขเดิมไว้", "secret": False})
                     console_input("ตรวจผังเดิมแล้วกด Enter เพื่อให้ AI วิเคราะห์ต่อ: ")
                     continue
-                if not semantic_click(page, ["ดำเนินการต่อ", "ถัดไป", "continue", "next", "ยืนยัน"]):
+                continued = semantic_click(page, ["ดำเนินการต่อ", "ถัดไป", "continue", "next", "ยืนยัน"])
+                if not continued:
                     record("recovery", {"status": "CONTINUE_CONTROL_RESCAN", "same_session": True, "reservation_preserved": True})
                     recovery = autonomous_ai_recovery(page, checkpoint, ["rescan", "wait", "request_user"], context={"failure": "continue_control_changed", "reservation_verified": True})
                     if not recovery["executed"]:
@@ -2939,6 +3911,26 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                         record("input_required", {"field": "continue", "stage": "waiting_manual_continue", "prompt": "ที่นั่งถูกยืนยันแล้วแต่ปุ่มดำเนินการต่อเปลี่ยน กรุณากดปุ่มต่อใน Chrome แล้วกดทำต่อ", "secret": False})
                         console_input("กดดำเนินการต่อใน Chrome เดิมแล้วกลับมากด Enter: ")
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
+                after_seat = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
+                pending_acceptance = CONFIG.get("_runtimePendingServerSeatAcceptance")
+                if isinstance(pending_acceptance, dict) and after_seat["state"] in {"terms_conditions", "attendee_details", "checkout_options", "payment_handoff"}:
+                    record("reservation_verified", {
+                        **pending_acceptance,
+                        "status": "SEAT_HOLD_VERIFIED",
+                        "verification": "server accepted the exact seat set and advanced to a private checkout state",
+                        "advanced_state": after_seat["state"],
+                        "reservation_token_fingerprint": reservation_token_fingerprint(page) or pending_acceptance.get("reservation_token_fingerprint", ""),
+                    })
+                    CONFIG.pop("_runtimePendingServerSeatAcceptance", None)
+                elif isinstance(pending_acceptance, dict) and after_seat["state"] == "ticket_selection":
+                    record("recovery", {
+                        "status": "SERVER_ACCEPTED_SET_AWAITING_CONTINUE_TRANSITION",
+                        "wanted": pending_acceptance.get("wanted"),
+                        "accepted_response_count": pending_acceptance.get("accepted_response_count"),
+                        "duplicate_click_prevented": True,
+                        "terminal": False,
+                        "next_action": "retry_continue_without_selecting_more_seats",
+                    })
                 continue
             if state == "attendee_details":
                 previous_url = page.url
@@ -3286,11 +4278,12 @@ PROGRAM_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROGRAM_DIR"
 PYTHON_BIN="${ALPHA_PYTHON_BIN:-$(command -v python3)}"
 export PLAYWRIGHT_BROWSERS_PATH="${ALPHA_PLAYWRIGHT_BROWSERS_PATH:-/Volumes/petong/Disk/AI/models/playwright-browsers}"
-if [[ ! -x .venv/bin/python ]]; then "$PYTHON_BIN" -m venv .venv; fi
-if ! .venv/bin/python -c 'import playwright' >/dev/null 2>&1; then
-  .venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+RUNTIME_VENV="${ALPHA_TICKET_RUNTIME_VENV:-/Volumes/petong/Disk/AI/work/ticket-runtime-venv}"
+if [[ ! -x "$RUNTIME_VENV/bin/python" ]]; then "$PYTHON_BIN" -m venv "$RUNTIME_VENV"; fi
+if ! "$RUNTIME_VENV/bin/python" -c 'import playwright' >/dev/null 2>&1; then
+  "$RUNTIME_VENV/bin/python" -m pip install --disable-pip-version-check -r requirements.txt
 fi
-exec .venv/bin/python bot.py "$@"
+exec "$RUNTIME_VENV/bin/python" bot.py "$@"
 '''
     full_loop_script = '''#!/bin/zsh
 set -euo pipefail
