@@ -208,6 +208,40 @@ exit 0
   }
 });
 
+test("Alpha 2.0 exposes the official live quantity limit and preserves the booking URL", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "alpha2-quantity-limit-"));
+  const root = join(temporary, "Program_Create");
+  await mkdir(root);
+  const path = await project(root, `#!/bin/bash
+echo '{"kind":"checkpoint","state":"quantity_selection","url":"https://booking.test/festival.php?query=702"}'
+echo '{"kind":"api","url":"https://translate.googleapis.com/telemetry"}'
+echo '{"kind":"quantity_limit","max_quantity":2,"wanted":3,"adjusted_quantity":2,"auto_adjusted":true,"options":[1,2],"reason":"REQUESTED_QUANTITY_EXCEEDS_LIVE_LIMIT"}'
+echo '{"kind":"quantity_updated","quantity":2,"requested_quantity":3,"adjusted_from":3,"max_quantity":2,"auto_adjusted":true,"reason":"QUANTITY_AUTO_ADJUSTED_TO_LIVE_LIMIT"}'
+sleep 2
+exit 0
+`);
+  const manager = createTicketRunManager({ programCreateDir: root, shellPath: "/bin/bash", requiredGeneratorVersion: CURRENT_VERSION });
+  try {
+    const started = await manager.start({ project_path: path });
+    const adjusted = await waitFor(() => {
+      const run = manager.get(started.run.id).run;
+      return run.seat?.quantity_auto_adjusted && run.seat?.wanted === 2 ? run : null;
+    });
+    assert.equal(adjusted.latest_url, "https://booking.test/festival.php?query=702");
+    assert.equal(adjusted.seat.max_quantity, 2);
+    assert.equal(adjusted.seat.requested_quantity, 3);
+    assert.equal(adjusted.seat.adjusted_quantity, 2);
+    assert.equal(adjusted.seat.wanted, 2);
+    assert.equal(adjusted.seat.next_action, "apply_adjusted_quantity");
+    assert.equal(adjusted.handoff, null);
+    const eventLog = manager.events(started.run.id).events;
+    assert.ok(eventLog.every((event) => !(event.kind === "input_required" && event.field === "quantity")));
+  } finally {
+    await manager.stopAll();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Alpha 2.0 Tool Service supervisor restarts a crashed core and shuts it down cleanly", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "alpha2-tool-supervisor-"));
   const toolServiceDir = join(temporary, "tool-service");

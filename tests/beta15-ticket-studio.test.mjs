@@ -27,7 +27,7 @@ test("Ticket Bot Studio is a fixed workspace with all user preference fields", a
   assert.match(css, /\.ticket-workspace \{[^}]*overflow: hidden/);
   assert.match(css, /\.ticket-event-list \{[^}]*overflow-y: auto/);
   assert.match(css, /\.ticket-config-scroll \{[^}]*overflow-y: auto/);
-  assert.match(css, /\.ticket-source-form button, \.ticket-discovery-actions button \{[^}]*height: 36px/);
+  assert.match(css, /\.ticket-source-form button, \.ticket-discovery-actions button \{[^}]*height: 40px/);
   assert.match(css, /\.ticket-build-actions button \{[^}]*height: 40px/);
 });
 

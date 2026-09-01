@@ -15,7 +15,7 @@ test("ticket speed mode is opt-in and keeps the existing generator version", asy
   const pkg = JSON.parse(packageJson);
 
   assert.match(pkg.version, /^2\.0\.0-alpha\.\d+$/);
-  assert.match(template, /"runtimeRevision": "ticket-seat-availability-modal-1"/);
+  assert.match(template, /"runtimeRevision": "ticket-zone-price-vat-2"/);
   assert.match(template, /"ticketSpeed": \{/);
   assert.match(template, /"apiFirst": True/);
   assert.match(template, /"cacheVerifiedContractsPerRun": True/);
@@ -33,7 +33,7 @@ test("ticket speed mode is opt-in and keeps the existing generator version", asy
   assert.match(template, /RETRY_AFTER_HONORED/);
 
   // A legacy generated bot is rebuilt so the user actually gets this runtime.
-  assert.match(page, /ticketBuildReport\.runtime_revision === "ticket-seat-availability-modal-1"/);
+  assert.match(page, /ticketBuildReport\.runtime_revision === "ticket-zone-price-vat-2"/);
   assert.doesNotMatch(page, /\["page-ready-gate-1", "ticket-speed-mode-1"\]/);
 });
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 
 const ACTIVE = new Set(["starting_runtime", "runtime_running", "waiting_handoff"]);
-const HANDLED_TERMINAL_RESULTS = new Set(["SOLD_OUT_BY_SERVER", "SALE_CLOSED_BY_SERVER", "PRE_SALE_SCHEDULED", "PRE_SALE_READY", "ARMED_PRE_SALE"]);
+const HANDLED_TERMINAL_RESULTS = new Set(["SOLD_OUT_BY_SERVER", "SALE_CLOSED_BY_SERVER", "SELECTED_PRICE_SOLD_OUT", "REQUESTED_SEATS_UNAVAILABLE", "PRE_SALE_SCHEDULED", "PRE_SALE_READY", "ARMED_PRE_SALE"]);
 const REQUIRED_FILES = ["run-full-loop.command", "start.command", "bot.py", "config.json"];
 const MAX_LOG_LINES = 350;
 
@@ -67,6 +67,22 @@ function thaiRuntimeMessage(kind, event = {}) {
     const browser = event.browser_connected ? "เชื่อมต่อ Browser แล้ว" : "กำลังรอ Browser เชื่อมต่อ";
     const ai = event.ai_ready ? "AI อยู่ใน standby" : "กำลังเตรียม AI Supervisor";
     return `ระบบยังทำงานอยู่ · ${browser} · ${ai}`;
+  }
+  if (kind === "quantity_limit") {
+    const maxQuantity = Number.isSafeInteger(Number(event.max_quantity)) ? Number(event.max_quantity) : null;
+    const wanted = Number.isSafeInteger(Number(event.wanted)) ? Number(event.wanted) : null;
+    const adjusted = Number.isSafeInteger(Number(event.adjusted_quantity)) ? Number(event.adjusted_quantity) : null;
+    if (event.auto_adjusted === true && adjusted != null) {
+      return `เว็บจำกัดการซื้อสูงสุด ${maxQuantity ?? adjusted} ใบ · ระบบปรับจาก ${wanted ?? "—"} เป็น ${adjusted} ใบและทำงานต่ออัตโนมัติ`;
+    }
+    return `รอบนี้สูงสุด ${maxQuantity == null ? "ยังไม่ทราบ" : maxQuantity} ใบ${wanted == null ? "" : ` · ต้องการ ${wanted} ใบ`}`;
+  }
+  if (kind === "quantity_updated") {
+    const quantity = Number.isSafeInteger(Number(event.quantity)) ? Number(event.quantity) : null;
+    const requested = Number.isSafeInteger(Number(event.requested_quantity ?? event.adjusted_from)) ? Number(event.requested_quantity ?? event.adjusted_from) : null;
+    return quantity == null ? "รับจำนวนบัตรใหม่แล้ว · กำลังตรวจหน้า Booking ต่อ" : event.auto_adjusted === true
+      ? `เว็บจำกัดจำนวน · ระบบปรับจาก ${requested ?? "—"} เป็น ${quantity} ใบและทำงานต่ออัตโนมัติ`
+      : `เปลี่ยนจำนวนเป็น ${quantity} ใบแล้ว · กำลังยืนยันกับหน้า Booking`;
   }
   if (kind === "supervisor_action") {
     const statusText = statusLabels[status] || (status === "recovering" ? "กำลัง recovery runtime ที่แก้ได้อย่างปลอดภัย" : status === "analyzing" ? "กำลังวิเคราะห์ปัญหาจากหลักฐาน runtime" : "กำลังตรวจสุขภาพ runtime");
@@ -181,7 +197,7 @@ function mapEvent(run, event) {
   const state = safeText(event.state, 100);
   const status = safeText(event.status, 120);
   const url = safeText(event.url, 2_000);
-  if (url) run.latest_url = url;
+  if (url && !["api", "api_contract"].includes(kind)) run.latest_url = url;
 
   if (kind === "browser_window") {
     const browserPid = Number(event.browser_pid || 0);
@@ -282,6 +298,36 @@ function mapEvent(run, event) {
     run.status = "runtime_running";
     run.stage = "selecting_ticket";
     run.detail = safeText(event.reason, 500) || "กำลังเลือกบัตรตามเงื่อนไข";
+  } else if (kind === "quantity_limit") {
+    const maxQuantity = Number(event.max_quantity);
+    if (Number.isSafeInteger(maxQuantity) && maxQuantity >= 0) run.seat.max_quantity = maxQuantity;
+    const wanted = Number(event.wanted);
+    if (Number.isSafeInteger(wanted) && wanted >= 0) {
+      run.seat.wanted = wanted;
+      run.seat.requested_quantity = wanted;
+    }
+    const adjustedQuantity = Number(event.adjusted_quantity);
+    if (Number.isSafeInteger(adjustedQuantity) && adjustedQuantity > 0) run.seat.adjusted_quantity = adjustedQuantity;
+    run.seat.quantity_auto_adjusted = event.auto_adjusted === true;
+    run.status = "runtime_running";
+    run.stage = "quantity_limit";
+    run.seat.next_action = event.auto_adjusted === true ? "apply_adjusted_quantity" : "apply_locked_quantity";
+    run.detail = safeText(event.message_th, 500) || thaiRuntimeMessage(kind, event);
+  } else if (kind === "quantity_updated") {
+    const quantity = Number(event.quantity);
+    const requestedQuantity = Number(event.requested_quantity ?? event.adjusted_from);
+    if (Number.isSafeInteger(requestedQuantity) && requestedQuantity > 0) run.seat.requested_quantity = requestedQuantity;
+    if (Number.isSafeInteger(quantity) && quantity > 0) {
+      run.seat.wanted = quantity;
+      run.seat.adjusted_quantity = quantity;
+      run.seat.selected = 0;
+    }
+    run.seat.quantity_auto_adjusted = event.auto_adjusted === true;
+    run.status = "runtime_running";
+    run.stage = "quantity_updated";
+    run.seat.next_action = event.auto_adjusted === true ? "apply_adjusted_quantity" : "apply_locked_quantity";
+    run.handoff = null;
+    run.detail = safeText(event.message_th, 500) || thaiRuntimeMessage(kind, event);
   } else if (kind === "seat_scan") {
     run.status = "runtime_running";
     run.stage = "seat_scan";
@@ -315,6 +361,16 @@ function mapEvent(run, event) {
     run.seat.reservation_status = safeText(event.status, 120) || "conflict";
     run.seat.next_action = safeText(event.next_action, 120) || "release_partial_and_retry";
     run.detail = `ที่นั่งถูกแย่งหรือชุดไม่ครบ ${run.seat.selected}/${run.seat.wanted} · กำลังลองชุดใหม่`;
+  } else if (kind === "selection_unavailable") {
+    run.status = "runtime_running";
+    run.stage = "selection_unavailable";
+    run.seat.reservation_status = safeText(event.status, 120) || "unavailable";
+    run.seat.next_action = "close_owned_browser_and_report";
+    run.seat.locked_prices = Array.isArray(event.preferred_prices) ? event.preferred_prices.map(Number).filter(Number.isFinite).slice(0, 20) : [];
+    run.seat.locked_rows = Array.isArray(event.preferred_rows) ? event.preferred_rows.map((item) => safeText(item, 40)).filter(Boolean).slice(0, 40) : [];
+    run.seat.locked_seat_numbers = Array.isArray(event.preferred_seat_numbers) ? event.preferred_seat_numbers.map((item) => safeText(item, 40)).filter(Boolean).slice(0, 40) : [];
+    run.seat.available_options = Array.isArray(event.available_options) ? event.available_options.slice(0, 100) : [];
+    run.detail = safeText(event.reason, 500) || "ไม่พบชุดที่นั่งตามเงื่อนไขที่ล็อกไว้";
   } else if (kind === "partial_released") {
     run.status = "runtime_running";
     run.stage = "partial_released";
@@ -399,6 +455,8 @@ function mapEvent(run, event) {
     const upper = status.toUpperCase();
     run.result_status = upper;
     run.result_reason = safeText(event.reason, 500);
+    if (Array.isArray(event.available_options)) run.seat.available_options = event.available_options.slice(0, 100);
+    if (Array.isArray(event.preferred_prices)) run.seat.locked_prices = event.preferred_prices.map(Number).filter(Number.isFinite).slice(0, 20);
     if (upper === "PAYMENT_HANDOFF") {
       run.status = "waiting_handoff";
       run.stage = "payment_handoff";
@@ -828,7 +886,7 @@ export function createTicketRunManager({
         run.logs = Array.isArray(run.logs) ? run.logs : [];
         run.events = Array.isArray(saved.events) ? saved.events : [];
         run.event_cursor = Number(run.event_cursor || run.events.at(-1)?.cursor || 0);
-        run.seat = { current_zone: "", candidate_set: [], selected: 0, wanted: 0, attempts: 0, reservation_status: "pending", next_action: "", ...(run.seat || {}) };
+        run.seat = { current_zone: "", candidate_set: [], selected: 0, wanted: 0, requested_quantity: null, adjusted_quantity: null, quantity_auto_adjusted: false, max_quantity: null, attempts: 0, reservation_status: "pending", next_action: "", ...(run.seat || {}) };
         run.queue = { position: null, position_verified: false, waited_seconds: 0, server_status: null, current_action: "", next_action: "", ...(run.queue || {}) };
         run.ai = { status: "idle", ...(run.ai || {}) };
         run.heartbeat = { ...(run.heartbeat || {}) };
@@ -1136,7 +1194,7 @@ export function createTicketRunManager({
       full_loop_verified: false,
       reservation_verified: false,
       payment_handoff_verified: false,
-      seat: { current_zone: "", candidate_set: [], selected: 0, wanted: 0, attempts: 0, reservation_status: "pending", next_action: "" },
+      seat: { current_zone: "", candidate_set: [], selected: 0, wanted: 0, requested_quantity: null, adjusted_quantity: null, quantity_auto_adjusted: false, max_quantity: null, attempts: 0, reservation_status: "pending", next_action: "", locked_prices: [], locked_rows: [], locked_seat_numbers: [], available_options: [] },
       queue: { position: null, position_verified: false, waited_seconds: 0, server_status: null, current_action: "", next_action: "" },
       ai: { status: "idle", state: "", action: "", diagnosis: "", confidence: null, background: true, last_action_executed: false, learned_strategy_count: 0, last_learned_action: "" },
       checkout_countdown_seconds: null,

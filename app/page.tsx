@@ -244,6 +244,24 @@ interface TicketBuildReport {
   output?: Record<string, unknown>;
 }
 
+interface TicketAvailableOption {
+  zone?: string;
+  price?: number | null;
+  count?: number | null;
+  rows?: string[];
+  sample_seats?: string[];
+  source?: string;
+}
+
+interface TicketLockedSelectionView {
+  prices?: number[];
+  zones?: string[];
+  rows?: string[];
+  seat_numbers?: string[];
+  quantity?: number;
+  grouping?: string;
+}
+
 interface TicketRunView {
   id: string;
   project_path: string;
@@ -259,11 +277,17 @@ interface TicketRunView {
   full_loop_verified?: boolean;
   reservation_verified?: boolean;
   payment_handoff_verified?: boolean;
+  available_options?: TicketAvailableOption[];
+  locked_selection?: TicketLockedSelectionView;
   seat?: {
     current_zone?: string;
     candidate_set?: string[];
     selected?: number;
     wanted?: number;
+    requested_quantity?: number | null;
+    adjusted_quantity?: number | null;
+    quantity_auto_adjusted?: boolean;
+    max_quantity?: number;
     available?: number;
     attempts?: number;
     reservation_status?: string;
@@ -273,6 +297,12 @@ interface TicketRunView {
     inventory_generation?: number;
     blacklisted_count?: number;
     blacklisted_seats?: string[];
+    available_options?: TicketAvailableOption[];
+    locked_prices?: number[];
+    locked_zones?: string[];
+    locked_rows?: string[];
+    locked_seat_numbers?: string[];
+    locked_selection?: TicketLockedSelectionView;
   };
   queue?: {
     position?: number | null;
@@ -314,6 +344,21 @@ interface TicketRunView {
   handoff?: { field?: string; prompt?: string; options?: string[]; secret?: boolean } | null;
   logs?: Array<{ at: number; stream: string; text: string }>;
 }
+
+interface TicketCustomerProfile {
+  customerName: string;
+  attendeeNames: string[];
+  phone: string;
+  address: string;
+  city: string;
+  province: string;
+  postalCode: string;
+  delivery: "pickup" | "postal";
+  ticketProtect: boolean;
+  payment: "qr" | "promptpay";
+}
+
+const TICKET_CUSTOMER_PROFILE_STORAGE_KEY = "alpha.ticket-studio.customer-profile.v1";
 
 const TOPICS = [
   { id: "adult_images", label: "ภาพโป๊และภาพลามก", detail: "บล็อกก่อนส่งคำค้นออกจากเครื่อง" },
@@ -402,6 +447,38 @@ function ticketFactPrices(facts?: TicketFormInspection["facts"]): number[] {
   return [...new Set([...direct, ...tierPrices].filter((price) => Number.isFinite(price) && price >= 100 && price <= 1_000_000))].sort((left, right) => right - left);
 }
 
+function expandTicketLetterRanges(values: string[]): string[] {
+  const expanded: string[] = [];
+  values.forEach((raw) => {
+    const value = raw.trim().toUpperCase();
+    const range = value.match(/^([A-Z])\s*-\s*([A-Z])$/);
+    if (!range) {
+      if (value) expanded.push(value);
+      return;
+    }
+    const start = range[1].charCodeAt(0);
+    const end = range[2].charCodeAt(0);
+    const step = start <= end ? 1 : -1;
+    for (let code = start; code !== end + step; code += step) expanded.push(String.fromCharCode(code));
+  });
+  return [...new Set(expanded)];
+}
+
+function ticketPriceOptionsForZones(facts: TicketFormInspection["facts"] | undefined, zoneInput: string) {
+  const allPrices = ticketFactPrices(facts);
+  const requestedZones = expandTicketLetterRanges(zoneInput.split(/[,\n]/).map((item) => item.trim()).filter(Boolean));
+  const tiers = Array.isArray(facts?.price_tiers) ? facts.price_tiers : [];
+  if (!requestedZones.length || !tiers.length) return { prices: allPrices, strict: false };
+  const exactTiers = tiers.filter((tier) => String(tier.zone || "").trim() !== "*");
+  const wildcardTiers = tiers.filter((tier) => String(tier.zone || "").trim() === "*");
+  const matchedByZone = requestedZones.map((zone) => exactTiers.filter((tier) => String(tier.zone || "").trim().toUpperCase() === zone));
+  const allZonesMapped = matchedByZone.every((matches) => matches.length > 0);
+  const source = allZonesMapped ? matchedByZone.flat() : wildcardTiers;
+  if (!source.length) return { prices: allPrices, strict: false };
+  const prices = [...new Set(source.flatMap((tier) => Array.isArray(tier.prices) ? tier.prices : []).filter((price) => Number.isFinite(price) && price >= 100 && price <= 1_000_000))].sort((left, right) => right - left);
+  return { prices, strict: prices.length > 0 };
+}
+
 function retainTicketPerformanceSelection(current: string, options: TicketPerformanceOption[], fallback = "") {
   if (!options.length) return current || fallback;
   const exact = options.find((option) => ticketPerformanceValue(option) === current);
@@ -430,6 +507,12 @@ function ticketRunLogLabel(text: string) {
     if (kind === "partial_released") return `ปล่อยที่นั่งที่ค้าง ${String(item.released || 0)} ใบแล้ว`;
     if (kind === "zone_switch") return `เปลี่ยนโซน: ${String(item.from_zone || "เดิม")} → ${String(item.to_zone || item.zone || "ถัดไป")}`;
     if (kind === "reservation_verified") return `ยืนยันการถือบัตรแล้ว ${String(item.selected || item.wanted || 0)}/${String(item.wanted || 0)}`;
+    if (kind === "quantity_limit") return item.auto_adjusted
+      ? `หน้า Booking จำกัดสูงสุด ${String(item.max_quantity ?? item.max ?? "—")} ใบ · ระบบปรับจาก ${String(item.wanted ?? item.requested_quantity ?? "—")} เป็น ${String(item.adjusted_quantity ?? item.max_quantity ?? "—")} ใบและทำงานต่อ`
+      : `หน้า Booking ยืนยันว่ารอบนี้ซื้อได้สูงสุด ${String(item.max_quantity ?? item.max ?? "—")} ใบ`;
+    if (kind === "quantity_updated") return item.auto_adjusted
+      ? `ระบบลดจำนวนจาก ${String(item.requested_quantity ?? item.adjusted_from ?? "—")} เป็น ${String(item.quantity ?? item.wanted ?? item.value ?? "—")} ใบตามลิมิตเว็บแล้ว`
+      : `ปรับจำนวนบัตรเป็น ${String(item.quantity ?? item.wanted ?? item.value ?? "—")} ใบแล้ว${item.max_quantity != null || item.max != null ? ` (สูงสุด ${String(item.max_quantity ?? item.max)} ใบ)` : ""}`;
     if (kind === "queue_analysis") return item.queue_position_verified ? `คิวลำดับ ${String(item.queue_position)}` : "กำลังรักษาคิวเดิม · ห้าม refresh";
     if (kind === "recovery") return item.status === "NO_COMPLETE_SET_FOR_SELECTED_PRICE" ? `Recovery: ยังไม่มีชุดครบตามราคา ${Array.isArray(item.preferred_prices) ? item.preferred_prices.map((price) => Number(price).toLocaleString()).join(" / ") : "ที่เลือก"} · กำลังสแกน/เปลี่ยนโซนที่อนุญาต` : `Recovery: ${String(item.status || item.action || "กำลังแก้สถานะ")}`;
     if (kind === "ai_analysis") return item.status === "QUEUED" ? `AI กำลังวิเคราะห์ ${String(item.state || "หน้าเว็บ")} เบื้องหลัง` : `AI วิเคราะห์: ${String(item.diagnosis || item.reason || item.action || "เสร็จแล้ว")}`;
@@ -440,6 +523,88 @@ function ticketRunLogLabel(text: string) {
     if (kind === "runtime") return String(item.detail || "เปิด Browser แยกแล้ว");
   } catch { /* plain process output */ }
   return text;
+}
+
+function ticketRunStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    starting_runtime: "กำลังเริ่มระบบ",
+    runtime_running: "กำลังทำงาน",
+    waiting_handoff: "รอผู้ใช้รับช่วง",
+    completed: "เสร็จแล้ว",
+    not_verified: "ยังยืนยันไม่ได้",
+    failed: "ทำงานไม่สำเร็จ",
+    stopped: "หยุดแล้ว",
+  };
+  return labels[status || ""] || status || "รอผลจากระบบ";
+}
+
+function ticketRunStageLabel(stage?: string) {
+  const labels: Record<string, string> = {
+    idle: "รอข้อมูล",
+    inspecting: "กำลังตรวจคอนเสิร์ต",
+    event_ready: "เลือกคอนเสิร์ตแล้ว",
+    form_inspecting: "กำลังอ่านรายละเอียดคอนเสิร์ต",
+    preferences: "รอการตั้งค่า",
+    building: "กำลังสร้างโปรเจกต์",
+    ready: "พร้อมเริ่มบอท",
+    error: "พบปัญหา",
+    starting_runtime: "กำลังเตรียม Runtime",
+    runtime_prepare_failed: "เตรียม Runtime ไม่สำเร็จ",
+    waiting_queue: "กำลังรอคิว",
+    sale_entry: "กำลังเข้าทางซื้อ",
+    zone_selection: "กำลังเลือกโซน",
+    seat_scan: "กำลังตรวจที่นั่งว่าง",
+    seat_set_planned: "วางชุดที่นั่งแล้ว",
+    seat_attempt: "กำลังยืนยันชุดที่นั่ง",
+    seat_conflict: "ที่นั่งถูกแย่ง กำลังหาใหม่",
+    partial_released: "ปล่อยชุดที่ค้างแล้ว",
+    zone_switch: "กำลังเปลี่ยนโซนที่อนุญาต",
+    reservation_verified: "ยืนยันการถือบัตรแล้ว",
+    attendee_details: "กำลังกรอกข้อมูลผู้เข้าชม",
+    checkout_options: "กำลังเตรียม Checkout",
+    payment_handoff: "ถึงหน้าชำระเงิน",
+    selection_unavailable: "ไม่พบชุดตามเงื่อนไข",
+    price_unavailable: "ราคาที่ล็อกไม่มีที่นั่งครบ",
+    requested_seats_unavailable: "เลขที่นั่งที่ระบุไม่ว่าง",
+    stopped: "หยุดการทำงานแล้ว",
+  };
+  return labels[stage || ""] || stage || "กำลังตรวจสถานะ";
+}
+
+function ticketRunActionLabel(action?: string) {
+  const labels: Record<string, string> = {
+    plan_complete_set: "วางชุดที่นั่งให้ครบก่อนคลิก",
+    reserve_complete_set: "ยืนยันชุดที่นั่งครบชุด",
+    verify_reservation: "ตรวจ server ว่ายืนยันที่นั่งแล้ว",
+    rescan_same_zone: "ตรวจที่นั่งในโซนเดิมใหม่",
+    scan_next_allowed_zone: "ตรวจโซนถัดไปที่ผู้ใช้อนุญาต",
+    release_partial_and_retry: "ปล่อยที่นั่งค้างแล้วลองชุดใหม่",
+    fast_checkout: "ไปขั้น Checkout ด้วย session เดิม",
+    fill_required_attendee_names: "กรอกชื่อผู้เข้าชมที่จำเป็น",
+    apply_locked_quantity: "ใช้จำนวนตามที่ล็อกไว้",
+    apply_adjusted_quantity: "ใช้จำนวนสูงสุดที่เว็บอนุญาตแล้วทำงานต่อ",
+    close_owned_browser_and_report: "ปิด Browser ที่ระบบเปิดและสรุปผล",
+    wait: "รอสถานะจากเว็บไซต์",
+    request_user: "รอผู้ใช้รับช่วง",
+  };
+  return labels[action || ""] || action || "รอตรวจ action ถัดไป";
+}
+
+function ticketRunLockedSelection(run: TicketRunView) {
+  const seat = run.seat;
+  const locked = run.locked_selection ?? seat?.locked_selection;
+  return {
+    prices: locked?.prices?.length ? locked.prices : seat?.locked_prices ?? [],
+    zones: locked?.zones?.length ? locked.zones : seat?.locked_zones ?? [],
+    rows: locked?.rows?.length ? locked.rows : seat?.locked_rows ?? [],
+    seatNumbers: locked?.seat_numbers?.length ? locked.seat_numbers : seat?.locked_seat_numbers ?? [],
+    quantity: locked?.quantity ?? seat?.wanted ?? 0,
+    grouping: locked?.grouping || "",
+  };
+}
+
+function ticketRunAvailableOptions(run: TicketRunView) {
+  return run.available_options?.length ? run.available_options : run.seat?.available_options ?? [];
 }
 
 function automaticTicketProjectName(event?: TicketEventChoice) {
@@ -642,6 +807,7 @@ export default function Home() {
   const [ticketBudget, setTicketBudget] = useState(0);
   const [ticketCustomerName, setTicketCustomerName] = useState("");
   const [ticketAttendeeNames, setTicketAttendeeNames] = useState("");
+  const [ticketCustomerPhone, setTicketCustomerPhone] = useState("");
   const [ticketAddress, setTicketAddress] = useState("");
   const [ticketCity, setTicketCity] = useState("");
   const [ticketProvince, setTicketProvince] = useState("");
@@ -650,12 +816,14 @@ export default function Home() {
   const [ticketProtect, setTicketProtect] = useState(false);
   const [ticketPayment, setTicketPayment] = useState<"qr" | "promptpay">("qr");
   const [ticketProjectName, setTicketProjectName] = useState("");
+  const [ticketProfileStatus, setTicketProfileStatus] = useState("");
   const [ticketBuildReport, setTicketBuildReport] = useState<TicketBuildReport | null>(null);
   const [ticketRun, setTicketRun] = useState<TicketRunView | null>(null); // alpha-beta21-ticket-runtime-v1
   const [ticketUsername, setTicketUsername] = useState("");
   const [ticketPassword, setTicketPassword] = useState("");
   const [ticketRunInput, setTicketRunInput] = useState("");
   const viewRef = useRef<View>(view);
+  const ticketCustomerProfileRestoredRef = useRef(false);
   const ticketInspectPendingRef = useRef(false);
   const ticketRunPendingRef = useRef(false);
   const ticketRunPendingSinceRef = useRef(0);
@@ -674,6 +842,36 @@ export default function Home() {
 
   useEffect(() => {
     viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "tickets") {
+      ticketCustomerProfileRestoredRef.current = false;
+      return;
+    }
+    if (ticketCustomerProfileRestoredRef.current) return;
+    ticketCustomerProfileRestoredRef.current = true;
+    try {
+      const raw = window.localStorage.getItem(TICKET_CUSTOMER_PROFILE_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<TicketCustomerProfile>;
+      const savedAddress = saved.address;
+      setTicketCustomerName(typeof saved.customerName === "string" ? saved.customerName : "");
+      setTicketAttendeeNames(Array.isArray(saved.attendeeNames)
+        ? saved.attendeeNames.filter((item): item is string => typeof item === "string").join("\n")
+        : typeof saved.attendeeNames === "string" ? saved.attendeeNames : "");
+      setTicketCustomerPhone(typeof saved.phone === "string" ? saved.phone : "");
+      setTicketAddress(typeof savedAddress === "string" ? savedAddress : "");
+      setTicketCity(typeof saved.city === "string" ? saved.city : "");
+      setTicketProvince(typeof saved.province === "string" ? saved.province : "");
+      setTicketPostalCode(typeof saved.postalCode === "string" ? saved.postalCode : "");
+      setTicketDelivery(saved.delivery === "postal" ? "postal" : "pickup");
+      setTicketProtect(saved.ticketProtect === true);
+      setTicketPayment(saved.payment === "promptpay" ? "promptpay" : "qr");
+      setTicketProfileStatus("กู้คืนข้อมูลผู้ซื้อที่บันทึกไว้แล้ว · ไม่รวม username/password");
+    } catch {
+      setTicketProfileStatus("อ่านข้อมูลผู้ซื้อที่บันทึกไว้ไม่สำเร็จ · กรอกใหม่แล้วกดบันทึกได้");
+    }
   }, [view]);
 
   useEffect(() => {
@@ -1684,6 +1882,46 @@ export default function Home() {
     }
   }
 
+  function saveTicketCustomerProfile() {
+    const profile: TicketCustomerProfile = {
+      customerName: ticketCustomerName.trim(),
+      attendeeNames: ticketAttendeeNames.split(/\n/).map((item) => item.trim()).filter(Boolean),
+      phone: ticketCustomerPhone.trim(),
+      address: ticketAddress.trim(),
+      city: ticketCity.trim(),
+      province: ticketProvince.trim(),
+      postalCode: ticketPostalCode.trim(),
+      delivery: ticketDelivery,
+      ticketProtect,
+      payment: ticketPayment,
+    };
+    try {
+      window.localStorage.setItem(TICKET_CUSTOMER_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+      setTicketProfileStatus("บันทึกข้อมูลผู้ซื้อในเครื่องแล้ว · ไม่รวม username/password");
+    } catch {
+      setTicketProfileStatus("บันทึกข้อมูลผู้ซื้อไม่สำเร็จ · ตรวจสอบสิทธิ์การเก็บข้อมูลของ Browser");
+    }
+  }
+
+  function clearTicketCustomerProfile() {
+    try {
+      window.localStorage.removeItem(TICKET_CUSTOMER_PROFILE_STORAGE_KEY);
+    } catch {
+      // Keep the form usable even when Browser storage is unavailable.
+    }
+    setTicketCustomerName("");
+    setTicketAttendeeNames("");
+    setTicketCustomerPhone("");
+    setTicketAddress("");
+    setTicketCity("");
+    setTicketProvince("");
+    setTicketPostalCode("");
+    setTicketDelivery("pickup");
+    setTicketProtect(false);
+    setTicketPayment("qr");
+    setTicketProfileStatus("ล้างข้อมูลผู้ซื้อที่บันทึกไว้แล้ว · username/password ไม่เคยถูกบันทึก");
+  }
+
   async function startTicketRuntime(projectPath: string) {
     if (!projectPath) throw new Error("ไม่พบ project path สำหรับเริ่มบอท");
     setTicketStatus("กำลังเริ่ม process ของ Ticket Bot จริง…");
@@ -1770,6 +2008,12 @@ export default function Home() {
       setTicketStatus("กรุณาเลือกคอนเสิร์ตก่อนสร้างบอท");
       return;
     }
+    const zonePriceOptions = ticketPriceOptionsForZones(ticketInspection?.facts, ticketZones);
+    if (ticketPreferredPrices[0] && zonePriceOptions.strict && !zonePriceOptions.prices.includes(ticketPreferredPrices[0])) {
+      setTicketStage("error");
+      setTicketStatus(`ราคา ${ticketPreferredPrices[0].toLocaleString()} บาทไม่ตรงกับโซนที่เลือก กรุณาเลือกราคาที่ผูกกับโซนจากหน้าเว็บจริง`);
+      return;
+    }
     if (ticketRunPendingRef.current) {
       const pendingAge = ticketRunPendingSinceRef.current ? Date.now() - ticketRunPendingSinceRef.current : Number.POSITIVE_INFINITY;
       const stalePendingLock = ticketStage !== "building" || pendingAge > 120_000;
@@ -1806,7 +2050,7 @@ export default function Home() {
     try {
       const reusableCurrentProject = ticketBuildReport?.project_path
         && ticketBuildReport.generator_version === ALPHA_VERSION
-        && ticketBuildReport.runtime_revision === "ticket-seat-availability-modal-1"
+        && ticketBuildReport.runtime_revision === "ticket-zone-price-vat-2"
         && ticketRun
         && ["completed", "not_verified", "stopped"].includes(ticketRun.status);
       if (reusableCurrentProject) {
@@ -1845,6 +2089,7 @@ export default function Home() {
             budget: ticketBudget,
             customer_name: ticketCustomerName,
             attendee_names: ticketAttendeeNames.split(/\n/).map((item) => item.trim()).filter(Boolean),
+            buyer_phone: ticketCustomerPhone,
             shipping_address: {
               address: ticketAddress,
               city: ticketCity,
@@ -1883,10 +2128,40 @@ export default function Home() {
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const selectedTicketEvent = ticketEvents.find((event) => event.id === ticketSelectedId);
   const currentTicketPerformanceOptions = normalizedTicketPerformanceOptions(ticketInspection?.facts?.performance_options);
-  const ticketDetectedPrices = ticketFactPrices(ticketInspection?.facts);
+  const ticketZonePriceOptions = ticketPriceOptionsForZones(ticketInspection?.facts, ticketZones);
+  const ticketDetectedPrices = ticketZonePriceOptions.prices;
+  const ticketDetectedPricesKey = ticketDetectedPrices.join(",");
+  useEffect(() => {
+    const selectedPrice = ticketPreferredPrices[0];
+    if (selectedPrice && ticketZonePriceOptions.strict && !ticketDetectedPrices.includes(selectedPrice)) {
+      setTicketPreferredPrices([]);
+      setTicketStatus("โซนที่เลือกไม่รองรับราคาเดิม ระบบล้างราคาแล้วเพื่อป้องกันการกดผิดโซน");
+    }
+  }, [ticketDetectedPricesKey, ticketZonePriceOptions.strict, ticketPreferredPrices]);
   const generatedTicketProjectName = automaticTicketProjectName(selectedTicketEvent);
   const effectiveTicketProjectName = ticketProjectName.trim() || generatedTicketProjectName;
   const ticketRunActive = Boolean(ticketRun && ["starting_runtime", "runtime_running", "waiting_handoff"].includes(ticketRun.status));
+  const ticketRunLocked = ticketRun ? ticketRunLockedSelection(ticketRun) : null;
+  const ticketRunAlternatives = ticketRun ? ticketRunAvailableOptions(ticketRun) : [];
+  const ticketRunCause = ticketRun?.result_reason || ticketRun?.supervisor?.root_cause || ticketRun?.ai?.diagnosis || ticketRun?.detail || "ยังไม่มีสาเหตุเพิ่มเติม";
+  const ticketRunCurrentAction = ticketRunActionLabel(ticketRun?.queue?.current_action || ticketRun?.ai?.action || ticketRun?.seat?.next_action);
+  const ticketRunNextAction = ticketRunActionLabel(ticketRun?.queue?.next_action || ticketRun?.seat?.next_action);
+  const reportedTicketQuantityLimit = ticketRun?.seat?.max_quantity;
+  const liveTicketQuantityLimit = ticketRunActive && typeof reportedTicketQuantityLimit === "number" && Number.isFinite(reportedTicketQuantityLimit) && reportedTicketQuantityLimit > 0
+    ? Math.floor(reportedTicketQuantityLimit)
+    : null;
+  const ticketQuantityInputMax = liveTicketQuantityLimit ?? 10;
+  const requestedTicketQuantity = typeof ticketRun?.seat?.requested_quantity === "number" ? ticketRun.seat.requested_quantity : null;
+  const adjustedTicketQuantity = typeof ticketRun?.seat?.adjusted_quantity === "number" ? ticketRun.seat.adjusted_quantity : null;
+  const ticketQuantityLimitNotice = ticketRun?.seat?.quantity_auto_adjusted && requestedTicketQuantity && adjustedTicketQuantity && requestedTicketQuantity > adjustedTicketQuantity
+    ? `หน้า Booking จำกัดการซื้อสูงสุด ${liveTicketQuantityLimit ?? adjustedTicketQuantity} ใบ · ระบบปรับจาก ${requestedTicketQuantity} เป็น ${adjustedTicketQuantity} ใบและทำงานต่ออัตโนมัติ`
+    : "";
+  useEffect(() => {
+    if (liveTicketQuantityLimit != null && ticketQuantity > liveTicketQuantityLimit) {
+      setTicketQuantity(liveTicketQuantityLimit);
+      setTicketStatus(`หน้า Booking จำกัดการซื้อสูงสุด ${liveTicketQuantityLimit} ใบ · ระบบลดจำนวนและทำงานต่ออัตโนมัติ`);
+    }
+  }, [liveTicketQuantityLimit, ticketQuantity]);
   const autoLearnProgress = autoLearnJob?.status === "running" && autoLearnJob.started_at && autoLearnJob.deadline
     ? Math.min(100, Math.max(1, ((Date.now() - autoLearnJob.started_at) / (autoLearnJob.deadline - autoLearnJob.started_at)) * 100))
     : autoLearnJob && ["completed", "stopped"].includes(autoLearnJob.status) ? 100 : 0;
@@ -2022,7 +2297,7 @@ export default function Home() {
                           <section className="ticket-result-card chat-ticket-run">
                             <div><span>{message.ticketRun.status === "failed" ? "!" : message.ticketRun.status === "completed" ? "✓" : "▶"}</span><div><strong>Ticket Full Loop · {message.ticketRun.status}</strong><p>Stage: {message.ticketRun.stage}</p></div></div>
                             <small>{message.ticketRun.detail || "AI กำลังควบคุม Ticket Browser เบื้องหลัง"}</small>
-                            {message.ticketRun.seat && <div className="ticket-run-metrics"><span>โซน <strong>{message.ticketRun.seat.current_zone || "—"}</strong></span><span>ที่นั่ง <strong>{message.ticketRun.seat.selected || 0}/{message.ticketRun.seat.wanted || 0}</strong></span><span>ครั้งที่ <strong>{message.ticketRun.seat.attempts || 0}</strong></span><span>Hold <strong>{message.ticketRun.reservation_verified ? "ยืนยันแล้ว" : message.ticketRun.seat.reservation_status || "รอ"}</strong></span></div>}
+                            {message.ticketRun.seat && <div className="ticket-run-metrics"><span>โซน <strong>{message.ticketRun.seat.current_zone || "—"}</strong></span><span>ที่นั่ง <strong>{message.ticketRun.seat.selected || 0}/{message.ticketRun.seat.wanted || 0}</strong></span><span>ครั้งที่ <strong>{message.ticketRun.seat.attempts || 0}</strong></span><span>ลิมิต <strong>{message.ticketRun.seat.max_quantity != null ? `${message.ticketRun.seat.max_quantity} ใบ` : "รอตรวจ"}</strong></span><span>Hold <strong>{message.ticketRun.reservation_verified ? "ยืนยันแล้ว" : message.ticketRun.seat.reservation_status || "รอ"}</strong></span></div>}
                             {message.ticketRun.ai && <small>AI: {message.ticketRun.ai.status || "idle"}{message.ticketRun.ai.action ? ` · ${message.ticketRun.ai.action}` : ""}{message.ticketRun.ai.diagnosis ? ` — ${message.ticketRun.ai.diagnosis}` : ""}</small>}
                             {message.ticketRun.latest_url ? <code>{message.ticketRun.latest_url}</code> : null}
                             {message.ticketRun.evidence_paths?.length ? <div className="ticket-result-files">{message.ticketRun.evidence_paths.map((path) => <code key={path}>{path}</code>)}</div> : null}
@@ -2322,12 +2597,24 @@ export default function Home() {
                 <div><span className="section-kicker">STEP 2–3 · CONFIGURE & BUILD</span><h2>ตั้งค่าบอทและวิธีชำระเงิน</h2><p>ระบบสร้าง Python+Playwright state machine และแยกผล fixture, หน้าจริง, คิวจริง และ checkout จริงออกจากกัน</p></div>
                 <div className="ticket-loop-steps"><span className={ticketEvents.length ? "done" : ""}>1 ตรวจงาน</span><span className={ticketInspection ? "done" : ""}>2 อ่านฟอร์ม</span><span className={ticketBuildReport?.ok ? "done" : ""}>3 สร้างโปรเจกต์</span><span className={ticketRunActive ? "done" : ""}>4 รันจริง</span></div>
               </header>
+              <section className={`ticket-selected-summary ${ticketSelectedId ? "" : "empty"}`} aria-label="สรุปคอนเสิร์ตและเงื่อนไขที่เลือก" aria-live="polite">
+                {ticketSelectedId ? <>
+                  <div><span>คอนเสิร์ตที่เลือก</span><strong>{ticketEvents.find((event) => event.id === ticketSelectedId)?.name}</strong><small>{ticketEvents.find((event) => event.id === ticketSelectedId)?.url}</small></div>
+                  <div className="ticket-locked-summary"><span>สิ่งที่ล็อกไว้</span><strong>{ticketSeatMode === "reserved" ? "เลือกที่นั่ง" : ticketSeatMode === "standing" ? "บัตรยืน" : "ไม่ระบุที่นั่ง"} · {ticketQuantity} ใบ</strong><small>โซน {ticketZones || "ตามที่ตรวจพบ"} · ราคา {ticketPreferredPrices[0] ? `${ticketPreferredPrices[0].toLocaleString()} บาท` : "ไม่จำกัด"}{ticketSeatNumbers ? ` · เลข ${ticketSeatNumbers}` : ""}</small>{ticketQuantityLimitNotice ? <small className="ticket-quantity-limit-warning" role="status">{ticketQuantityLimitNotice}</small> : null}</div>
+                  <span className={ticketInspection?.functional_preflight?.public_page_verified ? "verified" : "pending"}>{ticketInspection?.functional_preflight?.public_page_verified ? "ตรวจหน้าแล้ว" : ticketInspection?.functional_preflight?.runtime_discovery_required ? "ค้นต่อเมื่อรัน" : "รอตรวจหน้า"}</span>
+                </> : <>
+                  <div><span>คอนเสิร์ตที่เลือก</span><strong>ยังไม่ได้เลือกคอนเสิร์ต</strong><small>เลือกคอนเสิร์ตจากรายการด้านซ้ายเพื่อเริ่มตั้งค่า</small></div>
+                  <div className="ticket-locked-summary"><span>สิ่งที่ล็อกไว้</span><strong>ยังไม่มีเงื่อนไข</strong><small>รอเลือกคอนเสิร์ต รอบ โซน ราคา และจำนวนบัตร</small></div>
+                  <span className="pending">รอเลือกคอน</span>
+                </>}
+              </section>
               <div className="ticket-config-scroll">
                 {!ticketSelectedId ? <div className="ticket-config-empty"><span>←</span><strong>เลือกคอนเสิร์ตจากฝั่งซ้ายก่อน</strong><p>จากนั้นอัลฟ่าจะตรวจหน้าเว็บจริงและนำฟิลด์ที่พบมาใช้สร้าง config</p></div> : (
                   <form className="ticket-build-form" onSubmit={buildTicketBot}>
-                    <section className="ticket-selected-summary">
-                      <div><span>คอนเสิร์ตที่เลือก</span><strong>{ticketEvents.find((event) => event.id === ticketSelectedId)?.name}</strong><small>{ticketEvents.find((event) => event.id === ticketSelectedId)?.url}</small></div>
-                      <span className={ticketInspection?.functional_preflight?.public_page_verified ? "verified" : "pending"}>{ticketInspection?.functional_preflight?.public_page_verified ? "ตรวจหน้าแล้ว" : ticketInspection?.functional_preflight?.runtime_discovery_required ? "ค้นต่อเมื่อรัน" : "รอตรวจหน้า"}</span>
+                    <section className="ticket-studio-status" aria-live="polite">
+                      <div className="ticket-studio-status-main"><span className="ticket-status-dot" /><div><span className="ticket-status-label">สถานะปัจจุบัน</span><strong>{ticketRun ? ticketRunStatusLabel(ticketRun.status) : ticketRunStageLabel(ticketStage)}</strong><p>{ticketStatus}</p></div></div>
+                      <div><span>กำลังทำอะไร</span><strong>{ticketRun ? ticketRunStageLabel(ticketRun.stage) : ticketStage === "form_inspecting" ? "อ่านรอบ ฟอร์ม และ API แบบ passive" : ticketStage === "building" ? "สร้างและตรวจโปรเจกต์บอท" : "รอการตั้งค่าจากผู้ใช้"}</strong></div>
+                      <div><span>ขั้นถัดไป</span><strong>{ticketRun ? ticketRunNextAction : ticketBuildReport?.project_path ? "เริ่มบอทจริง" : "ตรวจข้อมูลให้ครบแล้วสร้างบอท"}</strong></div>
                     </section>
 
                     {ticketInspection && <section className="ticket-evidence-card">
@@ -2354,12 +2641,16 @@ export default function Home() {
                         </label>
                         {ticketSeatMode === "reserved" && <>
                           {ticketInspection?.facts?.zones?.length ? <div className="ticket-zone-options ticket-field-wide">{ticketInspection.facts.zones.map((zone) => <button type="button" className="ticket-zone-chip" key={zone} onClick={() => setTicketZones((current) => Array.from(new Set([...current.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), zone.toUpperCase()])).join(", "))}>{zone}</button>)}</div> : null}
-                          <label className="field"><span>แถวที่ต้องการ</span><input value={ticketRows} onChange={(event) => setTicketRows(event.target.value.toUpperCase())} placeholder="เช่น K หรือ K, L" /><small>เว้นว่าง = แถวใดก็ได้ในโซนที่เลือก</small></label>
+                          <label className="field"><span>แถวที่ต้องการ</span><input value={ticketRows} onChange={(event) => setTicketRows(event.target.value.toUpperCase())} placeholder="เช่น K, K-L หรือ I-P" /><small>รองรับช่วงแถว เช่น I-P · เว้นว่าง = แถวใดก็ได้ในโซนที่เลือก</small></label>
                           <label className="field"><span>เลขที่นั่งที่ต้องการ</span><input value={ticketSeatNumbers} onChange={(event) => setTicketSeatNumbers(event.target.value.toUpperCase())} placeholder="เช่น 10 หรือ 10-12" /><small>รองรับ K10 โดยจะแยกเลข 10 ให้อัตโนมัติ</small></label>
                           <label className="field"><span>ถ้าที่นั่งเป้าหมายไม่ว่าง</span><select value={ticketSeatFallback} onChange={(event) => setTicketSeatFallback(event.target.value as typeof ticketSeatFallback)}><option value="exact">เอาตรงตามที่ระบุเท่านั้น</option><option value="nearest">เลือกเลขใกล้ที่สุดในโซนเดิม</option><option value="zone_any">ใบไหนก็ได้ แต่ต้องอยู่โซนเดิม</option></select></label>
                         </>}
-                        <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max="10" value={ticketQuantity} onChange={(event) => setTicketQuantity(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
-                        {ticketSeatMode === "reserved" && ticketInspection ? <label className="field ticket-field-wide"><span>ราคาต่อใบที่ต้องการ (ไม่บังคับ)</span><select value={ticketPreferredPrices[0] ? String(ticketPreferredPrices[0]) : ""} disabled={!ticketDetectedPrices.length} onChange={(event) => setTicketPreferredPrices(event.target.value ? [Number(event.target.value)] : [])}><option value="">ไม่จำกัด / ไม่ระบุราคา</option>{ticketDetectedPrices.map((price) => <option key={price} value={price}>{price.toLocaleString()} บาท</option>)}</select><small>{ticketDetectedPrices.length ? "รายการนี้มาจากราคาที่คอนเสิร์ตเปิดเผยจริง เปลี่ยนคอนแล้วระบบจะโหลดรายการใหม่อัตโนมัติ" : "ยังไม่พบราคาจริงจากหน้าเว็บ ระบบจะไม่เดาราคาและจะใช้ที่นั่งตามโซนที่ว่าง"} หากเลือก ระบบจะยืนยันราคาจาก seat map/API ก่อนกดทุกครั้ง</small></label> : null}
+                        <label className="field"><span>จำนวนบัตร</span><input type="number" min="1" max={ticketQuantityInputMax} value={ticketQuantity} onChange={(event) => {
+                          const nextQuantity = Number(event.target.value);
+                          if (!Number.isFinite(nextQuantity)) return;
+                          setTicketQuantity(Math.min(ticketQuantityInputMax, Math.max(1, Math.floor(nextQuantity))));
+                        }} /><small>{liveTicketQuantityLimit != null ? `รอบนี้ซื้อได้สูงสุด ${liveTicketQuantityLimit} ใบ` : "ยังไม่ทราบลิมิต ระบบจะตรวจจากหน้า Booking จริงก่อนยืนยันจำนวนบัตร"}</small></label>
+                        {ticketSeatMode === "reserved" && ticketInspection ? <label className="field ticket-field-wide"><span>ราคาต่อใบที่ต้องการ (ไม่บังคับ)</span><select value={ticketPreferredPrices[0] ? String(ticketPreferredPrices[0]) : ""} disabled={!ticketDetectedPrices.length} onChange={(event) => setTicketPreferredPrices(event.target.value ? [Number(event.target.value)] : [])}><option value="">ไม่จำกัด / ไม่ระบุราคา</option>{ticketDetectedPrices.map((price) => <option key={price} value={price}>{price.toLocaleString()} บาท</option>)}</select><small>{ticketDetectedPrices.length ? ticketZonePriceOptions.strict ? "รายการราคาแสดงเฉพาะราคาที่ผูกกับโซนที่เลือกจากหน้าเว็บจริง" : "รายการนี้มาจากราคาที่คอนเสิร์ตเปิดเผยจริง และจะยืนยันความสัมพันธ์กับโซนอีกครั้งใน seat map/API" : "ยังไม่พบราคาจริงจากหน้าเว็บ ระบบจะไม่เดาราคาและจะใช้ที่นั่งตามโซนที่ว่าง"} หากเลือก ระบบจะยืนยันราคาจาก seat map/API ก่อนกดทุกครั้ง</small></label> : null}
                         <label className="field"><span>งบสูงสุดรวม (ไม่บังคับ)</span><input type="number" min="0" value={ticketBudget} onChange={(event) => setTicketBudget(Math.max(0, Number(event.target.value) || 0))} placeholder="0 = ไม่จำกัดงบ" /><small>ปล่อยเป็น 0 ได้ บอทจะไม่ใช้ราคาเป็นเงื่อนไขตัดออก</small></label>
                         <div className="ticket-project-destination ticket-field-wide">
                           <span>ตำแหน่งไฟล์โปรแกรม</span>
@@ -2377,10 +2668,15 @@ export default function Home() {
                       <div className="ticket-form-heading"><span>02</span><div><strong>ข้อมูลสำหรับกรอกฟอร์ม</strong><small>ชื่อคนไม่ใช่โซน/เลขที่นั่ง; password ใช้เฉพาะตอน run และไม่บันทึก</small></div></div>
                       <div className="ticket-form-grid">
                         <label className="field"><span>ชื่อผู้ซื้อ (ชื่อ-นามสกุลบุคคล)</span><input value={ticketCustomerName} onChange={(event) => setTicketCustomerName(event.target.value)} placeholder="ไม่ใช่โซนหรือเลขที่นั่ง; เว้นว่างได้" /><small>กรอกชื่อบุคคลจริงเฉพาะเมื่อหน้าเว็บถาม</small></label>
+                        <label className="field"><span>เบอร์โทรศัพท์ผู้ซื้อ</span><input type="tel" autoComplete="tel" value={ticketCustomerPhone} onChange={(event) => setTicketCustomerPhone(event.target.value)} placeholder="เช่น 0812345678" /><small>ใช้เมื่อหน้าเว็บหรือการจัดส่งต้องการเบอร์ติดต่อ</small></label>
                         <label className="field ticket-field-wide"><span>ชื่อผู้เข้าชมแต่ละใบ (หนึ่งคนต่อบรรทัด)</span><textarea value={ticketAttendeeNames} onChange={(event) => setTicketAttendeeNames(event.target.value)} placeholder="ชื่อบุคคลเท่านั้น — ใช้เมื่อคอนบังคับพิมพ์ชื่อบนบัตร" /><small>โซน/แถว/เลขที่นั่งให้กรอกในส่วนเลือกบัตรด้านบน</small></label>
                         <label className="field"><span>วิธีรับบัตร</span><select value={ticketDelivery} onChange={(event) => setTicketDelivery(event.target.value as typeof ticketDelivery)}><option value="pickup">รับบัตรด้วยตนเอง</option><option value="postal">จัดส่งทางไปรษณีย์</option></select></label>
                         {ticketDelivery === "postal" && <><label className="field ticket-field-wide"><span>ที่อยู่</span><input value={ticketAddress} onChange={(event) => setTicketAddress(event.target.value)} placeholder="บ้านเลขที่ ถนน แขวง/ตำบล เขต/อำเภอ" /></label><label className="field"><span>เมือง/อำเภอ</span><input value={ticketCity} onChange={(event) => setTicketCity(event.target.value)} /></label><label className="field"><span>จังหวัด</span><input value={ticketProvince} onChange={(event) => setTicketProvince(event.target.value)} /></label><label className="field"><span>รหัสไปรษณีย์</span><input value={ticketPostalCode} onChange={(event) => setTicketPostalCode(event.target.value)} inputMode="numeric" /></label></>}
                         <label className="field"><span>Ticket Protect</span><select value={ticketProtect ? "on" : "off"} onChange={(event) => setTicketProtect(event.target.value === "on")}><option value="off">ไม่เพิ่ม (ค่าเริ่มต้น)</option><option value="on">เพิ่ม Ticket Protect</option></select></label>
+                      </div>
+                      <div className="ticket-profile-actions">
+                        <div><strong>ข้อมูลผู้ซื้อในเครื่อง</strong><small>{ticketProfileStatus || "บันทึกไว้ใช้ครั้งถัดไปได้ · ไม่เก็บ username/password"}</small></div>
+                        <div><button type="button" className="secondary-action" onClick={saveTicketCustomerProfile}>บันทึกข้อมูลผู้ซื้อ</button><button type="button" className="secondary-action danger-action" onClick={clearTicketCustomerProfile}>ล้างข้อมูลที่บันทึก</button></div>
                       </div>
                     </section>
 
@@ -2409,24 +2705,48 @@ export default function Home() {
                     </section>}
 
                     {ticketRun && <section className="ticket-result-card">
-                      <div><span>{ticketRun.status === "failed" ? "!" : ticketRun.status === "stopped" ? "■" : "▶"}</span><div><strong>Live Ticket Run · {ticketRun.status}</strong><p>Run {ticketRun.id} · PID {ticketRun.pid || "—"} · Stage {ticketRun.stage}</p></div></div>
+                      <div><span>{ticketRun.status === "failed" ? "!" : ticketRun.status === "stopped" ? "■" : "▶"}</span><div><strong>Live Ticket Run · {ticketRunStatusLabel(ticketRun.status)}</strong><p>{ticketRunStageLabel(ticketRun.stage)} · Run {ticketRun.id} · PID {ticketRun.pid || "—"}</p></div></div>
                       <small>{ticketRun.detail || "กำลังรอ event จาก process"}{ticketRun.latest_url ? ` · ${ticketRun.latest_url}` : ""}</small>
+                      <div className="ticket-run-overview">
+                        <article><span>สาเหตุ / จุดติดขัด</span><strong>{ticketRunCause}</strong></article>
+                        <article><span>กำลังทำอะไร</span><strong>{ticketRunCurrentAction}</strong></article>
+                        <article><span>ขั้นถัดไป</span><strong>{ticketRunNextAction}</strong></article>
+                      </div>
                       <div className="ticket-run-metrics">
                         <span>โซน <strong>{ticketRun.seat?.current_zone || "—"}</strong></span>
                         <span>ชุด <strong>{ticketRun.seat?.candidate_set?.join(", ") || "กำลังหา"}</strong></span>
                         <span>เลือก <strong>{ticketRun.seat?.selected || 0}/{ticketRun.seat?.wanted || ticketQuantity}</strong></span>
+                        <span>ลิมิต <strong>{ticketRun.seat?.max_quantity != null ? `${ticketRun.seat.max_quantity} ใบ` : "รอตรวจหน้า Booking"}</strong></span>
                         <span>Attempts <strong>{ticketRun.seat?.attempts || 0}</strong></span>
                         <span>Inventory <strong>gen {ticketRun.seat?.inventory_generation || 0}</strong></span>
                         <span>Blacklist <strong>{ticketRun.seat?.blacklisted_count || 0}</strong></span>
                         <span>Reservation <strong>{ticketRun.reservation_verified ? "ยืนยันแล้ว" : ticketRun.seat?.reservation_status || "รอ"}</strong></span>
-                        <span>ถัดไป <strong>{ticketRun.seat?.next_action || ticketRun.queue?.next_action || "ตรวจ state"}</strong></span>
+                        <span>ถัดไป <strong>{ticketRunNextAction}</strong></span>
                         {ticketRun.queue?.position_verified && <span>คิว <strong>{ticketRun.queue.position}</strong></span>}
                         {ticketRun.checkout_countdown_seconds != null && <span>Checkout <strong>{Math.floor(ticketRun.checkout_countdown_seconds / 60)}:{String(ticketRun.checkout_countdown_seconds % 60).padStart(2, "0")}</strong></span>}
                         <span>AI <strong>{ticketRun.ai?.status || "idle"}</strong></span>
                         {ticketRun.ai?.action && <span>AI Action <strong>{ticketRun.ai.action}</strong></span>}
                         <span>AI Learned <strong>{ticketRun.ai?.learned_strategy_count || 0}</strong></span>
                       </div>
+                      {ticketRunLocked && (ticketRunLocked.prices.length > 0 || ticketRunLocked.zones.length > 0 || ticketRunLocked.rows.length > 0 || ticketRunLocked.seatNumbers.length > 0 || ticketRunLocked.quantity > 0) && <div className="ticket-locked-panel">
+                        <div><strong>เงื่อนไขที่ runtime ล็อกไว้</strong><small>ระบบต้องยึดตามชุดนี้ และไม่เปลี่ยนราคา/โซนเอง</small></div>
+                        <div className="ticket-locked-grid">
+                          <span>ราคา <strong>{ticketRunLocked.prices.length ? ticketRunLocked.prices.map((price) => `${price.toLocaleString()} บาท`).join(" / ") : "ไม่จำกัด"}</strong></span>
+                          <span>โซน <strong>{ticketRunLocked.zones.length ? ticketRunLocked.zones.join(", ") : ticketRun.seat?.current_zone || "ตามที่ตั้งค่า"}</strong></span>
+                          <span>แถว <strong>{ticketRunLocked.rows.length ? ticketRunLocked.rows.join(", ") : "ไม่ระบุ"}</strong></span>
+                          <span>เลขที่นั่ง <strong>{ticketRunLocked.seatNumbers.length ? ticketRunLocked.seatNumbers.join(", ") : "ว่างตามกฎ"}</strong></span>
+                          <span>จำนวน <strong>{ticketRunLocked.quantity ? `${ticketRunLocked.quantity} ใบ` : "ตามที่ตั้งค่า"}</strong></span>
+                        </div>
+                      </div>}
                       {ticketRun.seat?.availability && Object.keys(ticketRun.seat.availability).length > 0 && <div className="ticket-result-files">{Object.entries(ticketRun.seat.availability).map(([zone, count]) => <span key={zone}>{zone} · {count} ที่</span>)}</div>}
+                      {ticketRunAlternatives.length > 0 && <div className="ticket-availability-panel">
+                        <div><strong>ทางเลือกที่ยังว่างตามหลักฐาน</strong><small>ใช้เพื่อประกอบการตัดสินใจเท่านั้น · ไม่เปลี่ยนราคา/โซนที่ล็อกเอง</small></div>
+                        <div className="ticket-availability-grid">{ticketRunAlternatives.map((option, index) => <article key={`${option.zone || "zone"}-${option.price ?? "any"}-${index}`}>
+                          <strong>{option.zone || "ไม่ระบุโซน"}</strong>
+                          <span>{option.price != null ? `${option.price.toLocaleString()} บาท` : "ไม่พบราคาที่ผูกระดับที่นั่ง"} · {typeof option.count === "number" ? `${option.count} ที่ว่าง` : "พบข้อมูลที่นั่ง"}</span>
+                          {(option.rows?.length || option.sample_seats?.length) ? <small>{option.rows?.length ? `แถว ${option.rows.join(", ")}` : ""}{option.sample_seats?.length ? ` · ตัวอย่าง ${option.sample_seats.slice(0, 5).join(", ")}` : ""}</small> : null}
+                        </article>)}</div>
+                      </div>}
                       <div className="ticket-supervisor-panel">
                         <div><strong>AI Supervisor · {ticketRun.supervisor?.status || "standby"}</strong><small>{ticketRun.supervisor?.root_cause || ticketRun.supervisor?.last_action || "เฝ้าดู process, browser และ state transition"}</small></div>
                         <div className="ticket-run-metrics">

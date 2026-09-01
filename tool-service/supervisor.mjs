@@ -14,6 +14,7 @@ let stopping = false;
 let restartCount = 0;
 let restartTimer = null;
 let heartbeatTimer = null;
+let versionTimer = null;
 let supervisedAppVersion = "";
 let versionRestartPending = false;
 
@@ -124,6 +125,8 @@ async function shutdown(signal) {
   restartTimer = null;
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = null;
+  if (versionTimer) clearInterval(versionTimer);
+  versionTimer = null;
   await writeState("stopping", `รับ ${signal} จาก launcher`);
   const running = child;
   if (!running) {
@@ -153,9 +156,11 @@ process.on("unhandledRejection", (error) => {
 });
 
 launchCore();
+versionTimer = setInterval(() => {
+  if (!stopping) void restartForVersionChange();
+}, 1_000);
 heartbeatTimer = setInterval(() => {
   if (stopping) return;
-  void restartForVersionChange();
   const status = child ? "running" : (restartTimer ? "recovering" : "starting");
   void writeState(status, child ? "Tool Service heartbeat" : "กำลังรอคืน Tool Service");
 }, 5_000);

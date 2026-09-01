@@ -82,6 +82,7 @@ seat_fallback_mode = str(payload.get("seat_fallback_mode", "nearest")).casefold(
 quantity = max(0, int(payload.get("quantity", 0) or 0))
 budget = max(0.0, float(payload.get("budget", 0) or 0))
 customer_name = str(payload.get("customer_name", "")).strip()
+buyer_phone = str(payload.get("buyer_phone", "")).strip()
 attendee_names = [str(item).strip() for item in payload.get("attendee_names", []) if str(item).strip()] if isinstance(payload.get("attendee_names"), list) else []
 shipping_address = payload.get("shipping_address") if isinstance(payload.get("shipping_address"), dict) else {}
 delivery_method = str(payload.get("delivery_method", "pickup")).casefold()
@@ -147,7 +148,7 @@ if not missing:
     selectors = payload.get("selectors") if isinstance(payload.get("selectors"), dict) else {}
     config = {
         "generatorVersion": generator_version,
-        "runtimeRevision": "ticket-seat-availability-modal-1",
+        "runtimeRevision": "ticket-zone-price-vat-2",
         "eventId": selected_id,
         "eventName": event_name,
         "eventUrl": event_url,
@@ -178,6 +179,7 @@ if not missing:
         "seatFallbackMode": seat_fallback_mode,
         "budget": budget,
         "customerName": customer_name,
+        "buyerPhone": buyer_phone,
         "attendeeNames": attendee_names,
         "shippingAddress": shipping_address,
         "deliveryMethod": delivery_method,
@@ -486,7 +488,7 @@ def expand_zone_preferences(values):
 def choose_seat_indices(seats, quantity, grouping="adjacent", preferred_zones=None, preferred_rows=None, preferred_numbers=None, fallback_mode="nearest", preferred_prices=None):
     wanted = max(1, int(quantity))
     zones = expand_zone_preferences(preferred_zones)
-    rows = [str(item).upper() for item in (preferred_rows or [])]
+    rows = expand_zone_preferences(preferred_rows)
     numbers = _preferred_seat_numbers(preferred_numbers)
     target_prices = {_price_value(value) for value in (preferred_prices or [])}
     target_prices.discard(None)
@@ -589,19 +591,305 @@ def seat_price_value(value):
 
 
 def configured_single_price(zone):
+    """Return a zone-wide price only after the live map proves one price.
+
+    Static event tiers are never promoted to every seat. A multi-price map
+    therefore remains seat-level, while a live map with exactly one official
+    price legend can safely keep the fast path used by single-price zones.
+    """
     zone_key = str(zone or "").strip().upper()
-    candidates = []
-    for tier in CONFIG.get("priceTiers", []) if isinstance(CONFIG.get("priceTiers"), list) else []:
+    runtime_prices = CONFIG.get("_runtimeVerifiedZonePrices") if isinstance(CONFIG.get("_runtimeVerifiedZonePrices"), dict) else {}
+    return seat_price_value(runtime_prices.get(zone_key))
+
+
+def normalized_price_values(values):
+    result = set()
+    for value in values or []:
+        parsed = seat_price_value(value)
+        if parsed is not None:
+            result.add(parsed)
+    return result
+
+
+def _static_zone_price_evidence(zone):
+    zone_key = str(zone or "").strip().upper()
+    exact = set()
+    wildcard = set()
+    exact_sources = []
+    wildcard_sources = []
+    tiers = CONFIG.get("priceTiers") if isinstance(CONFIG.get("priceTiers"), list) else []
+    for tier in tiers:
         if not isinstance(tier, dict):
             continue
         tier_zone = str(tier.get("zone") or "*").strip().upper()
-        prices = [seat_price_value(value) for value in tier.get("prices", [])] if isinstance(tier.get("prices"), list) else []
-        prices = [value for value in prices if value is not None]
-        if len(prices) != 1:
+        prices = normalized_price_values(tier.get("prices"))
+        if not prices:
             continue
-        if tier_zone == zone_key or tier_zone == "*":
-            candidates.append(prices[0])
-    return candidates[0] if len(set(candidates)) == 1 else None
+        source = str(tier.get("source") or "priceTiers")[:120]
+        if tier_zone == zone_key:
+            exact.update(prices)
+            exact_sources.append(source)
+        elif tier_zone == "*":
+            wildcard.update(prices)
+            wildcard_sources.append(source)
+    if exact:
+        return {"known": True, "prices": sorted(exact), "source": "price_tiers_exact", "sources": exact_sources}
+    if wildcard:
+        return {"known": True, "prices": sorted(wildcard), "source": "price_tiers_wildcard", "sources": wildcard_sources}
+    return {"known": False, "prices": [], "source": "none", "sources": []}
+
+
+def zone_price_compatibility(zone, preferred_prices):
+    """Classify a zone without treating a zone-wide label as seat evidence.
+
+    ``incompatible`` is only returned when an official price list or a
+    complete seat-level inventory proves that none of the requested prices is
+    supported.  Otherwise the caller must inspect/rescan the same zone.
+    """
+    targets = normalized_price_values(preferred_prices)
+    zone_key = str(zone or "").strip().upper()
+    if not targets:
+        return {"status": "unconstrained", "compatible": True, "zone": zone_key, "prices": [], "source": "no_preferred_price"}
+
+    runtime = CONFIG.get("_runtimeZonePriceEvidence") if isinstance(CONFIG.get("_runtimeZonePriceEvidence"), dict) else {}
+    runtime_item = runtime.get(zone_key)
+    if isinstance(runtime_item, dict):
+        observed = normalized_price_values(runtime_item.get("prices"))
+        if observed & targets:
+            return {"status": "compatible", "compatible": True, "zone": zone_key, "prices": sorted(observed), "source": runtime_item.get("source", "seat_level"), "seat_level": True}
+        if observed and runtime_item.get("complete_inventory") is True:
+            return {"status": "incompatible", "compatible": False, "zone": zone_key, "prices": sorted(observed), "source": runtime_item.get("source", "seat_level"), "seat_level": True}
+
+    static = _static_zone_price_evidence(zone_key)
+    if static.get("known"):
+        supported = set(static.get("prices") or [])
+        compatible = bool(supported & targets)
+        return {
+            "status": "compatible" if compatible else "incompatible",
+            "compatible": compatible,
+            "zone": zone_key,
+            "prices": sorted(supported),
+            "source": static.get("source"),
+            "seat_level": False,
+        }
+    return {"status": "unknown", "compatible": None, "zone": zone_key, "prices": [], "source": "price_mapping_pending", "seat_level": False}
+
+
+def eligible_zone_order(zones, preferred_prices, start_index=0):
+    """Return allowed zones, omitting only zones proven price-incompatible."""
+    expanded = expand_zone_preferences(zones)
+    result = []
+    for index in range(max(0, int(start_index or 0)), len(expanded)):
+        zone = expanded[index]
+        evidence = zone_price_compatibility(zone, preferred_prices)
+        if evidence.get("status") == "incompatible":
+            continue
+        result.append({"index": index, "zone": zone, "evidence": evidence})
+    return result
+
+
+def recovery_zone_order(configured_zones, runtime_zones, current_zone="", auto_discovered=False):
+    """Keep the live zone first when discovery selected it from availability.
+
+    The previous implementation entered A2 from live inventory but restarted
+    recovery at the page-order zone B1, so it immediately clicked “other
+    zone” before scanning A2.  Preserve user order for explicit preferences;
+    use the live availability order only for auto-discovered runs.
+    """
+    configured = expand_zone_preferences(configured_zones)
+    runtime = expand_zone_preferences(runtime_zones)
+    zones = runtime if auto_discovered and runtime else configured or runtime
+    active = str(current_zone or "").strip().upper()
+    cursor = zones.index(active) if active and active in zones else 0
+    return zones, cursor
+
+
+def effective_seat_price(value):
+    """Normalize an explicit seat price only with explicit official evidence."""
+    displayed = seat_price_value(value)
+    if displayed is None:
+        return None
+    preferred = CONFIG.get("preferredPrices") if isinstance(CONFIG.get("preferredPrices"), list) else []
+    mapped = preferred_base_price_for_displayed(displayed, preferred, CONFIG.get("_runtimePriceAdjustment"))
+    return mapped if mapped is not None else displayed
+
+
+def capture_price_adjustment_evidence(page):
+    """Remember an official tax adjustment only when the live page states it explicitly."""
+    existing = CONFIG.get("_runtimePriceAdjustment")
+    if isinstance(existing, dict) and existing.get("kind") == "vat":
+        return existing
+    try:
+        body_text = page.locator("body").inner_text(timeout=1500)
+    except Exception:
+        return None
+    normalized = re.sub(r"\s+", " ", str(body_text or "")).strip()
+    patterns = (
+        r"(?:ยัง)?ไม่รวม\s*(?:ภาษีมูลค่าเพิ่ม|vat)\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        r"(?:exclude(?:s|d|ing)?|not\s+including)\s*(?:the\s+)?(?:vat|value\s+added\s+tax)\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+    )
+    matched = None
+    for pattern in patterns:
+        matched = re.search(pattern, normalized, re.I)
+        if matched:
+            break
+    if not matched:
+        return None
+    try:
+        percent = float(matched.group(1))
+    except (TypeError, ValueError):
+        return None
+    rate = percent / 100
+    if not 0 < rate <= 0.2:
+        return None
+    evidence = {
+        "kind": "vat",
+        "rate": rate,
+        "percent": percent,
+        "source": "official_event_page_text",
+        "url": safe_page_url(page),
+    }
+    CONFIG["_runtimePriceAdjustment"] = evidence
+    record("price_adjustment_evidence", evidence)
+    return evidence
+
+
+def derive_verified_price_adjustment(displayed_prices, preferred_prices):
+    """Bridge one official base tier to one live VAT-inclusive seat price.
+
+    This fallback is deliberately narrow: both sides must expose exactly one
+    official price and the live amount must equal the selected base tier plus
+    exactly 7%.  It never makes a different ticket tier eligible.
+    """
+    displayed = sorted(normalized_price_values(displayed_prices))
+    preferred = sorted(normalized_price_values(preferred_prices))
+    if len(displayed) != 1 or len(preferred) != 1:
+        return None
+    base = float(preferred[0])
+    gross = float(displayed[0])
+    if base <= 0 or abs(gross - round(base * 1.07, 2)) >= 0.01:
+        return None
+    evidence = {
+        "kind": "vat",
+        "rate": 0.07,
+        "percent": 7,
+        "source": "official_base_tier_and_live_single_price_pair",
+        "base_price": preferred[0],
+        "displayed_price": displayed[0],
+        "derived_from_exact_pair": True,
+    }
+    CONFIG["_runtimePriceAdjustment"] = evidence
+    record("price_adjustment_evidence", evidence)
+    return evidence
+
+
+def visible_official_zone_prices(page):
+    """Read strict, visible money labels from the current official seat page."""
+    values = set()
+    scopes = [page, *[frame for frame in page.frames if frame != page.main_frame]]
+    for scope in scopes:
+        try:
+            raw_values = scope.locator("body *").evaluate_all("""elements => {
+              const result = [];
+              const exactMoney = /^(?:฿\s*)?(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\.\d{1,2})?\s*(?:บาท|baht|thb)?$/i;
+              for (const element of elements.slice(0, 4000)) {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') continue;
+                const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
+                if (!text || text.length > 40) continue;
+                const match = exactMoney.exec(text);
+                if (!match) continue;
+                if (!text.includes(',') && !/(?:฿|บาท|baht|thb)/i.test(text)) continue;
+                result.push(match[1]);
+              }
+              return result;
+            }""")
+        except Exception:
+            continue
+        for raw in raw_values or []:
+            price = seat_price_value(raw)
+            if price is not None and 100 <= float(price) <= 1000000:
+                values.add(price)
+    return sorted(values)
+
+
+def preferred_base_price_for_displayed(displayed_price, preferred_prices, adjustment=None):
+    displayed = seat_price_value(displayed_price)
+    candidates = [seat_price_value(value) for value in preferred_prices]
+    candidates = [value for value in candidates if value is not None]
+    if displayed is None:
+        return None
+    for base in candidates:
+        if abs(float(displayed) - float(base)) < 0.01:
+            return base
+    if not isinstance(adjustment, dict) or adjustment.get("kind") != "vat":
+        return None
+    try:
+        rate = float(adjustment.get("rate"))
+    except (TypeError, ValueError):
+        return None
+    if not 0 < rate <= 0.2:
+        return None
+    for base in candidates:
+        expected = round(float(base) * (1 + rate), 2)
+        if abs(float(displayed) - expected) < 0.01:
+            return base
+    return None
+
+
+def verify_current_zone_price_from_dom(page, zone, preferred_prices):
+    """Record the official current-map price list without guessing seats.
+
+    Exactly one visible official price means this map is single-price and may
+    use a zone-wide fast path. Multiple prices are only compatibility evidence;
+    every candidate still needs seat-level price metadata before clicking.
+    """
+    zone_key = str(zone or "").strip().upper()
+    if not zone_key or not preferred_prices:
+        return None
+    displayed_prices = visible_official_zone_prices(page)
+    if not displayed_prices:
+        return None
+    adjustment = CONFIG.get("_runtimePriceAdjustment")
+    if not isinstance(adjustment, dict):
+        adjustment = derive_verified_price_adjustment(displayed_prices, preferred_prices)
+    matched_bases = sorted({
+        base for displayed in displayed_prices
+        for base in [preferred_base_price_for_displayed(displayed, preferred_prices, adjustment)]
+        if base is not None
+    })
+    runtime_evidence = CONFIG.setdefault("_runtimeZonePriceEvidence", {})
+    runtime_evidence[zone_key] = {
+        "prices": matched_bases if matched_bases else displayed_prices,
+        "displayed_prices": displayed_prices,
+        "source": "official_live_zone_legend",
+        "seat_level": False,
+        "complete_inventory": True,
+    }
+    payload = {
+        "zone": zone_key,
+        "base_prices": matched_bases,
+        "displayed_prices": displayed_prices,
+        "adjustment_kind": adjustment.get("kind") if isinstance(adjustment, dict) else None,
+        "adjustment_rate": adjustment.get("rate") if isinstance(adjustment, dict) else None,
+        "source": "official_live_seat_page_dom",
+        "seat_level": False,
+        "complete_inventory": True,
+        "same_zone": True,
+        "next_action": "build_candidate_set_same_zone" if len(displayed_prices) == 1 and len(matched_bases) == 1 else "wait_for_seat_level_price_metadata",
+    }
+    if len(displayed_prices) == 1 and len(matched_bases) == 1:
+        base = matched_bases[0]
+        CONFIG.setdefault("_runtimeVerifiedZonePrices", {})[zone_key] = base
+        record("zone_price_verified", {
+            **payload,
+            "base_price": base,
+            "displayed_price": displayed_prices[0],
+        })
+        return base
+    record("zone_price_evidence", payload)
+    return matched_bases[0] if matched_bases else None
 SELECTED_SEAT_SELECTOR = ".seatcheck, .seat-selected, .selected-seat, [data-seat][data-selected='true'], [data-seat][data-status='selected'], [aria-pressed='true'][aria-label*='seat' i], input[data-seat]:checked"
 OWNED_BROWSER_PROCESS = None
 LATEST_RESERVATION_RESPONSE = {"status": None, "url": "", "body": "", "at": 0.0}
@@ -789,6 +1077,7 @@ def thai_runtime_message(kind, payload):
     status_labels = {
         "PAYMENT_HANDOFF": "ถึงหน้าชำระเงินแล้วและหยุดรอผู้ใช้",
         "SOLD_OUT_BY_SERVER": "เว็บยืนยันว่าบัตรหรือที่นั่งหมด",
+        "REQUESTED_QUANTITY_UNAVAILABLE": "ไม่มีตัวเลือกจำนวนบัตรที่ไม่เกินจำนวนที่ขอ",
         "SALE_CLOSED_BY_SERVER": "เว็บยืนยันว่าปิดการขายแล้ว",
         "PRE_SALE_SCHEDULED": "ยังไม่ถึงเวลาเปิดขายตามข้อมูลเว็บ",
         "PRE_SALE_READY": "เตรียมรอช่วงเปิดขายแล้ว",
@@ -799,6 +1088,8 @@ def thai_runtime_message(kind, payload):
         "BROWSER_RELAUNCH_STARTED": "กำลังเปิด Browser เดิมเพื่อทำงานต่อ",
         "BROWSER_RELAUNCH_FAILED": "เปิด Browser เดิมไม่สำเร็จ กำลังวิเคราะห์วิธีถัดไป",
         "NO_COMPLETE_SET_FOR_SELECTED_PRICE": "ยังไม่พบชุดที่นั่งครบตามราคา/จำนวนที่เลือก กำลังสแกนต่อ",
+        "SELECTED_PRICE_SOLD_OUT": "ตรวจครบทุกโซนที่อนุญาตแล้ว ไม่พบชุดที่นั่งตามราคาที่เลือก",
+        "REQUESTED_SEATS_UNAVAILABLE": "ตรวจครบทุกโซนที่อนุญาตแล้ว ไม่พบชุดตามเลขที่นั่งที่ระบุ",
         "WAITING_FOR_COMPLETE_SET": "กำลังรอชุดที่นั่งครบและตรวจ inventory ใหม่",
         "SEAT_HOLD_EXPIRED": "ที่นั่งหลุดก่อนยืนยันคำสั่งซื้อ กำลังกลับผังเดิม",
         "ACCESS_DENIED_RETRY_SCHEDULED": "เว็บปฏิเสธชั่วคราว กำลังรอตามเงื่อนไขเว็บแล้วลอง session เดิม",
@@ -820,6 +1111,23 @@ def thai_runtime_message(kind, payload):
         method = _thai_runtime_value(payload.get("method") or "GET", 12)
         code = _thai_runtime_value(payload.get("status") or "ยังไม่ทราบ", 30)
         return f"ตรวจคำขอของเว็บ {method} แล้ว · ผลตอบกลับ {code} · ใช้ session เดิม"
+    if kind == "quantity_limit":
+        max_quantity = payload.get("max_quantity")
+        max_label = str(max_quantity) if max_quantity is not None else "ยังไม่ทราบ"
+        wanted = payload.get("wanted")
+        wanted_label = str(wanted) if wanted is not None else "ยังไม่ทราบ"
+        adjusted = payload.get("adjusted_quantity")
+        if payload.get("auto_adjusted") and adjusted is not None:
+            return f"เว็บจำกัดการซื้อสูงสุด {adjusted} ใบ · ต้องการ {wanted_label} ใบ · ระบบปรับเป็น {adjusted} ใบและทำงานต่ออัตโนมัติ"
+        if payload.get("reason") == "REQUESTED_QUANTITY_EXCEEDS_LIVE_LIMIT":
+            return f"รอบนี้สูงสุด {max_label} ใบ · ต้องการ {wanted_label} ใบ จึงต้องเลือกจำนวนใหม่"
+        return f"รอบนี้สูงสุด {max_label} ใบ · ต้องการ {wanted_label} ใบ"
+    if kind == "quantity_updated":
+        quantity = payload.get("quantity")
+        requested = payload.get("requested_quantity") or payload.get("adjusted_from")
+        if payload.get("auto_adjusted") and requested is not None and quantity is not None:
+            return f"เว็บจำกัดการซื้อ · ระบบปรับจำนวนจาก {requested} เป็น {quantity} ใบแล้ว และทำงานต่ออัตโนมัติ"
+        return f"เปลี่ยนจำนวนเป็น {quantity} ใบแล้ว · กำลังยืนยันกับหน้า Booking"
     if kind in {"seat_availability", "seat_scan"}:
         available = payload.get("available")
         zones = payload.get("zones")
@@ -827,6 +1135,10 @@ def thai_runtime_message(kind, payload):
             summary = ", ".join(f"{_thai_runtime_value(zone, 30)}={count}" for zone, count in list(zones.items())[:8])
             return f"ตรวจที่นั่งว่างจากหน้าเว็บจริงแล้ว · {summary or 'ยังไม่มีโซนที่ยืนยันได้'} · วางแผนชุดให้ครบก่อนกด"
         return f"สแกนที่นั่งโซน {_thai_runtime_value(payload.get('zone') or 'ปัจจุบัน', 40)} · ว่าง {available if available is not None else 'ยังไม่ทราบ'} · ต้องการ {payload.get('wanted', 'ยังไม่ทราบ')}"
+    if kind == "price_adjustment_evidence":
+        return f"พบหลักฐานราคาไม่รวม VAT {payload.get('percent', 'ตามหน้าเว็บ')}% จากหน้าคอนจริง · จะเทียบกับราคาหน้าเลือกที่นั่งโดยไม่เดา"
+    if kind == "zone_price_verified":
+        return f"ยืนยันราคาโซน {_thai_runtime_value(payload.get('zone') or 'ปัจจุบัน', 40)} แล้ว · ราคาที่เลือก {payload.get('base_price')} · หน้าเว็บแสดง {payload.get('displayed_price')} · เลือกที่นั่งต่อในโซนเดิม"
     if kind == "seat_set_planned":
         return f"วางชุดที่นั่งครบ {_thai_runtime_value(payload.get('wanted') or len(payload.get('seats') or []), 20)} ใบแล้ว · เตรียมยืนยันต่อเนื่อง"
     if kind == "seat_attempt":
@@ -839,6 +1151,8 @@ def thai_runtime_message(kind, payload):
         return f"เปลี่ยนไปโซนถัดไปที่ผู้ใช้อนุญาต · {_thai_runtime_value(payload.get('from_zone') or 'เดิม', 40)} → {_thai_runtime_value(payload.get('to_zone') or payload.get('zone') or 'ถัดไป', 40)}"
     if kind == "reservation_verified":
         return f"เว็บยืนยันการถือที่นั่งแล้ว {payload.get('selected', payload.get('wanted', 0))}/{payload.get('wanted', 0)} · ไปเตรียม Checkout ต่อทันที"
+    if kind == "selection_unavailable":
+        return f"{status_labels.get(status) or 'ไม่พบชุดที่นั่งตามเงื่อนไขที่ล็อกไว้'} · ปิด Browser ของ run และแสดงตัวเลือกที่ยังว่าง"
     if kind in {"queue", "queue_analysis"}:
         position = payload.get("queue_position")
         return f"กำลังรักษาคิวเดิม{f' · หลักฐานลำดับ {position}' if position is not None else ''} · ไม่ refresh และรอ response จากเว็บ"
@@ -1428,6 +1742,10 @@ def seat_inventory_fingerprint(metadata):
     normalized = sorted(
         (
             str(item.get("label") or ""),
+            str(item.get("zone") or ""),
+            str(item.get("row") or ""),
+            str(item.get("number") or ""),
+            seat_price_value(item.get("price")),
             bool(item.get("available")),
             bool(item.get("selected")),
         )
@@ -2198,7 +2516,7 @@ def visible_zone_availability_modal(page):
             ".fancybox-wrap:visible",
             ".modal-dialog:visible",
             ".modal:visible",
-            "[id^='popup-']:visible",
+            "div[id^='popup-']:visible",
         ):
             try:
                 dialogs = scope.locator(selector)
@@ -2222,7 +2540,7 @@ def parse_zone_availability_modal(page):
             ".fancybox-wrap:visible tr",
             ".modal:visible tr",
             ".modal-dialog:visible tr",
-            "[id^='popup-']:visible tr",
+            "div[id^='popup-']:visible tr",
         ):
             try:
                 rows = scope.locator(selector)
@@ -2251,7 +2569,7 @@ def parse_zone_availability_modal(page):
             ".fancybox-wrap:visible",
             ".modal-dialog:visible",
             ".modal:visible",
-            "[id^='popup-']:visible",
+            "div[id^='popup-']:visible",
         ):
             try:
                 dialogs = scope.locator(selector)
@@ -2306,6 +2624,56 @@ def close_zone_availability_modal(page):
     return not visible_zone_availability_modal(page)
 
 
+def wait_for_zone_availability_modal_result(page, timeout_ms):
+    """Wait for the already-open official modal to finish rendering its rows.
+
+    A blank dialog with a spinner is an in-flight response, not proof that an
+    event has no seats.  MutationObserver keeps this wait event-driven and the
+    dialog remains open on timeout so a later scan can resume the same request.
+    """
+    deadline = time.monotonic() + max(250, int(timeout_ms or 0)) / 1000
+    while time.monotonic() < deadline:
+        zones = parse_zone_availability_modal(page)
+        if zones:
+            return zones
+        if not visible_zone_availability_modal(page):
+            return {}
+        observed = False
+        for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
+            remaining_ms = max(1, min(1000, int((deadline - time.monotonic()) * 1000)))
+            if remaining_ms <= 1:
+                break
+            try:
+                changed = scope.evaluate("""timeout => new Promise(resolve => {
+                  const visible = element => {
+                    if (!element) return false;
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                  };
+                  const dialog = [...document.querySelectorAll("[role='dialog'], .fancybox-wrap, .modal-dialog, .modal, div[id^='popup-']")].find(visible);
+                  if (!dialog) { resolve(false); return; }
+                  const hasResult = () => [...dialog.querySelectorAll('tr')].some(row => {
+                    const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
+                    return /(?:^|\s)(?:\d+|available|ที่นั่งว่าง)(?:\s|$)/i.test(text);
+                  });
+                  if (hasResult()) { resolve(true); return; }
+                  const observer = new MutationObserver(() => {
+                    if (hasResult()) { observer.disconnect(); resolve(true); }
+                  });
+                  observer.observe(dialog, {subtree: true, childList: true, attributes: true, characterData: true});
+                  setTimeout(() => { observer.disconnect(); resolve(false); }, timeout);
+                })""", remaining_ms)
+                observed = observed or bool(changed)
+                if observed:
+                    break
+            except Exception:
+                continue
+        if not observed and time.monotonic() >= deadline:
+            break
+    return parse_zone_availability_modal(page)
+
+
 def collect_zone_availability(page, force=False):
     settings = CONFIG.get("seatAvailability") if isinstance(CONFIG.get("seatAvailability"), dict) else {}
     seat_mode = str(CONFIG.get("seatMode") or "").casefold()
@@ -2349,7 +2717,7 @@ def collect_zone_availability(page, force=False):
     # already the authoritative page response; clicking its covered trigger
     # again causes the 30-second timeout seen in the LUCY run.
     visible_zones = parse_zone_availability_modal(page)
-    if visible_zones or visible_zone_availability_modal(page):
+    if visible_zones:
         generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
         CONFIG["_runtimeInventoryGeneration"] = generation
         CONFIG["_runtimeZoneAvailability"] = visible_zones
@@ -2365,6 +2733,39 @@ def collect_zone_availability(page, force=False):
         record("inventory_generation", {"generation": generation, "source": "seat_availability_modal_reused", "zones": visible_zones})
         close_zone_availability_modal(page)
         return visible_zones
+    if visible_zone_availability_modal(page):
+        visible_zones = wait_for_zone_availability_modal_result(
+            page,
+            speed_setting("availabilityModalTimeoutMs", 3_000),
+        )
+        if visible_zones:
+            generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
+            CONFIG["_runtimeInventoryGeneration"] = generation
+            CONFIG["_runtimeZoneAvailability"] = visible_zones
+            record("seat_availability", {
+                "source": "official_page_session",
+                "available": True,
+                "zones": visible_zones,
+                "reason": "VISIBLE_LOADING_MODAL_COMPLETED",
+                "checked_at": datetime.now().astimezone().isoformat(),
+                "inventory_generation": generation,
+            })
+            record("inventory_generation", {"generation": generation, "source": "seat_availability_modal_waited", "zones": visible_zones})
+            close_zone_availability_modal(page)
+            return visible_zones
+        # A visible blank/loading modal is an in-flight server response.  Keep
+        # it open and preserve the current route; closing/reopening it caused
+        # the observed enter/exit loop and discarded the useful response.
+        record("seat_availability", {
+            "source": "official_page_session",
+            "available": bool(cached),
+            "zones": cached,
+            "reason": "ZONE_AVAILABILITY_STILL_LOADING",
+            "checked_at": datetime.now().astimezone().isoformat(),
+            "terminal": False,
+            "next_action": "wait_for_current_modal",
+        })
+        return dict(cached)
     button = None
     pattern = re.compile(r"ที่นั่งว่าง|จำนวนที่นั่งว่าง|available\s+seats?|seat\s+availability", re.I)
     for scope in [page, *[frame for frame in page.frames if frame != page.main_frame]]:
@@ -2386,19 +2787,23 @@ def collect_zone_availability(page, force=False):
     except Exception as error:
         record("seat_availability", {"source": "official_page_session", "available": False, "reason": "CONTROL_CLICK_FAILED", "error": str(error)[:300]})
         return dict(cached)
-    deadline = time.monotonic() + max(1, speed_setting("availabilityModalTimeoutMs", 3_000)) / 1000
-    zones = {}
-    while time.monotonic() < deadline and not zones:
-        zones = parse_zone_availability_modal(page)
-        if not zones:
-            # A short event-driven yield prevents a busy loop without adding
-            # a fixed delay to the successful API path.
-            try:
-                page.wait_for_function("() => Boolean(document.querySelector('[role=dialog] tr, .modal:visible tr, table tr'))", timeout=100)
-            except Exception:
-                pass
+    zones = wait_for_zone_availability_modal_result(
+        page,
+        speed_setting("availabilityModalTimeoutMs", 3_000),
+    )
     response_zones = LATEST_ZONE_AVAILABILITY_RESPONSE.get("zones") if isinstance(LATEST_ZONE_AVAILABILITY_RESPONSE.get("zones"), dict) else {}
     zones = {**response_zones, **zones}
+    if not zones and visible_zone_availability_modal(page):
+        record("seat_availability", {
+            "source": "official_page_session",
+            "available": bool(cached),
+            "zones": cached,
+            "reason": "ZONE_AVAILABILITY_STILL_LOADING",
+            "checked_at": datetime.now().astimezone().isoformat(),
+            "terminal": False,
+            "next_action": "wait_for_current_modal",
+        })
+        return dict(cached)
     generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0) + 1
     CONFIG["_runtimeInventoryGeneration"] = generation
     CONFIG["_runtimeZoneAvailability"] = zones
@@ -2412,6 +2817,14 @@ def collect_zone_availability(page, force=False):
     record("inventory_generation", {"generation": generation, "source": "seat_availability_modal", "zones": zones})
     close_zone_availability_modal(page)
     return zones
+
+
+def zone_flow_from_official_target(value):
+    """Classify only routes exposed by the current official booking page."""
+    target = str(value or "").strip().casefold()
+    if re.search(r"(?:^|[#/])festival\.php(?:[#?]|$)", target):
+        return "general_admission"
+    return "unknown"
 
 
 def select_preferred_zone(page):
@@ -2453,11 +2866,14 @@ def select_preferred_zone(page):
         pass
     area_nodes = page.locator("area[href*='#']")
     discovered = []
+    no_numbered_seat_zones = set()
     for index in range(area_nodes.count()):
         href = area_nodes.nth(index).get_attribute("href") or ""
         zone = href.rsplit("#", 1)[-1].upper() if "#" in href else ""
         if zone and len(zone) <= 30:
             discovered.append((zone, area_nodes.nth(index)))
+            if zone_flow_from_official_target(href) == "general_admission":
+                no_numbered_seat_zones.add(zone)
     for selector in ("[data-zone]", "[data-section]"):
         nodes = page.locator(selector)
         for index in range(min(nodes.count(), 500)):
@@ -2465,8 +2881,26 @@ def select_preferred_zone(page):
             zone = (node.get_attribute("data-zone") or node.get_attribute("data-section") or "").strip().upper()
             if zone and len(zone) <= 30 and all(item[0] != zone for item in discovered):
                 discovered.append((zone, node))
+                route_evidence = " ".join(filter(None, [node.get_attribute("href"), node.get_attribute("onclick")]))
+                if zone_flow_from_official_target(route_evidence) == "general_admission":
+                    no_numbered_seat_zones.add(zone)
     discovered_names = list(dict.fromkeys(zone for zone, _ in discovered))
-    availability = align_zone_availability(collect_zone_availability(page, force=True), discovered_names)
+    official_quantity_only_flow = bool(discovered_names) and all(zone in no_numbered_seat_zones for zone in discovered_names)
+    if official_quantity_only_flow:
+        configured_no_seat_mode = True
+        CONFIG["seatMode"] = "general_admission"
+        CONFIG["_runtimeSeatModeDetected"] = "general_admission"
+        record("selection", {
+            "mode": "general_admission",
+            "reason": "OFFICIAL_ZONE_TARGETS_USE_QUANTITY_FLOW",
+            "zones": discovered_names,
+            "route": "festival.php",
+            "next_action": "select_zone_then_quantity",
+        })
+    availability = align_zone_availability(
+        collect_zone_availability(page, force=not bool(CONFIG.get("_runtimeZoneAvailability"))),
+        discovered_names,
+    )
     auto_discovered_zones = bool(CONFIG.get("_runtimeAutoDiscoveredZones")) or (not zones and bool(discovered_names or availability))
     if not zones:
         page_zone_names = discovered_names or list(availability.keys())
@@ -2543,7 +2977,7 @@ def select_preferred_zone(page):
                 continue
             locator.evaluate("element => element.click()")
             CONFIG["_runtimeCurrentZone"] = zone
-            if textual_availability:
+            if textual_availability or zone in no_numbered_seat_zones:
                 CONFIG["_runtimeGeneralAdmissionZoneSelected"] = zone
             record("action", {"action": "select_image_map_zone", "zone": zone, "selector": f"area[href$='#{zone}']"})
             if not textual_availability:
@@ -2554,7 +2988,7 @@ def select_preferred_zone(page):
             if locator.count() and locator.is_visible(timeout=500) and locator.is_enabled():
                 locator.click()
                 CONFIG["_runtimeCurrentZone"] = zone
-                if textual_availability:
+                if textual_availability or zone in no_numbered_seat_zones:
                     CONFIG["_runtimeGeneralAdmissionZoneSelected"] = zone
                 record("action", {"action": "select_zone", "zone": zone})
                 if not textual_availability:
@@ -2597,6 +3031,41 @@ def visible_general_admission_quantity_control(page):
     return False
 
 
+def quantity_option_number(value):
+    text = str(value or "").strip()
+    return int(text) if re.fullmatch(r"\d+", text) else None
+
+
+def quantity_option_numbers(locator):
+    """Read numeric option values/labels from one live quantity select."""
+    option_locator = locator.locator("option")
+    try:
+        option_count = option_locator.count()
+    except Exception:
+        return []
+    try:
+        labels = [str(item).strip() for item in option_locator.all_text_contents()]
+    except Exception:
+        labels = []
+    values = []
+    for index in range(option_count):
+        option = option_locator.nth(index)
+        try:
+            raw_value = option.get_attribute("value") or ""
+        except Exception:
+            raw_value = ""
+        try:
+            raw_label = option.inner_text(timeout=100)
+        except Exception:
+            raw_label = labels[index] if index < len(labels) else ""
+        number = quantity_option_number(raw_value)
+        if number is None:
+            number = quantity_option_number(raw_label)
+        if number is not None and number not in values:
+            values.append(number)
+    return values
+
+
 def select_ticket_quantity(page):
     if not wait_for_page_ready(page):
         record("selection", {"mode": CONFIG.get("seatMode"), "complete": False, "reason": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
@@ -2609,21 +3078,51 @@ def select_ticket_quantity(page):
         try:
             if not locator.is_visible(timeout=200) or not locator.is_enabled(timeout=200):
                 continue
-            identity = " ".join(filter(None, [locator.get_attribute("name"), locator.get_attribute("id"), locator.get_attribute("aria-label")])).casefold()
-            options = [str(item).strip() for item in locator.locator("option").all_text_contents()]
+            name = str(locator.get_attribute("name") or "").strip()
+            control_id = str(locator.get_attribute("id") or "").strip()
+            aria_label = str(locator.get_attribute("aria-label") or "").strip()
+            identity = " ".join(filter(None, [name, control_id, aria_label])).casefold()
+            options = quantity_option_numbers(locator)
             # Prefer a control explicitly identified as quantity. If the site
             # omits the attribute, accept a compact 1..N option list but never
             # use the performance/date selector as a quantity control.
-            quantity_hint = bool(re.search(r"qty|quantity|จำนวน", identity, re.I))
-            numeric_options = [item for item in options if re.fullmatch(r"\d+", item)]
-            if not quantity_hint and not numeric_options and not (str(wanted) in options):
-                continue
-            if not quantity_hint and len(numeric_options) < 2:
+            quantity_hint = bool(re.search(r"book[_-]?cnt|qty|quantity|จำนวน", identity, re.I))
+            if not quantity_hint and (wanted not in options or len(options) < 2):
                 continue
         except Exception:
             continue
-        labels = [str(item).strip() for item in locator.locator("option").all_text_contents()]
-        if str(wanted) not in labels:
+        if not options:
+            continue
+        positive_options = sorted(number for number in options if number > 0)
+        max_ticket_quantity = max(positive_options, default=0)
+        source = f"select[name={name}]" if name else f"select#{control_id}" if control_id else "select[quantity]"
+        if wanted > max_ticket_quantity:
+            reason = "REQUESTED_QUANTITY_EXCEEDS_LIVE_LIMIT"
+        elif wanted not in positive_options:
+            reason = "REQUESTED_QUANTITY_NOT_OFFERED"
+        else:
+            reason = "LIVE_QUANTITY_LIMIT"
+        adjusted_quantity = max((value for value in positive_options if value <= wanted), default=0)
+        record("quantity_limit", {
+            "max_quantity": max_ticket_quantity,
+            "wanted": wanted,
+            "options": positive_options,
+            "source": source,
+            "reason": reason,
+            "adjusted_quantity": adjusted_quantity or None,
+            "auto_adjusted": bool(wanted not in positive_options and adjusted_quantity),
+        })
+        if wanted not in positive_options:
+            CONFIG["_runtimeQuantityLimit"] = {
+                "max_quantity": max_ticket_quantity,
+                "wanted": wanted,
+                "options": positive_options,
+                "source": source,
+                "reason": reason,
+            }
+            CONFIG["_runtimeQuantityLimitReason"] = reason
+            return False
+        if wanted not in options:
             continue
         try:
             locator.select_option(label=str(wanted))
@@ -2645,6 +3144,63 @@ def select_ticket_quantity(page):
         return False
     record("selection", {"mode": CONFIG.get("seatMode"), "wanted": wanted, "selected": wanted, "complete": True})
     return True
+
+
+def read_quantity_after_live_limit(max_quantity, wanted, options, reason="REQUESTED_QUANTITY_EXCEEDS_LIVE_LIMIT"):
+    max_quantity = max(0, int(max_quantity or 0))
+    valid_options = sorted({int(value) for value in (options or []) if quantity_option_number(value) and int(value) > 0})
+    CONFIG["_runtimeQuantityLimitReason"] = reason
+    if not valid_options:
+        record("result", {
+            "status": "SOLD_OUT_BY_SERVER",
+            "reason": "LIVE_QUANTITY_SELECTOR_HAS_NO_POSITIVE_OPTIONS",
+            "max_quantity": max_quantity,
+            "wanted": wanted,
+            "terminal": True,
+        })
+        return None
+    requested_quantity = max(1, int(wanted or 1))
+    eligible_options = [value for value in valid_options if value <= requested_quantity]
+    if not eligible_options:
+        record("result", {
+            "status": "REQUESTED_QUANTITY_UNAVAILABLE",
+            "reason": "LIVE_QUANTITY_OPTIONS_EXCEED_REQUEST",
+            "max_quantity": max_quantity,
+            "wanted": requested_quantity,
+            "options": valid_options,
+            "terminal": True,
+        })
+        return None
+    value = max(eligible_options)
+    CONFIG["quantity"] = value
+    CONFIG.pop("_runtimeQuantityLimitReason", None)
+    record("quantity_updated", {
+        "quantity": value,
+        "requested_quantity": requested_quantity,
+        "adjusted_from": requested_quantity,
+        "max_quantity": max_quantity,
+        "options": valid_options,
+        "auto_adjusted": True,
+        "reason": "QUANTITY_AUTO_ADJUSTED_TO_LIVE_LIMIT",
+    })
+    record("selection", {
+        "mode": CONFIG.get("seatMode"),
+        "wanted": value,
+        "selected": value,
+        "requested_quantity": requested_quantity,
+        "max_quantity": max_quantity,
+        "complete": False,
+        "auto_adjusted": True,
+        "reason": "QUANTITY_AUTO_ADJUSTED_TO_LIVE_LIMIT",
+    })
+    return value
+
+
+def handle_quantity_limit_input(page, browser_profile, quantity_limit):
+    max_quantity = max(0, int((quantity_limit or {}).get("max_quantity") or 0))
+    wanted = max(1, int((quantity_limit or {}).get("wanted") or CONFIG.get("quantity") or 1))
+    reason = str((quantity_limit or {}).get("reason") or "REQUESTED_QUANTITY_EXCEEDS_LIVE_LIMIT")
+    return read_quantity_after_live_limit(max_quantity, wanted, (quantity_limit or {}).get("options") or [], reason=reason)
 
 
 def visible_attendee_validation(page):
@@ -2729,11 +3285,46 @@ def fill_event_sensitive_input(locator, value):
             return False
 
 
+def fill_known_buyer_profile_fields(page):
+    """Fill only explicitly identified non-secret buyer/contact fields."""
+    address = CONFIG.get("shippingAddress") if isinstance(CONFIG.get("shippingAddress"), dict) else {}
+    candidates = [
+        (re.compile(r"โทร|เบอร์|phone|mobile|telephone|\btel\b", re.I), str(CONFIG.get("buyerPhone", "")).strip(), "phone"),
+        (re.compile(r"ที่อยู่|address", re.I), str(address.get("address", "")).strip(), "address"),
+        (re.compile(r"เมือง|อำเภอ|เขต|city|district", re.I), str(address.get("city", "")).strip(), "city"),
+        (re.compile(r"จังหวัด|province|state", re.I), str(address.get("province", "")).strip(), "province"),
+        (re.compile(r"รหัสไปรษณีย์|postal|postcode|zip", re.I), str(address.get("postalCode", "")).strip(), "postal_code"),
+    ]
+    filled = []
+    boxes = page.locator("input[type='text'], input[type='tel'], input:not([type]), textarea")
+    for index in range(boxes.count()):
+        locator = boxes.nth(index)
+        try:
+            if not locator.is_visible(timeout=200) or not locator.is_enabled(timeout=200):
+                continue
+        except Exception:
+            continue
+        descriptor = field_descriptor(locator)
+        for pattern, value, field_name in candidates:
+            if value and pattern.search(descriptor):
+                try:
+                    current = str(locator.input_value(timeout=300) or "").strip()
+                except Exception:
+                    current = ""
+                if not current and fill_event_sensitive_input(locator, value):
+                    filled.append(field_name)
+                break
+    if filled:
+        record("buyer_profile_filled", {"fields": sorted(set(filled)), "values_logged": False})
+    return filled
+
+
 def fill_attendee_details(page):
     if not wait_for_page_ready(page):
         record("attendee_validation", {"status": "PAGE_LOAD_NOT_COMPLETE", "terminal": False})
         return False
     dismiss_attendee_validation(page)
+    fill_known_buyer_profile_fields(page)
     previous_url = safe_page_url(page)
     boxes = page.locator("input[type='text'], input:not([type])")
     names = [str(item).strip() for item in CONFIG.get("attendeeNames", []) if str(item).strip()]
@@ -2799,6 +3390,7 @@ def select_checkout_options(page, confirm_order=False):
     # messages before retrying; otherwise the site can show a visual choice while
     # its hidden delivery/payment state is still empty.
     dismiss_checkout_validation(page)
+    fill_known_buyer_profile_fields(page)
     delivery = str(CONFIG.get("deliveryMethod", "pickup"))
     delivery_labels = ["รับบัตรด้วยตนเอง", "self pickup", "pick up"] if delivery == "pickup" else ["จัดส่งทางไปรษณีย์", "postal", "delivery"]
     delivery_result = select_verified_checkout_option(
@@ -2973,9 +3565,13 @@ def collect_seat_inventory(page, fallback_zone=""):
                 zone = str(raw.get("zone") or fallback_zone).strip().upper()
                 row = str(raw.get("row") or (parsed.group(1) if parsed else "")).strip().upper()
                 number = str(raw.get("number") or (parsed.group(2) if parsed else raw_seat)).strip()
-                price = seat_price_value(raw.get("price")) or configured_single_price(zone)
+                # Explicit seat metadata always wins. A zone-wide fallback is
+                # available only when the current live map showed exactly one
+                # official price; multi-price zones never receive this value.
+                explicit_price = effective_seat_price(raw.get("price"))
+                price = explicit_price or configured_single_price(zone)
                 available = bool(raw.get("visible") and raw.get("enabled") and not selected and class_tokens.isdisjoint(blocked_tokens))
-                item = {"zone": zone, "row": row, "number": number, "price": price, "label": "-".join(value for value in (zone, row, number) if value)[:120], "available": available, "selected": selected, "visible": bool(raw.get("visible")), "scope_index": scope_index, "control_index": control_index}
+                item = {"zone": zone, "row": row, "number": number, "price": price, "price_source": "seat_level" if explicit_price is not None else "single_price_zone_legend" if price is not None else "unknown", "label": "-".join(value for value in (zone, row, number) if value)[:120], "available": available, "selected": selected, "visible": bool(raw.get("visible")), "scope_index": scope_index, "control_index": control_index}
                 conflict_key = seat_conflict_key(item)
                 current_generation = int(CONFIG.get("_runtimeInventoryGeneration", 0) or 0)
                 if conflict_key in SEAT_CONFLICT_BLACKLIST or SEAT_CONFLICT_GENERATION.get(conflict_key) == current_generation:
@@ -2985,6 +3581,167 @@ def collect_seat_inventory(page, fallback_zone=""):
             except Exception:
                 metadata.append({"available": False, "scope_index": scope_index, "control_index": control_index})
     return metadata, locators, scopes
+
+
+def seat_inventory_quality(metadata, wanted, grouping, preferred_prices):
+    """Separate an incomplete seat render from a proven no-set result.
+
+    Missing price/row/number metadata must never be treated as an exhausted
+    zone.  The browser stays on the current seat map until the metadata arrives
+    or verified server/DOM evidence proves that no complete set exists.
+    """
+    available = [item for item in metadata if item.get("available")]
+    target_prices = {seat_price_value(value) for value in (preferred_prices or [])}
+    target_prices.discard(None)
+    priced = [item for item in available if seat_price_value(item.get("price")) is not None]
+    price_matches = [item for item in available if seat_price_value(item.get("price")) in target_prices] if target_prices else list(available)
+    unknown_prices = [item for item in available if seat_price_value(item.get("price")) is None]
+    if target_prices and len(price_matches) < wanted and unknown_prices:
+        return {
+            "complete": False,
+            "reason": "PRICE_METADATA_PENDING",
+            "available_count": len(available),
+            "priced_count": len(priced),
+            "price_match_count": len(price_matches),
+            "unknown_price_count": len(unknown_prices),
+            "identifiable_count": 0,
+        }
+    candidates = price_matches
+    identifiable = [
+        item for item in candidates
+        if str(item.get("row") or "").strip() and str(item.get("number") or "").strip().isdigit()
+    ]
+    if grouping == "adjacent" and len(candidates) >= wanted and len(identifiable) < wanted:
+        return {
+            "complete": False,
+            "reason": "SEAT_IDENTITY_METADATA_PENDING",
+            "available_count": len(available),
+            "priced_count": len(priced),
+            "price_match_count": len(price_matches),
+            "unknown_price_count": len(unknown_prices),
+            "identifiable_count": len(identifiable),
+        }
+    return {
+        "complete": True,
+        "reason": "INVENTORY_METADATA_COMPLETE",
+        "available_count": len(available),
+        "priced_count": len(priced),
+        "price_match_count": len(price_matches),
+        "unknown_price_count": len(unknown_prices),
+        "identifiable_count": len(identifiable),
+    }
+
+
+def summarize_available_seats(zone, metadata, sample_limit=12):
+    """Build a small human-readable inventory summary without changing scope.
+
+    The result contains only seats that the live page/API marks available. It
+    is evidence for the UI, not permission to change the locked price or zone.
+    """
+    zone_key = str(zone or "").strip().upper()
+    grouped = {}
+    for item in metadata or []:
+        if not isinstance(item, dict) or not item.get("available"):
+            continue
+        price = seat_price_value(item.get("price"))
+        price_key = str(price) if price is not None else "unknown"
+        bucket = grouped.setdefault(price_key, {"price": price, "count": 0, "rows": set(), "seats": []})
+        bucket["count"] += 1
+        row = str(item.get("row") or "").strip().upper()
+        number = str(item.get("number") or "").strip().upper()
+        label = str(item.get("label") or "").strip()
+        if row:
+            bucket["rows"].add(row)
+        sample = label or "-".join(part for part in [zone_key, row, number] if part)
+        if sample and len(bucket["seats"]) < max(1, int(sample_limit)):
+            bucket["seats"].append(sample)
+    options = []
+    for bucket in grouped.values():
+        options.append({
+            "zone": zone_key,
+            "price": bucket["price"],
+            "count": bucket["count"],
+            "rows": sorted(bucket["rows"]),
+            "sample_seats": bucket["seats"],
+        })
+    return sorted(options, key=lambda item: (item.get("price") is None, -(item.get("price") or 0), item.get("zone") or ""))
+
+
+def static_zone_price_options(zones):
+    options = []
+    for zone in zones or []:
+        evidence = _static_zone_price_evidence(zone)
+        for price in evidence.get("prices") or []:
+            options.append({"zone": str(zone).upper(), "price": price, "count": None, "rows": [], "sample_seats": [], "source": evidence.get("source")})
+    return options
+
+
+def record_locked_selection_unavailable(status, preferred_prices, zones, wanted, summaries, preferred_rows=None, preferred_seat_numbers=None):
+    alternatives = []
+    for zone in zones or []:
+        alternatives.extend(summaries.get(str(zone).upper(), []))
+    if not alternatives:
+        alternatives = static_zone_price_options(zones)
+    reason = "ไม่มีชุดที่นั่งครบตามราคาที่เลือกในทุกโซนที่อนุญาต" if status == "SELECTED_PRICE_SOLD_OUT" else "ไม่พบชุดที่นั่งครบตามแถว/เลขที่นั่งที่ระบุ"
+    record("selection_unavailable", {
+        "status": status,
+        "reason": reason,
+        "preferred_prices": preferred_prices,
+        "allowed_zones": zones,
+        "preferred_rows": preferred_rows or [],
+        "preferred_seat_numbers": preferred_seat_numbers or [],
+        "wanted": wanted,
+        "available_options": alternatives,
+        "payment_submitted": False,
+        "terminal": True,
+        "next_action": "close_owned_browser_and_report",
+    })
+    record("result", {
+        "status": status,
+        "reason": reason,
+        "preferred_prices": preferred_prices,
+        "allowed_zones": zones,
+        "preferred_rows": preferred_rows or [],
+        "preferred_seat_numbers": preferred_seat_numbers or [],
+        "wanted": wanted,
+        "available_options": alternatives,
+        "live_checkout_verified": False,
+        "payment_submitted": False,
+    })
+    return alternatives
+
+
+def record_seat_level_price_evidence(zone, metadata):
+    """Cache only explicit seat-price observations for safe zone filtering.
+
+    The cache is deliberately marked incomplete when any visible seat lacks a
+    price.  In that case it may help confirm a compatible price that was
+    observed, but it can never prove that another preferred price is absent.
+    """
+    zone_key = str(zone or "").strip().upper()
+    all_visible = [item for item in metadata if item.get("visible", True)]
+    visible = [item for item in all_visible if item.get("price_source") == "seat_level"]
+    prices = sorted({seat_price_value(item.get("price")) for item in visible if seat_price_value(item.get("price")) is not None})
+    if not zone_key or not prices:
+        return None
+    complete_inventory = bool(all_visible) and len(visible) == len(all_visible) and all(seat_price_value(item.get("price")) is not None for item in visible)
+    evidence = {
+        "prices": prices,
+        "source": "seat_level_dom_or_verified_api",
+        "seat_level": True,
+        "complete_inventory": complete_inventory,
+    }
+    cache = CONFIG.setdefault("_runtimeZonePriceEvidence", {})
+    previous = cache.get(zone_key)
+    cache[zone_key] = evidence
+    if previous != evidence:
+        record("seat_price_evidence", {
+            "zone": zone_key,
+            **evidence,
+            "same_zone": True,
+            "next_action": "filter_candidates_by_exact_seat_price" if complete_inventory else "wait_for_missing_seat_price_metadata",
+        })
+    return evidence
 
 
 def reservation_token_fingerprint(page):
@@ -3191,18 +3948,26 @@ def fast_reserved_seat_recovery(page):
     grouping = str(CONFIG.get("seatGrouping", "adjacent"))
     fallback_mode = str(CONFIG.get("seatFallbackMode", "nearest"))
     recovery = CONFIG.get("seatRecovery") if isinstance(CONFIG.get("seatRecovery"), dict) else {}
-    zones = expand_zone_preferences(CONFIG.get("_runtimeAvailableZones") or recovery.get("zoneOrder") or CONFIG.get("preferredZones", []))
+    configured_zones = CONFIG.get("preferredZones") or recovery.get("zoneOrder") or []
+    runtime_zones = CONFIG.get("_runtimeAvailableZones") or []
+    zones, zone_cursor = recovery_zone_order(
+        configured_zones,
+        runtime_zones,
+        current_zone_from_page(page),
+        auto_discovered=bool(CONFIG.get("_runtimeAutoDiscoveredZones")),
+    )
     max_attempts = max(0, int(recovery.get("maxAttempts", 0) or 0))
     verify_timeout = max(250, int(recovery.get("clickVerificationTimeoutMs", 2500) or 2500))
     rescan_interval = max(100, int(recovery.get("inventoryRescanIntervalMs", 750) or 750))
     release_partial = recovery.get("releasePartialBeforeRetry", True) is not False
     attempt = 0
-    zone_cursor = 0
     exhausted_rounds = 0
     unknown_layout_rounds = 0
+    metadata_pending_rounds = 0
     failure_fingerprints = {}
     ready_marker_key = None
     readiness_failures = 0
+    zone_summaries = {}
     current_zone = current_zone_from_page(page)
     if not zones and current_zone:
         zones = [current_zone]
@@ -3279,7 +4044,7 @@ def fast_reserved_seat_recovery(page):
             and ready_decision.get("state") == "ticket_selection"
             and not ready_decision.get("stale")
             and not ready_decision.get("unavailable")
-            and ready_decision.get("action") in {"dismiss_runtime_dialog", "rescan_inventory", "release_partial", "switch_allowed_zone", "request_user"}
+            and ready_decision.get("action") in {"dismiss_runtime_dialog", "rescan_inventory", "release_partial", "request_user"}
         ):
             ready_action = str(ready_decision.get("action") or "")
             execution_key = f"ticket_selection:{ready_decision.get('strategy_key', '')}:{ready_action}"
@@ -3305,6 +4070,30 @@ def fast_reserved_seat_recovery(page):
         # or blocking dialog, where continuing blind clicks would be slower.
         if checkpoint["state"] in {"sold_out", "sale_closed"}:
             return {"ok": False, "terminal": checkpoint["state"], "attempts": attempt}
+        if zones:
+            eligible_entries = eligible_zone_order(zones, preferred_prices, zone_cursor)
+            if not eligible_entries:
+                record_locked_selection_unavailable(
+                    "SELECTED_PRICE_SOLD_OUT",
+                    preferred_prices,
+                    zones,
+                    wanted,
+                    zone_summaries,
+                    preferred_rows=rows,
+                    preferred_seat_numbers=seat_numbers,
+                )
+                return {"ok": False, "terminal": "price_unavailable", "attempts": attempt}
+            eligible_entry = eligible_entries[0]
+            if eligible_entry["index"] != zone_cursor:
+                skipped = zones[zone_cursor:eligible_entry["index"]]
+                record("zone_switch", {
+                    "status": "PRICE_INCOMPATIBLE_ZONES_SKIPPED",
+                    "skipped_zones": skipped,
+                    "to_zone": eligible_entry["zone"],
+                    "preferred_prices": preferred_prices,
+                    "reason": "HARD_PRICE_CONSTRAINT",
+                })
+                zone_cursor = eligible_entry["index"]
         active_zone = zones[zone_cursor] if zones else current_zone_from_page(page)
         if active_zone and current_zone_from_page(page) not in {"", active_zone}:
             if not switch_to_allowed_zone(page, active_zone):
@@ -3312,27 +4101,226 @@ def fast_reserved_seat_recovery(page):
                 zone_cursor = (zone_cursor + 1) % max(1, len(zones))
                 continue
         current_zone = current_zone_from_page(page) or active_zone
+        verify_current_zone_price_from_dom(page, current_zone, preferred_prices)
+        price_compatibility = zone_price_compatibility(current_zone, preferred_prices)
+        if price_compatibility.get("status") == "incompatible":
+            next_entries = eligible_zone_order(zones, preferred_prices, zone_cursor + 1) if zones else []
+            record("recovery", {
+                "status": "ZONE_REJECTED_BY_HARD_PRICE_CONSTRAINT",
+                "zone": current_zone,
+                "preferred_prices": preferred_prices,
+                "observed_prices": price_compatibility.get("prices", []),
+                "source": price_compatibility.get("source"),
+                "terminal": not bool(next_entries),
+                "next_action": "switch_price_compatible_zone" if next_entries else "report_price_unavailable",
+            })
+            if next_entries:
+                next_entry = next_entries[0]
+                previous_zone = current_zone
+                zone_cursor = next_entry["index"]
+                switched = switch_to_allowed_zone(page, next_entry["zone"])
+                record("zone_switch", {"status": "SWITCHED" if switched else "CONTROL_NOT_AVAILABLE", "from_zone": previous_zone, "to_zone": next_entry["zone"], "preferred_prices": preferred_prices, "reason": "CURRENT_ZONE_PRICE_INCOMPATIBLE"})
+                continue
+            record_locked_selection_unavailable(
+                "SELECTED_PRICE_SOLD_OUT",
+                preferred_prices,
+                zones or [current_zone],
+                wanted,
+                zone_summaries,
+                preferred_rows=rows,
+                preferred_seat_numbers=seat_numbers,
+            )
+            return {"ok": False, "terminal": "price_unavailable", "attempts": attempt, "zone": current_zone}
         metadata, locators, scopes = collect_seat_inventory(page, current_zone)
+        record_seat_level_price_evidence(current_zone, metadata)
+        price_compatibility = zone_price_compatibility(current_zone, preferred_prices)
+        if price_compatibility.get("status") == "incompatible":
+            next_entries = eligible_zone_order(zones, preferred_prices, zone_cursor + 1) if zones else []
+            record("recovery", {
+                "status": "ZONE_REJECTED_BY_SEAT_PRICE_EVIDENCE",
+                "zone": current_zone,
+                "preferred_prices": preferred_prices,
+                "observed_prices": price_compatibility.get("prices", []),
+                "terminal": not bool(next_entries),
+                "next_action": "switch_price_compatible_zone" if next_entries else "report_price_unavailable",
+            })
+            if next_entries:
+                next_entry = next_entries[0]
+                previous_zone = current_zone
+                zone_cursor = next_entry["index"]
+                switched = switch_to_allowed_zone(page, next_entry["zone"])
+                record("zone_switch", {"status": "SWITCHED" if switched else "CONTROL_NOT_AVAILABLE", "from_zone": previous_zone, "to_zone": next_entry["zone"], "preferred_prices": preferred_prices, "reason": "SEAT_LEVEL_PRICE_INCOMPATIBLE"})
+                continue
+            record_locked_selection_unavailable(
+                "SELECTED_PRICE_SOLD_OUT",
+                preferred_prices,
+                zones or [current_zone],
+                wanted,
+                zone_summaries,
+                preferred_rows=rows,
+                preferred_seat_numbers=seat_numbers,
+            )
+            return {"ok": False, "terminal": "price_unavailable", "attempts": attempt, "zone": current_zone}
         available_count = sum(1 for item in metadata if item.get("available"))
-        record("seat_scan", {"zone": current_zone, "available": available_count, "candidate_count": len(metadata), "wanted": wanted, "preferred_prices": preferred_prices, "attempt": attempt + 1, "scope_count": len(scopes)})
+        quality = seat_inventory_quality(metadata, wanted, grouping, preferred_prices)
+        if quality.get("complete") and current_zone:
+            zone_summaries[str(current_zone).upper()] = summarize_available_seats(current_zone, metadata)
+        record("seat_scan", {
+            "zone": current_zone,
+            "available": available_count,
+            "candidate_count": len(metadata),
+            "wanted": wanted,
+            "preferred_prices": preferred_prices,
+            "attempt": attempt + 1,
+            "scope_count": len(scopes),
+            "metadata_complete": quality.get("complete"),
+            "metadata_reason": quality.get("reason"),
+            "priced_count": quality.get("priced_count"),
+            "price_match_count": quality.get("price_match_count"),
+            "unknown_price_count": quality.get("unknown_price_count"),
+            "identifiable_count": quality.get("identifiable_count"),
+        })
+        if not quality.get("complete"):
+            metadata_pending_rounds += 1
+            ready_marker_key = None
+            record("recovery", {
+                "status": "SEAT_INVENTORY_METADATA_PENDING",
+                "reason": quality.get("reason"),
+                "zone": current_zone,
+                "available": available_count,
+                "wanted": wanted,
+                "preferred_prices": preferred_prices,
+                "pending_round": metadata_pending_rounds,
+                "same_zone": True,
+                "terminal": False,
+                "next_action": "wait_and_rescan_same_zone",
+            })
+            if metadata_pending_rounds == 2 or (metadata_pending_rounds > 2 and metadata_pending_rounds % 8 == 0):
+                price_decision = request_ai_recovery_action(
+                    page,
+                    checkpoint,
+                    ["confirm_current_zone_price", "rescan_inventory", "request_user"],
+                    context={
+                    "phase": "seat_inventory_metadata_pending",
+                    "seat_incident": True,
+                    "failure": quality.get("reason"),
+                    "same_failure_count": metadata_pending_rounds,
+                    "candidate_count": len(metadata),
+                    "available_count": available_count,
+                    "current_zone": current_zone,
+                    "preferred_prices": preferred_prices,
+                    "visual_required": True,
+                    },
+                )
+                if price_decision.get("action") == "confirm_current_zone_price":
+                    verified_zone = str(price_decision.get("zone") or "").strip().upper()
+                    verified_displayed_price = seat_price_value(price_decision.get("price"))
+                    verified_price = preferred_base_price_for_displayed(
+                        verified_displayed_price,
+                        preferred_prices,
+                        CONFIG.get("_runtimePriceAdjustment"),
+                    )
+                    if verified_price is None and verified_displayed_price in preferred_prices:
+                        verified_price = verified_displayed_price
+                    confidence = float(price_decision.get("confidence") or 0)
+                    if (
+                        verified_zone == str(current_zone or "").strip().upper()
+                        and verified_price in preferred_prices
+                        and confidence >= 0.75
+                    ):
+                        runtime_evidence = CONFIG.setdefault("_runtimeZonePriceEvidence", {})
+                        runtime_evidence[verified_zone] = {
+                            "prices": [verified_price],
+                            "source": "ai_visual_zone_hint",
+                            "seat_level": False,
+                            "complete_inventory": False,
+                        }
+                        record("ai_zone_price_evidence", {
+                            "zone": verified_zone,
+                            "price": verified_price,
+                            "displayed_price": verified_displayed_price,
+                            "confidence": confidence,
+                            "source": "official_live_page_visual_hint",
+                            "seat_level": False,
+                            "same_zone": True,
+                            "next_action": "wait_for_seat_level_price_metadata",
+                        })
+                        ready_marker_key = None
+                        continue
+                    record("ai_zone_price_rejected", {
+                        "zone": verified_zone,
+                        "price": verified_price,
+                        "confidence": confidence,
+                        "current_zone": current_zone,
+                        "preferred_prices": preferred_prices,
+                        "reason": "AI_PRICE_EVIDENCE_FAILED_VALIDATION",
+                        "same_zone": True,
+                    })
+                elif price_decision.get("action") == "request_user":
+                    record("handoff", {
+                        "status": "ZONE_PRICE_EVIDENCE_REQUIRED",
+                        "same_session": True,
+                        "zone": current_zone,
+                        "preferred_prices": preferred_prices,
+                        "reason": price_decision.get("reason", ""),
+                        "payment_submitted": False,
+                    })
+                    return {"ok": False, "terminal": "ai_handoff", "attempts": attempt, "ai_decision": price_decision}
+            wait_for_inventory_change(page, rescan_interval)
+            continue
+        metadata_pending_rounds = 0
         zone_filter = [current_zone] if current_zone else zones
         indices = choose_seat_indices(metadata, wanted, grouping, zone_filter, rows, seat_numbers, fallback_mode, preferred_prices)
         if len(indices) != wanted:
             if preferred_prices:
                 price_available_count = sum(1 for item in metadata if item.get("available") and seat_price_value(item.get("price")) in preferred_prices)
-                record("recovery", {"status": "NO_COMPLETE_SET_FOR_SELECTED_PRICE", "zone": current_zone, "preferred_prices": preferred_prices, "available_with_price_filter": price_available_count, "wanted": wanted, "terminal": False, "next_action": "rescan_or_switch_allowed_zone"})
+                record("recovery", {
+                    "status": "NO_COMPLETE_SET_FOR_SELECTED_PRICE",
+                    "zone": current_zone,
+                    "preferred_prices": preferred_prices,
+                    "available_with_price_filter": price_available_count,
+                    "wanted": wanted,
+                    "terminal": False,
+                    "inventory_metadata_complete": True,
+                    "zone_exhaustion_proven": price_available_count < wanted,
+                    "next_action": "switch_allowed_zone" if price_available_count < wanted else "rescan_same_zone",
+                })
             unknown_layout_rounds = unknown_layout_rounds + 1 if not metadata else 0
             if not metadata and visible_human_challenge(page):
                 evidence_path = capture_status_evidence(page, "CAPTCHA_AT_SEAT_MAP")
                 record("handoff", {"status": "CAPTCHA_HANDOFF", "resume_supported": True, "same_session": True, "evidence_path": evidence_path})
                 return {"ok": False, "terminal": "captcha_handoff", "attempts": attempt}
-            if zones and zone_cursor + 1 < len(zones):
+            next_entries = eligible_zone_order(zones, preferred_prices, zone_cursor + 1) if zones else []
+            if next_entries:
                 previous_zone = current_zone
-                zone_cursor += 1
-                next_zone = zones[zone_cursor]
+                next_entry = next_entries[0]
+                zone_cursor = next_entry["index"]
+                next_zone = next_entry["zone"]
                 switched = switch_to_allowed_zone(page, next_zone)
-                record("zone_switch", {"status": "SWITCHED" if switched else "CONTROL_NOT_AVAILABLE", "from_zone": previous_zone, "to_zone": next_zone, "reason": "NO_COMPLETE_SET", "wanted": wanted})
+                record("zone_switch", {"status": "SWITCHED" if switched else "CONTROL_NOT_AVAILABLE", "from_zone": previous_zone, "to_zone": next_zone, "reason": "NO_COMPLETE_SET_WITH_COMPLETE_INVENTORY", "wanted": wanted, "preferred_prices": preferred_prices, "zone_exhaustion_proven": True})
                 continue
+            if preferred_prices:
+                record_locked_selection_unavailable(
+                    "SELECTED_PRICE_SOLD_OUT",
+                    preferred_prices,
+                    zones or [current_zone],
+                    wanted,
+                    zone_summaries,
+                    preferred_rows=rows,
+                    preferred_seat_numbers=seat_numbers,
+                )
+                return {"ok": False, "terminal": "price_unavailable", "attempts": attempt, "available_options": zone_summaries}
+            if seat_numbers and fallback_mode == "exact":
+                record_locked_selection_unavailable(
+                    "REQUESTED_SEATS_UNAVAILABLE",
+                    preferred_prices,
+                    zones or [current_zone],
+                    wanted,
+                    zone_summaries,
+                    preferred_rows=rows,
+                    preferred_seat_numbers=seat_numbers,
+                )
+                return {"ok": False, "terminal": "requested_seats_unavailable", "attempts": attempt, "available_options": zone_summaries}
             exhausted_rounds += 1
             zone_cursor = 0
             record("recovery", {"status": "WAITING_FOR_COMPLETE_SET", "zones": zones or [current_zone], "wanted": wanted, "preferred_prices": preferred_prices, "round": exhausted_rounds, "next_action": "rescan_inventory", "terminal": False})
@@ -3361,9 +4349,10 @@ def fast_reserved_seat_recovery(page):
                     return {"ok": False, "terminal": "visual_handoff", "attempts": attempt, "ai_decision": decision}
                 if decision.get("action") == "switch_allowed_zone" and zones:
                     current = current_zone_from_page(page)
-                    candidates = zones[zones.index(current) + 1:] if current in zones else zones
-                    if candidates and switch_to_allowed_zone(page, candidates[0]):
-                        zone_cursor = zones.index(candidates[0])
+                    start_index = zones.index(current) + 1 if current in zones else 0
+                    candidates = eligible_zone_order(zones, preferred_prices, start_index)
+                    if candidates and switch_to_allowed_zone(page, candidates[0]["zone"]):
+                        zone_cursor = candidates[0]["index"]
                         unknown_layout_rounds = 0
                         continue
             wait_for_inventory_change(page, rescan_interval)
@@ -3692,9 +4681,9 @@ def ai_actions_for_state(state):
         "captcha_handoff": ["request_user"],
         "otp_handoff": ["request_user"],
         "terms_conditions": ["accept_terms", "rescan", "wait", "request_user"],
-        "zone_selection": ["activate_locked_performance", "select_allowed_zone", "rescan", "wait", "request_user"],
+        "zone_selection": ["select_allowed_zone", "rescan", "wait", "request_user"],
         "quantity_selection": ["apply_locked_quantity", "rescan", "wait", "request_user"],
-        "ticket_selection": ["fast_seat_engine", "dismiss_runtime_dialog", "rescan_inventory", "release_partial", "switch_allowed_zone", "rescan", "wait", "request_user"],
+        "ticket_selection": ["fast_seat_engine", "confirm_current_zone_price", "dismiss_runtime_dialog", "rescan_inventory", "release_partial", "switch_allowed_zone", "rescan", "wait", "request_user"],
         "attendee_details": ["fill_locked_attendees", "rescan", "wait", "request_user"],
         "checkout_options": ["apply_locked_checkout", "rescan", "wait", "request_user"],
         "payment_handoff": ["notify_user"],
@@ -3788,7 +4777,7 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
         "runtime_context": context or {},
         "allowed_actions": list(allowed_actions),
         "learned_strategies": matching_ai_strategies(strategy_key, snapshot_data.get("state")),
-        "instruction": "You control this runtime; do not merely advise. Live DOM, visible_dialogs, network result, and the attached current browser frame are authoritative and require no image from the user. Return JSON only with action, diagnosis, reason, confidence, and next_expected_state. Choose one executable allowed action that advances the locked goal. Never request fields already present in locked_event, locked_schedule, wanted_count, allowed_zones, or runtime_context. Prefer a progress action over wait unless the snapshot proves waiting is required. If a prior action did not change the state or failure fingerprint, choose a different valid strategy instead of repeating it. Never change the locked event, performance, quantity, payment method, or allowed zones. Never solve CAPTCHA/OTP or submit payment.",
+        "instruction": "You control this runtime; do not merely advise. Live DOM, visible_dialogs, network result, and the attached current browser frame are authoritative and require no image from the user. Return JSON only. Choose one executable allowed action that advances the locked goal. Never request fields already present in locked_event, locked_schedule, wanted_count, allowed_zones, or runtime_context. Prefer a progress action over wait unless the snapshot proves waiting is required. If action is confirm_current_zone_price, return the exact visible zone and numeric ticket price from the official page in zone and price; never infer or guess them. If a prior action did not change the state or failure fingerprint, choose a different valid strategy instead of repeating it. Never change the locked event, performance, quantity, payment method, or allowed zones. Never solve CAPTCHA/OTP or submit payment.",
     }
     message = {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}
     if image_base64:
@@ -3804,6 +4793,8 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
             "reason": {"type": "string"},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "next_expected_state": {"type": "string"},
+            "zone": {"type": "string"},
+            "price": {"type": ["number", "null"]},
         },
         "required": ["action", "diagnosis", "reason", "confidence", "next_expected_state"],
         "additionalProperties": False,
@@ -3842,6 +4833,8 @@ def query_local_ai(snapshot_data, allowed_actions, context=None, timeout_seconds
             "reason": str(content.get("reason", ""))[:500],
             "confidence": max(0.0, min(1.0, float(content.get("confidence", 0) or 0))),
             "next_expected_state": str(content.get("next_expected_state", ""))[:80],
+            "zone": str(content.get("zone", ""))[:80],
+            "price": seat_price_value(content.get("price")),
             "model": model,
             "state": snapshot_data.get("state"),
             "strategy_key": strategy_key,
@@ -4072,7 +5065,7 @@ def execute_ready_ai_supervisor_action(page, checkpoint, confirm_order=False):
     rate-limited so a stale decision cannot spam the page.
     """
     state = str(checkpoint.get("state", "unknown"))
-    if state in {"ticket_selection", "payment_handoff", "queue", "captcha_handoff", "otp_handoff"}:
+    if state in {"ticket_selection", "quantity_selection", "payment_handoff", "queue", "captcha_handoff", "otp_handoff"}:
         return False
     decision = collect_ai_runtime_analysis()
     if not decision or str(decision.get("state", "")) != state:
@@ -4241,6 +5234,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         page.on("request", on_request)
         page.on("response", on_response)
         page.goto(CONFIG["eventUrl"], wait_until="domcontentloaded", timeout=45000)
+        capture_price_adjustment_evidence(page)
         checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
         record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
         if inspect_only:
@@ -4288,6 +5282,7 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
         last_safe_state = checkpoint.get("state", "unknown")
         while True:
             update_runtime_heartbeat_cache(page)
+            capture_price_adjustment_evidence(page)
             checkpoint = classify_snapshot(snapshot(page, observed["retry_after"], observed["http_status"], observed["server_date"]), sale_open_at=CONFIG.get("saleOpenAt", ""))
             record("checkpoint", {**checkpoint, "next_action": next_action(checkpoint), "live": True})
             state = checkpoint["state"]
@@ -4348,17 +5343,18 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
             browser_recovery_rounds = 0
             last_safe_url = safe_page_url(page, last_safe_url)
             last_safe_state = state
-            collect_ai_runtime_analysis()
-            note_ai_state_transition(state)
-            schedule_ai_runtime_analysis(page, checkpoint, {
-                "workflow_steps": workflow_steps,
-                "queue_rounds": queue_rounds,
-                "access_denied_rounds": access_denied_rounds,
-                "login_verified": login_verified,
-                "confirm_unpaid_order_authorized": confirm_order,
-            })
-            if execute_ready_ai_supervisor_action(page, checkpoint, confirm_order=confirm_order):
-                continue
+            if state != "quantity_selection":
+                collect_ai_runtime_analysis()
+                note_ai_state_transition(state)
+                schedule_ai_runtime_analysis(page, checkpoint, {
+                    "workflow_steps": workflow_steps,
+                    "queue_rounds": queue_rounds,
+                    "access_denied_rounds": access_denied_rounds,
+                    "login_verified": login_verified,
+                    "confirm_unpaid_order_authorized": confirm_order,
+                })
+                if execute_ready_ai_supervisor_action(page, checkpoint, confirm_order=confirm_order):
+                    continue
             if not login_verified and (authenticated_account_marker(page) or authenticated_booking_session(page, state)):
                 login_verified = True
                 record("authentication", {"status": "EXISTING_SESSION_VERIFIED", "method": "account_marker_or_private_booking_step", "credentials_persisted": False})
@@ -4611,8 +5607,24 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                 wait_for_page_change(page, previous_url, timeout_ms=5000)
                 continue
             if state == "quantity_selection":
+                pending_quantity_limit = CONFIG.pop("_runtimeQuantityLimit", None)
+                if pending_quantity_limit:
+                    if handle_quantity_limit_input(page, browser_profile, pending_quantity_limit) is None:
+                        context.close()
+                        return 4
+                    continue
                 previous_url = page.url
                 if not select_ticket_quantity(page):
+                    pending_quantity_limit = CONFIG.pop("_runtimeQuantityLimit", None)
+                    if pending_quantity_limit:
+                        # This is a deterministic contract from the live
+                        # quantity select. Use the largest official option
+                        # that does not exceed the requested quantity, then
+                        # continue without interrupting the user.
+                        if handle_quantity_limit_input(page, browser_profile, pending_quantity_limit) is None:
+                            context.close()
+                            return 4
+                        continue
                     recovery_failures[state] = recovery_failures.get(state, 0) + 1
                     recovery = autonomous_ai_recovery(page, checkpoint, ["apply_locked_quantity", "rescan", "wait", "request_user"], context={"failure": "quantity_control_changed", "attempt": recovery_failures[state], "locked_quantity": CONFIG.get("quantity")})
                     if recovery["executed"]:
@@ -4657,6 +5669,10 @@ def run_live(inspect_only=False, wait_for_window=False, confirm_order=False):
                     if terminal in {"sold_out", "sale_closed"}:
                         evidence_path = capture_status_evidence(page, terminal.upper())
                         record("result", {"status": "SOLD_OUT_BY_SERVER" if terminal == "sold_out" else "SALE_CLOSED_BY_SERVER", "wanted": CONFIG.get("quantity"), "evidence_path": evidence_path, "live_checkout_verified": False})
+                        context.close()
+                        return 0
+                    if terminal in {"price_unavailable", "requested_seats_unavailable"}:
+                        capture_status_evidence(page, terminal.upper())
                         context.close()
                         return 0
                     recovery_failures[state] = recovery_failures.get(state, 0) + 1
@@ -5134,7 +6150,7 @@ Run `./start.command --inspect-only` first. For an event whose queue opens befor
     project = destination_project
     result.update({
         "generator_version": generator_version,
-        "runtime_revision": "ticket-seat-availability-modal-1",
+        "runtime_revision": "ticket-zone-price-vat-2",
         "status": "project_verified" if completed.returncode == 0 else "project_created_unverified",
         "next_action": "run_inspect_only_then_wait_for_queue_window" if completed.returncode == 0 else "repair_fixture_failures_before_live_run",
         "created_project_path": str(project),
